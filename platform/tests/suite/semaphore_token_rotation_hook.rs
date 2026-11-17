@@ -2,7 +2,8 @@
 //! security set).
 //!
 //! `.claude/hooks/guard-secret-stdin.py` refuses a Bash command that feeds a secret file to an
-//! interpreter's stdin, so a token cannot reach a program's command line or its heredoc output.
+//! interpreter's stdin. This is the docs/MISTAKES.md 4.10 leak: the operator's token file was
+//! parsed as a program's source, and the SyntaxError printed the token.
 //! The guard reads a JSON event on stdin and answers with exit 2 on a block. These cases run the
 //! hook as Claude Code runs it, and check that the project settings register it.
 //!
@@ -29,8 +30,8 @@ use tempfile::TempDir;
 
 const GUARD: &str = ".claude/hooks/guard-secret-stdin.py";
 
-/// Runs the guard on one Bash tool event whose command is `command` (a JSON document, as the
-/// harness sends it). Returns the exit status and the output.
+/// Runs the guard on `event`, one Bash tool event as JSON text (as the harness sends it). Returns
+/// the exit status and the output.
 fn run_guard(event: &str) -> Output {
     let home = TempDir::new().expect("a temporary directory");
     let guard = repo::path(GUARD);

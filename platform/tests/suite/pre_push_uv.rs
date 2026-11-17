@@ -1,6 +1,6 @@
 //! The pre-push hook: the Python suite on the uv-locked environment, the fast lane, the
 //! classification of a collection failure, BATS beside pytest, and the Rust suite's push lane
-//! (cli tier, security set).
+//! (cli tier).
 //!
 //! On 2026-11-09 a push skipped pytest entirely: the hook used the workstation's python3, which
 //! had no `ansible`, and a missing module is fail-open. The hook now runs `uv sync --locked`
@@ -13,10 +13,14 @@
 //! test is never classified as a collection failure, whatever its output says.
 //!
 //! The cases drive the real hook in a scratch repository with fake `uv`, `python3`, `bats` and
-//! `parallel` on PATH. Each fake records its own path and the first PATH entry it saw, so what
-//! ran is read from logs rather than from output. A held push runs on a thread through
-//! `process::scrubbed`, bounded by its 30 s timeout; `Holding`-style cleanup writes the release
-//! file and joins the thread on drop.
+//! `parallel` on PATH, and read what ran from logs rather than from output. The fake `bats` logs
+//! the first PATH entry it ran under and, on request, its arguments, its start, its pids, the
+//! scratch directory it saw and a child process. The fake `python3` logs its own path and the
+//! first PATH entry for every call. The fake `uv` logs its arguments. The fake `parallel` logs
+//! nothing: it only answers the presence check. The fake `mktemp` honours TMPDIR, as GNU `mktemp`
+//! does and macOS `mktemp` does not, so the scratch directory is in the cases' sight. A held push
+//! runs on a thread through `process::scrubbed`, bounded by its 30 s timeout; `HeldPush` writes
+//! the release file and joins the thread on drop, so a failing case never leaves a hook running.
 //!
 //! Replaces platform/tests/test_pre_push_uv.bats (plan 24, Phase 4).
 //!
@@ -68,17 +72,20 @@ const JOB_SHELL: &str = "platform/tests/bin/parallel-job-shell";
 const URL: &str = "https://example.invalid/repo.git";
 const SHA: &str = "1111111111111111111111111111111111111111";
 
-/// Fake `bats`: records the first PATH entry it ran under and, when set, its arguments, its
-/// start, its pids and a child process; then waits for FAKE_BATS_HOLD and exits FAKE_BATS_RC.
+/// Fake `bats`: logs the first PATH entry it ran under and, on request, its arguments, its start,
+/// its pids, the scratch directory it saw and a child process. Then it waits for FAKE_BATS_HOLD
+/// and exits FAKE_BATS_RC.
 const FAKE_BATS: &str = r#"#!/usr/bin/env sh
 echo "${PATH%%:*}" >> "$FAKE_BATS_LOG"
 [ -n "${FAKE_BATS_ARGS:-}" ] && echo "$*" > "$FAKE_BATS_ARGS"
 [ -n "${FAKE_BATS_MARK:-}" ] && : > "$FAKE_BATS_MARK"
+[ -n "${FAKE_BATS_SEEN:-}" ] && ls -A "$TMPDIR" > "$FAKE_BATS_SEEN"
 [ -n "${FAKE_BATS_PIDS:-}" ] && echo "$PPID $$" > "$FAKE_BATS_PIDS"
-# FAKE_BATS_CHILD: a child process, as real bats runs its suite in, that writes the named file
-# after two seconds unless it is killed first.
+# FAKE_BATS_CHILD: a long-lived child, as real bats runs its suite in. Its pid is written to the
+# named file, so the test can show the child was alive before TERM.
 if [ -n "${FAKE_BATS_CHILD:-}" ]; then
-  sh -c 'sleep 2; : > "$1"' _ "$FAKE_BATS_CHILD" &
+  sleep 30 &
+  echo "$!" > "$FAKE_BATS_CHILD"
 fi
 if [ -n "${FAKE_BATS_HOLD:-}" ]; then
   i=0
@@ -117,6 +124,14 @@ echo "$*" >> "$FAKE_UV_LOG"
 [ "${FAKE_UV_RC:-0}" = 0 ] || exit "$FAKE_UV_RC"
 [ "${FAKE_UV_NOVENV:-0}" = 1 ] && exit 0
 mkdir -p .venv/bin && cp "@FAKEPY@" .venv/bin/python && cp "@FAKEPY@" .venv/bin/python3
+"#;
+
+/// A stand-in for `mktemp -d` on the scratch PATH. The macOS `mktemp` ignores TMPDIR when it is
+/// given no template, so the hook's scratch directory would be made outside the directory these
+/// cases read. This one honours TMPDIR, as GNU `mktemp` does, and calls the real `mktemp` with a
+/// template under it.
+const FAKE_MKTEMP: &str = r#"#!/usr/bin/env sh
+exec /usr/bin/mktemp -d "$TMPDIR/tmp.XXXXXXXX"
 "#;
 
 /// A `parallel` that is installed and does nothing: the hook asks for it by name.
@@ -180,6 +195,7 @@ impl Ctx {
             &FAKE_UV.replace("@FAKEPY@", &fakepython.display().to_string()),
         );
         write_executable(&fakebin.join("parallel"), FAKE_PARALLEL);
+        write_executable(&fakebin.join("mktemp"), FAKE_MKTEMP);
 
         Self {
             py_log: t.join("python.log"),
@@ -988,12 +1004,21 @@ fn bats_is_already_running_while_pytest_runs() {
 fn a_finished_run_leaves_no_temporary_file_behind() {
     // Arrange
     let ctx = Ctx::new();
+    let seen = ctx.t().join("scratch-seen");
 
     // Act
-    let run = ctx.push(&ctx.fakebin, &[]);
+    let run = ctx.push(
+        &ctx.fakebin,
+        &[("FAKE_BATS_SEEN", seen.to_str().expect("a UTF-8 path"))],
+    );
 
     // Assert
     assert!(run.passed(), "{}", run.text);
+    let during = read(&seen);
+    assert!(
+        has_line(&during, r"^tmp\."),
+        "the scratch directory did not exist while BATS ran: {during:?}"
+    );
     let left: Vec<_> = std::fs::read_dir(&ctx.tmp)
         .expect("the temporary directory reads")
         .map(|e| e.expect("an entry").path())
@@ -1001,9 +1026,37 @@ fn a_finished_run_leaves_no_temporary_file_behind() {
     assert!(left.is_empty(), "left behind: {left:?}");
 }
 
-/// Runs a push in the background with the fake bats held open, waits for its pids, and returns
-/// (hook pid, bats pid, the join handle). The caller releases the held suite.
-fn held_push(ctx: &Ctx, envs: &[(&str, &str)]) -> (String, String, JoinHandle<Output>) {
+/// The hook's push held inside its suite by the fake bats, on a thread. `finish` releases the
+/// suite and returns the hook's output. Dropping it unfinished releases and joins it too, so a
+/// failed assertion never leaves the hook running.
+struct HeldPush {
+    release: PathBuf,
+    handle: Option<JoinHandle<Output>>,
+}
+
+impl HeldPush {
+    fn finish(&mut self) -> Output {
+        std::fs::write(&self.release, "").expect("the release file is written");
+        self.handle
+            .take()
+            .expect("the push is finished once")
+            .join()
+            .expect("the held push did not panic")
+    }
+}
+
+impl Drop for HeldPush {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = std::fs::write(&self.release, "");
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Runs a push in the background with the fake bats held open. Returns the hook pid, the bats pid
+/// and the held push. The guard exists before the wait for the pids, so a failed wait releases it.
+fn held_push(ctx: &Ctx, envs: &[(&str, &str)]) -> (String, String, HeldPush) {
     let pids = ctx.t().join("bats.pids");
     let release = ctx.t().join("release");
     let mut all = vec![
@@ -1019,24 +1072,51 @@ fn held_push(ctx: &Ctx, envs: &[(&str, &str)]) -> (String, String, JoinHandle<Ou
     all.extend(envs.iter().map(|(k, v)| (*k, (*v).to_owned())));
     let borrowed: Vec<(&str, &str)> = all.iter().map(|(k, v)| (*k, v.as_str())).collect();
     let handle = ctx.spawn_held(&borrowed);
+    let held = HeldPush {
+        release,
+        handle: Some(handle),
+    };
     let deadline = Instant::now() + Duration::from_secs(10);
-    while std::fs::read_to_string(&pids)
-        .unwrap_or_default()
-        .trim()
-        .is_empty()
-    {
-        assert!(Instant::now() < deadline, "BATS never started");
+    let (hook, bats) = loop {
+        let text = std::fs::read_to_string(&pids).unwrap_or_default();
+        let mut parts = text.split_whitespace();
+        if let (Some(hook), Some(bats)) = (parts.next(), parts.next()) {
+            break (hook.to_owned(), bats.to_owned());
+        }
+        assert!(
+            Instant::now() < deadline,
+            "BATS never started; the hook's python log: {:?}; its bats log: {:?}",
+            read_or_empty(&ctx.py_log),
+            read_or_empty(&ctx.bats_log)
+        );
         thread::sleep(Duration::from_millis(100));
-    }
-    let text = read(&pids);
-    let mut parts = text.split_whitespace();
-    let hook = parts.next().expect("the hook pid").to_owned();
-    let bats = parts.next().expect("the bats pid").to_owned();
-    (hook, bats, handle)
+    };
+    (hook, bats, held)
 }
 
-fn release(ctx: &Ctx) {
-    std::fs::write(ctx.t().join("release"), "").expect("the release file is written");
+/// Sends `signal` (a name such as TERM) to `pid` through the shell's `kill`.
+fn send_signal(home: &Path, signal: &str, pid: &str) -> Output {
+    process::scrubbed("sh", home)
+        .arg("-c")
+        .arg("kill -\"$2\" \"$1\"")
+        .arg("sh")
+        .arg(pid)
+        .arg(signal)
+        .output()
+        .expect("sh starts")
+}
+
+/// The pid a fake writes to `file` (bounded wait).
+fn wait_for_pid(file: &Path) -> String {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let text = std::fs::read_to_string(file).unwrap_or_default();
+        if let Some(pid) = text.split_whitespace().next() {
+            return pid.to_owned();
+        }
+        assert!(Instant::now() < deadline, "BATS never started its child");
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 fn alive(home: &Path, pid: &str) -> bool {
@@ -1066,20 +1146,22 @@ fn wait_until_gone(home: &Path, pid: &str, bound: Duration) -> bool {
 fn term_stops_the_bats_job_removes_temporary_files_and_frees_the_lock() {
     // Arrange: the fake bats holds the suite open until released; the hook is then signalled.
     let ctx = Ctx::new();
-    let (hook_pid, bats_pid, handle) = held_push(&ctx, &[]);
+    let seen = ctx.t().join("scratch-seen");
+    let (hook_pid, bats_pid, mut held) = held_push(
+        &ctx,
+        &[("FAKE_BATS_SEEN", seen.to_str().expect("a UTF-8 path"))],
+    );
+    let during = read(&seen);
+    assert!(
+        has_line(&during, r"^tmp\."),
+        "the scratch directory did not exist while BATS ran: {during:?}"
+    );
 
     // Act
-    let term = process::scrubbed("sh", ctx.t())
-        .arg("-c")
-        .arg("kill -TERM \"$1\"")
-        .arg("sh")
-        .arg(&hook_pid)
-        .output()
-        .expect("sh starts");
+    let term = send_signal(ctx.t(), "TERM", &hook_pid);
     let hook_gone = wait_until_gone(ctx.t(), &hook_pid, Duration::from_secs(5));
     let bats_gone = wait_until_gone(ctx.t(), &bats_pid, Duration::from_secs(5));
-    release(&ctx);
-    let _ = handle.join();
+    held.finish();
 
     // Assert
     assert!(term.status.success(), "the hook could not be signalled");
@@ -1094,10 +1176,10 @@ fn term_stops_the_bats_job_removes_temporary_files_and_frees_the_lock() {
         .collect();
     assert!(left.is_empty(), "left behind: {left:?}");
     let locks = ctx.repo.join(".git/pre-push-locks");
-    let held: Vec<_> = std::fs::read_dir(&locks)
+    let held_locks: Vec<_> = std::fs::read_dir(&locks)
         .map(|dir| dir.map(|e| e.expect("entry").path()).collect())
         .unwrap_or_default();
-    assert!(held.is_empty(), "lock left behind: {held:?}");
+    assert!(held_locks.is_empty(), "lock left behind: {held_locks:?}");
 }
 
 #[test]
@@ -1212,31 +1294,37 @@ fn a_full_run_that_collects_no_tests_blocks() {
 
 #[test]
 fn term_kills_the_processes_bats_started_not_only_bats_itself() {
-    // Arrange: the fake bats starts a child that would write a file in two seconds.
+    // Arrange: the fake bats starts a long-lived child. It is alive before TERM, so its absence
+    // afterwards is the hook's doing.
     let ctx = Ctx::new();
-    let finished = ctx.t().join("child-finished");
-    let (hook_pid, _bats_pid, handle) = held_push(
+    let child_file = ctx.t().join("bats.child");
+    let (hook_pid, _bats_pid, mut held) = held_push(
         &ctx,
-        &[("FAKE_BATS_CHILD", finished.to_str().expect("a UTF-8 path"))],
+        &[(
+            "FAKE_BATS_CHILD",
+            child_file.to_str().expect("a UTF-8 path"),
+        )],
+    );
+    let child = wait_for_pid(&child_file);
+    assert!(
+        alive(ctx.t(), &child),
+        "the child BATS started was not alive before TERM"
     );
 
     // Act
-    let term = process::scrubbed("sh", ctx.t())
-        .arg("-c")
-        .arg("kill -TERM \"$1\"")
-        .arg("sh")
-        .arg(&hook_pid)
-        .output()
-        .expect("sh starts");
-    thread::sleep(Duration::from_secs(3));
-    release(&ctx);
-    let _ = handle.join();
+    let term = send_signal(ctx.t(), "TERM", &hook_pid);
+    let child_gone = wait_until_gone(ctx.t(), &child, Duration::from_secs(10));
+    if !child_gone {
+        // Do not leave the long-lived child running behind a failing case.
+        let _ = send_signal(ctx.t(), "KILL", &child);
+    }
+    held.finish();
 
     // Assert
     assert!(term.status.success(), "the hook could not be signalled");
     assert!(
-        !finished.exists(),
-        "a process BATS started outlived TERM to the hook"
+        child_gone,
+        "a process BATS started (pid {child}) outlived TERM to the hook"
     );
 }
 

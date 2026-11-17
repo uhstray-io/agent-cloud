@@ -1,5 +1,6 @@
-//! The pre-push hook runs its suites with a clean git environment (cli tier, security set; the
-//! two list checks are static).
+//! The pre-push hook runs its suites with a clean git environment (a cli-tier module in the
+//! security set). Its first case runs the hook; its two list checks are static assertions that
+//! read the hook and the helper and run neither.
 //!
 //! Git exports its repository variables (GIT_DIR and friends) to hooks. Left set, a test's
 //! scratch `git init` or `git config` writes the REAL repository's shared `.git/config`: on
@@ -34,9 +35,11 @@ const HELPER: &str = "platform/tests/assert_helpers.bash";
 /// One pushed ref with a non-zero sha, as git writes it on the hook's stdin.
 const REFLINE: &str = "refs/heads/x 1111111111111111111111111111111111111111 refs/heads/x 0000000000000000000000000000000000000000\n";
 
-/// What the 2026-09-23 test setup did, from a scratch directory: a fake `bats` on PATH.
+/// What the 2026-09-23 test setup did, from a scratch directory: a fake `bats` on PATH. It first
+/// writes FAKE_BATS_MARKER, so the test can tell the hook reached its BATS step.
 const FAKE_BATS: &str = "#!/usr/bin/env sh
 # What the 2026-09-23 test setup did, from a scratch directory.
+: > \"$FAKE_BATS_MARKER\"
 cd \"$(mktemp -d)\" && git init -q scratch && cd scratch \\
   && git config user.email hacked@example.invalid && git config user.name hacked
 exit 0
@@ -84,12 +87,14 @@ fn a_suites_git_commands_cannot_reach_the_pushing_repository() {
         std::env::var("PATH").unwrap_or_default()
     );
     let hook = repo::path(HOOK);
+    let marker = home.path().join("bats-ran");
 
     // Act: the hook runs as git runs it, with GIT_DIR pointing at the victim repository.
     let _ = process::scrubbed("sh", home.path())
         .current_dir(&pushing)
         .env("GIT_DIR", victim.join(".git"))
         .env("PATH", path)
+        .env("FAKE_BATS_MARKER", &marker)
         .arg(hook.to_str().expect("a UTF-8 path"))
         .arg("origin")
         .arg("https://example.invalid/repo.git")
@@ -97,7 +102,12 @@ fn a_suites_git_commands_cannot_reach_the_pushing_repository() {
         .output()
         .expect("the hook starts");
 
-    // Assert
+    // Assert: the marker shows the hook reached the BATS step, where the setup wrote the victim.
+    // Without it the victim checks below would pass whether or not the hook ran.
+    assert!(
+        marker.exists(),
+        "the hook stopped before its BATS step, so the victim checks prove nothing"
+    );
     let (email, _) = local_config(home.path(), &victim, "user.email");
     assert!(email.is_empty(), "the victim's user.email became {email:?}");
     let (bare, _) = local_config(home.path(), &victim, "core.bare");

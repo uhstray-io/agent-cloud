@@ -1,5 +1,6 @@
 //! The machine-path gate (scripts/check-machine-paths.sh) refuses a staged line that names a real
-//! machine account's home directory (cli tier, security set; the staged-diff check is static).
+//! machine account's home directory (cli tier, security set). Its last case is a static assertion
+//! in the same module: it reads the diff filters in the gate and in the pre-commit config.
 //!
 //! agent-cloud is a public template, so a line naming the operator's login or machine layout is
 //! a leak (docs/MISTAKES.md 4.11: a path reached ledger entry 3.9 and was redacted afterwards).

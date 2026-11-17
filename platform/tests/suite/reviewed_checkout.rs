@@ -1,10 +1,11 @@
-//! The shared reviewed-checkout playbook caps the helper payloads it accepts at sixteen (static
-//! tier).
+//! The shared reviewed-checkout playbook asserts that a caller requests at most sixteen helper
+//! payload paths (static tier).
 //!
 //! `require-reviewed-checkout.yml` asserts that a caller requests at most 16 helper payload paths.
-//! The Python helper (platform/playbooks/files/reviewed-checkout.py) enforces its own cap; this
-//! case pins the playbook's copy of that cap, so the two cannot drift apart silently. The rest of
-//! test_reviewed_checkout.py imports the helper in-process and stays Python.
+//! This case reads the playbook and checks that assertion is there with that number. Nothing
+//! compares the number with the helper's own limit, `MAX_PAYLOAD_PATHS` in
+//! platform/playbooks/files/reviewed-checkout.py. The rest of test_reviewed_checkout.py imports
+//! the helper in-process and stays Python.
 //!
 //! Replaces test_reviewed_checkout_playbook_uses_same_sixteen_path_cap in
 //! platform/tests/test_reviewed_checkout.py (plan 24, Phase 4).

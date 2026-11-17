@@ -5,8 +5,10 @@
 # Rust push lane), the Bash guard that keeps a secret file off an interpreter's stdin, and the
 # reviewed-checkout playbook's payload cap.
 #
-# The six modules in `always` guard rules that docs/MISTAKES.md cites, so every lane runs them.
-# The others are selected by the paths below. `reviewed_checkout` is static: it reads the playbook.
+# The seven modules in `always` guard rules that docs/MISTAKES.md cites, or that a hook enforces.
+# The push and CI lanes run their cli tier; the commit lane runs only the static tier of `always`,
+# which holds none of them. The other modules are selected by the paths below.
+# `reviewed_checkout` is static: it reads the playbook.
 paths:
   - ".githooks/**"
   - ".pre-commit-config.yaml"
@@ -18,7 +20,7 @@ paths:
   - ".claude/settings.json"
   - "platform/playbooks/require-reviewed-checkout.yml"
 tiers:
-  cli: [pre_push_uv, semaphore_token_rotation_hook]
+  cli: [pre_push_uv]
   static: [reviewed_checkout]
 always:
-  cli: [commit_msg_hook, graph_artifact_guard, machine_path_hook, pre_push_branch_lock, pre_push_git_env, pre_push_parallel_sigalrm]
+  cli: [commit_msg_hook, graph_artifact_guard, machine_path_hook, pre_push_branch_lock, pre_push_git_env, pre_push_parallel_sigalrm, semaphore_token_rotation_hook]

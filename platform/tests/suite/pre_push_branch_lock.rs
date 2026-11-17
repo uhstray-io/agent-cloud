@@ -8,8 +8,9 @@
 //! running" is a fact the test controls rather than a timing guess.
 //!
 //! A held push runs on a thread through `process::scrubbed`, bounded by its 30 s timeout. The
-//! fake `bats` releases on a file the test writes; `Holding` writes that file and joins the
-//! thread on drop, so a failing case never leaves a hook running.
+//! fake `bats` releases on a file the test writes. `Holding` is built before the wait for the
+//! suite to start, so it writes that file and joins the thread on drop even when the wait fails;
+//! a failing case never leaves a hook running.
 //!
 //! Replaces platform/tests/test_pre_push_branch_lock.bats (plan 24, Phase 4).
 //!
@@ -139,6 +140,11 @@ impl Ctx {
             .arg(URL)
             .write_stdin(refline(branch));
         let thread = thread::spawn(move || cmd.output().expect("the held push starts"));
+        // Built before the wait, so a failed wait below still releases and joins the push.
+        let holding = Holding {
+            release,
+            thread: Some(thread),
+        };
         let deadline = Instant::now() + Duration::from_secs(10);
         while !started.exists() {
             assert!(
@@ -147,10 +153,7 @@ impl Ctx {
             );
             thread::sleep(Duration::from_millis(100));
         }
-        Holding {
-            release,
-            thread: Some(thread),
-        }
+        holding
     }
 
     /// The lock file the hook uses for `branch` in `repo`: the readable name, then the checksum
