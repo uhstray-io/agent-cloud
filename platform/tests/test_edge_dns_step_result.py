@@ -13,7 +13,6 @@ from pathlib import Path
 
 import harness_sandbox
 import playbook_yaml
-import pytest
 from ansible_python import needs_ansible
 
 REPO = Path(__file__).resolve().parents[2]
@@ -245,15 +244,6 @@ def test_a_dry_run_with_changes_reports_counts_and_actions_only(tmp_path):
 
 
 @needs_ansible
-def test_a_dry_run_init_failure_fails_the_run_and_still_writes_nothing(tmp_path):
-    proc, calls, root, _ = _tofu_run(tmp_path, check=True, init_rc=1)
-    assert proc.returncode != 0 and "'init_rc': 1," in proc.stdout, proc.stdout[-3000:]
-    assert [c[0] for c in calls] == ["init"]
-    assert root == ROOT_FILES
-    assert not Path(calls[0][1]).parent.exists()
-
-
-@needs_ansible
 def test_a_real_plan_is_unchanged(tmp_path):
     # Not a dry run: init, plan and show run as separate tasks in the tofu root's own .terraform/.
     proc, calls, root, tf_dir = _tofu_run(tmp_path, check=False)
@@ -264,25 +254,6 @@ def test_a_real_plan_is_unchanged(tmp_path):
     assert not (tf_dir / ".terraform/edge-dns.tfplan").exists(), "the saved plan was not removed"
     (res,) = step_results.results_in(proc.stdout.splitlines())
     assert res["status"] == "pass"
-
-
-@needs_ansible
-@pytest.mark.parametrize("receipt", ["", "not-json", "{}"])  # Empty, invalid, and incomplete receipts fail closed.
-def test_a_missing_or_malformed_guard_receipt_has_a_fixed_refusal(tmp_path, receipt):
-    guard_script = tmp_path / "bad_guard.py"
-    guard_script.write_text(f"import sys\nsys.stdout.write({receipt!r})\nsys.exit(1)\n")
-    proc, _, _, _ = _tofu_run(tmp_path, check=False, guard_script=guard_script, grafana_guard=True)
-    assert proc.returncode != 0
-    assert "Cloudflare plan guard refused: safe plan receipt is missing or malformed." in proc.stdout
-    assert not receipt or receipt not in proc.stdout
-
-
-@needs_ansible
-def test_a_guard_that_cannot_start_has_a_fixed_refusal(tmp_path):
-    proc, _, _, _ = _tofu_run(tmp_path, check=False, guard_script=tmp_path / "missing_guard.py", grafana_guard=True)
-    assert proc.returncode != 0
-    assert "Cloudflare plan guard refused: safe plan receipt is missing or malformed." in proc.stdout
-    assert "missing_guard.py" not in proc.stdout
 
 
 @needs_ansible
@@ -314,11 +285,3 @@ def test_a_failed_show_of_the_plan_fails_the_run(tmp_path):
 def test_a_failed_show_of_the_post_apply_plan_fails_the_run(tmp_path):
     proc = _run(tmp_path, SKIPPED, {"rc": 0, "stdout": "No changes."}, "apply", show_verify=FAILED_SHOW, fails=True)
     assert proc.returncode != 0 and "'verify_show_rc': 1," in proc.stdout, proc.stdout[-3000:]
-
-
-@needs_ansible
-@pytest.mark.parametrize("check", [True, False], ids=["dry-run", "real-plan"])
-def test_a_failed_tofu_show_fails_the_run_in_either_mode(tmp_path, check):
-    proc, calls, _, _ = _tofu_run(tmp_path, check=check, show_rc=1)
-    assert [c[0] for c in calls] == ["init", "plan", "show"]
-    assert proc.returncode != 0 and "'show_rc': 1," in proc.stdout, proc.stdout[-3000:]

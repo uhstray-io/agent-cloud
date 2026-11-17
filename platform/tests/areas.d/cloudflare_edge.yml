@@ -11,4 +11,4 @@ paths:
   - "plan/development/openspec/changes/o11y-signal-labeling-profiling-alerting/tasks.md"
 tiers:
   static: [cloudflare_mcp_edge, cloudflare_grafana_plan_guard, edge_dns_step_result]
-  playbook: [cloudflare_dry_run_backend_playbook]
+  playbook: [cloudflare_dry_run_backend_playbook, edge_dns_tofu_run_playbook]
