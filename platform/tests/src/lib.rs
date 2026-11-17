@@ -6,9 +6,15 @@
 //! - [`process`]: bounded child processes with a scrubbed environment, and the confined
 //!   `ansible-playbook` runner (03 Part 1, rule 11);
 //! - [`lanes`]: which tests a lane runs, from `areas.yml` and the changed paths (the
-//!   `testsel` binary and `lane.sh` use it).
+//!   `testsel` binary and `lane.sh` use it);
+//! - [`playbook`]: repository playbooks lifted to JSON with YAML 1.1 types, for running a play's
+//!   tasks through [`process::ansible_playbook`] (AC-943).
 
+pub mod http;
 pub mod lanes;
+pub mod text;
+
+pub mod playbook;
 
 pub mod yaml {
     //! YAML as PyYAML's `SafeLoader` reads it.
@@ -184,13 +190,18 @@ pub mod yaml {
 
     /// The handle yaml-rust2 gives a `!!` core tag. No repository file uses one, so the
     /// loader refuses them all rather than construct some and misread others.
-    const CORE_TAG: &str = "tag:yaml.org,2002:";
+    pub(crate) const CORE_TAG: &str = "tag:yaml.org,2002:";
 
-    // `!!bool` arrives as handle `tag:yaml.org,2002:` plus suffix `bool`; the verbatim
-    // `!<tag:yaml.org,2002:bool>` as an empty handle plus the whole URI. Join them so both match.
+    /// A tag's full text. `!!bool` arrives as handle `tag:yaml.org,2002:` plus suffix `bool`; the
+    /// verbatim `!<tag:yaml.org,2002:bool>` as an empty handle plus the whole URI. Joined, both
+    /// start with [`CORE_TAG`].
+    pub(crate) fn tag_text(tag: &yaml_rust2::parser::Tag) -> String {
+        format!("{}{}", tag.handle, tag.suffix)
+    }
+
     fn refuse_core_tag(tag: Option<&yaml_rust2::parser::Tag>, origin: &str) {
         if let Some(t) = tag {
-            let full = format!("{}{}", t.handle, t.suffix);
+            let full = tag_text(t);
             if let Some(name) = full.strip_prefix(CORE_TAG) {
                 panic!("{origin}: core tag `!!{name}` is not supported by the test loader");
             }
@@ -330,14 +341,24 @@ pub mod repo {
         root().join(rel)
     }
 
-    /// `git -C <root> <args>`; panics unless the exit status is at most `max_status`.
-    fn git(args: &[&str], max_status: i32) -> String {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(root())
-            .args(args)
-            .output()
-            .expect("git");
+    /// `git -C <dir> <args>`; panics unless the exit status is at most `max_status`. The variables
+    /// that locate a repository are removed: a hook exports them and they override `-C`. `lane.sh`
+    /// unsets them too, but a direct `cargo nextest run` does not pass through it (#1169 review).
+    fn git_in(dir: &Path, args: &[&str], max_status: i32) -> String {
+        let mut cmd = Command::new("git");
+        for name in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_PREFIX",
+            "GIT_NAMESPACE",
+        ] {
+            cmd.env_remove(name);
+        }
+        let out = cmd.arg("-C").arg(dir).args(args).output().expect("git");
         assert!(
             out.status.code().is_some_and(|c| c <= max_status),
             "git {args:?} failed: {}",
@@ -349,15 +370,68 @@ pub mod repo {
     /// Tracked files matching git pathspecs, relative to the root. Untracked files are not
     /// part of the repository and never decide a test.
     pub fn ls_files(pathspecs: &[&str]) -> Vec<String> {
-        let args = [&["ls-files", "--"], pathspecs].concat();
-        git(&args, 0).lines().map(str::to_owned).collect()
+        ls_files_in(root(), pathspecs)
     }
 
-    /// `git grep -n -E` over tracked files; the matching lines, empty when none match (git
-    /// grep exits 1 for no match).
+    /// `ls_files` for the repository at `dir`. `-z` keeps each path as it is on disk: without it
+    /// git quotes a non-ASCII name (`caf\303\251.yml`), so a caller's `is_file()` fails (AC-908).
+    /// A path that is not UTF-8 panics, as every other git output here does.
+    pub fn ls_files_in(dir: &Path, pathspecs: &[&str]) -> Vec<String> {
+        let args = [&["ls-files", "-z", "--"], pathspecs].concat();
+        git_in(dir, &args, 0)
+            .split_terminator('\0')
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// `grep_in` at the repository root: an extended regular expression over tracked files, the
+    /// matching lines as `path:line:text`, empty when none match (git grep exits 1 for no match).
+    /// The git flags and the record format are `grep_in`'s.
     pub fn grep(pattern: &str, pathspecs: &[&str]) -> Vec<String> {
-        let args = [&["grep", "-n", "-E", "-e", pattern, "--"], pathspecs].concat();
-        git(&args, 1).lines().map(str::to_owned).collect()
+        grep_in(root(), pattern, pathspecs)
+    }
+
+    /// `grep` for the repository at `dir`, as `path:line:text` lines. `-z` keeps each path as it
+    /// is on disk, as `ls_files_in` does: without it git quotes a non-ASCII name
+    /// (`"caf\303\251.yml":1:...`), and the caller's path is then not a file (AC-916). `-a` reads
+    /// a binary file as text, so every hit, binary or not, is `path NUL line NUL text NEWLINE`
+    /// and a binary match is reported as its line, never a `Binary file ... matches` notice: a
+    /// caller asserting a pattern is absent still fails on it, and a notice for a path holding a
+    /// newline cannot glue onto the next hit (#1180 review). The path is verbatim and may hold a
+    /// newline, so the two NUL fields are read before the text. `--no-color` and `--no-column` hold
+    /// the format whatever the git configuration says (`color.grep`, `grep.column`). A matched line
+    /// that is not UTF-8 panics in `git_in`; a record without its fields panics here.
+    pub fn grep_in(dir: &Path, pattern: &str, pathspecs: &[&str]) -> Vec<String> {
+        let mut args = vec![
+            "grep",
+            "-z",
+            "-n",
+            "-a",
+            "--no-color",
+            "--no-column",
+            "-E",
+            "-e",
+            pattern,
+            "--",
+        ];
+        args.extend_from_slice(pathspecs);
+        let out = git_in(dir, &args, 1);
+        let mut hits = vec![];
+        let mut rest = out.as_str();
+        while !rest.is_empty() {
+            let mut fields = rest.splitn(3, '\0');
+            let (Some(path), Some(line), Some(tail)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                panic!("a git grep record without path, line and text: {rest:?}");
+            };
+            let (text, after) = tail
+                .split_once('\n')
+                .unwrap_or_else(|| panic!("a git grep record without its newline: {rest:?}"));
+            hits.push(format!("{path}:{line}:{text}"));
+            rest = after;
+        }
+        hits
     }
 
     /// Every task of a task file or play list, depth first, with `block`/`rescue`/`always`
@@ -606,7 +680,19 @@ pub mod process {
     /// only. A worker `ansible-playbook` forked is not killed and can outlive the timeout on every
     /// runner path: sandboxed under `sandbox-exec` or `bwrap`, unconfined without either. The Python
     /// harness has the same limit; AC-882 tracks a process-group kill.
+    ///
+    /// A playbook run (the program, or any argument, is `ansible-playbook`) is held to
+    /// [`PLAYBOOK_TIMEOUT`]: `run_for` refuses any other bound, so [`run`] is the route that passes
+    /// (CONTRIBUTING.md, playbook tier; AC-906). The builder's own `.output()` or `.assert()` skips
+    /// this check and keeps the `PLAYBOOK_TIMEOUT` that [`ansible_playbook`] sets.
     pub fn run_for(cmd: &mut Command, timeout: Duration) -> Output {
+        let runs_playbook = std::iter::once(cmd.get_program())
+            .chain(cmd.get_args())
+            .any(|arg| Path::new(arg).file_name() == Some("ansible-playbook".as_ref()));
+        assert!(
+            !runs_playbook || timeout == PLAYBOOK_TIMEOUT,
+            "a playbook run is held to PLAYBOOK_TIMEOUT: start it with process::run"
+        );
         let started = Instant::now();
         let output = cmd
             .write_stdin(Vec::new())

@@ -245,40 +245,150 @@ fn a_selection_renders_as_all_none_or_a_sorted_alternation() {
 
 #[test]
 fn every_suite_module_is_listed_exactly_once_in_areas_yml() {
-    let config = Config::load(&repo::path("platform/tests/areas.yml")).expect("areas.yml loads");
-    let main_rs = std::fs::read_to_string(repo::path("platform/tests/suite/main.rs"))
-        .expect("suite/main.rs reads");
-    // `mod x;`, `pub mod x;` and `pub(crate) mod x;`, indented or not: any form declares a module.
-    let declaration = regex::Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;")
-        .expect("valid pattern");
-    let declared: Vec<&str> = declaration
-        .captures_iter(&main_rs)
-        .map(|c| c.get(1).expect("a module name").as_str())
-        .collect();
-    assert!(!declared.is_empty(), "suite/main.rs declares no module");
+    let config =
+        Config::load(&repo::path("platform/tests/areas.yml")).expect("areas.yml and areas.d/ load");
+    // build.rs declares one module per suite/<name>.rs and records the names it compiled.
+    let declared = crate::SUITE_MODULES;
 
     let listed = config.listed_modules();
     let mut problems = Vec::new();
-    for module in &declared {
+    for module in declared {
         let count = listed
             .iter()
             .filter(|name| name.as_str() == *module)
             .count();
         if count != 1 {
             problems.push(format!(
-                "`mod {module};` is listed {count} times in areas.yml, expected once"
+                "suite/{module}.rs is listed {count} times in areas.yml and areas.d/, expected once"
             ));
         }
     }
-    let declared: BTreeSet<&str> = declared.into_iter().collect();
+    let declared: BTreeSet<&str> = declared.iter().copied().collect();
     for name in listed.iter().collect::<BTreeSet<_>>() {
         if !declared.contains(name.as_str()) {
             problems.push(format!(
-                "areas.yml lists `{name}`, which suite/main.rs does not declare"
+                "areas.yml or areas.d/ lists `{name}`, which has no suite/{name}.rs"
             ));
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// `areas.yml` holding [`BASE`] in a fresh directory, with each `(name, text)` written under
+/// `areas.d/` (none, and the directory is not created).
+fn layout(files: &[(&str, &str)]) -> TempDir {
+    let dir = TempDir::new().expect("a temporary directory");
+    std::fs::write(dir.path().join("areas.yml"), BASE).expect("areas.yml writes");
+    if !files.is_empty() {
+        let areas_d = dir.path().join("areas.d");
+        std::fs::create_dir(&areas_d).expect("areas.d creates");
+        for (name, text) in files {
+            std::fs::write(areas_d.join(name), text).expect("an area file writes");
+        }
+    }
+    dir
+}
+
+fn load(dir: &TempDir) -> Result<Config, String> {
+    Config::load(&dir.path().join("areas.yml"))
+}
+
+#[test]
+fn an_area_file_adds_its_area_and_its_always_modules() {
+    let dir = layout(&[
+        (
+            "ported.yml",
+            "paths: [\"platform/ported/**\"]\ntiers: {unit: [ported]}\nalways: {static: [ported_guard]}\n",
+        ),
+        ("README.md", "not an area: ignored\n"),
+    ]);
+
+    let config = load(&dir).expect("the layout loads");
+
+    assert_eq!(
+        run(&config, Lane::Push, "platform/ported/x.sh"),
+        mods(&["ported", "ported_guard"])
+    );
+    assert_eq!(
+        run(&config, Lane::Commit, "docs/guide.md"),
+        mods(&["ported_guard"]),
+        "a file's `always` joins the security set"
+    );
+}
+
+#[test]
+fn a_missing_areas_d_adds_nothing() {
+    let dir = layout(&[]);
+
+    let loaded = load(&dir).expect("areas.yml alone loads");
+
+    assert_eq!(
+        loaded.listed_modules().len(),
+        config(BASE).listed_modules().len()
+    );
+}
+
+/// A refusal case: why, the area files (name, text), and a phrase the error must hold.
+type Refusal<'a> = (&'a str, Vec<(&'a str, String)>, &'a str);
+
+#[test]
+fn an_area_file_that_collides_or_is_malformed_is_refused() {
+    let area = |module: &str| format!("paths: []\ntiers: {{static: [{module}]}}\n");
+    // Each row names its phrase, so it fails for its own reason, not a neighbour's.
+    let cases: Vec<Refusal> = vec![
+        (
+            "an area of areas.yml defined again",
+            vec![("multi.yml", area("other"))],
+            "is already defined",
+        ),
+        (
+            "a module of areas.yml listed again",
+            vec![("other.yml", area("restart_policy"))],
+            "is listed twice",
+        ),
+        (
+            "a module listed in two files",
+            vec![("one.yml", area("shared")), ("two.yml", area("shared"))],
+            "is listed twice",
+        ),
+        (
+            "a module in a file's area and its always",
+            vec![(
+                "one.yml",
+                "paths: []\ntiers: {static: [x]}\nalways: {unit: [x]}\n".to_owned(),
+            )],
+            "is listed twice",
+        ),
+        (
+            "an unknown key",
+            vec![("one.yml", "paths: []\ntiers: {}\npath: []\n".to_owned())],
+            "unknown key",
+        ),
+        (
+            "a missing key",
+            vec![("one.yml", "paths: []\n".to_owned())],
+            "is missing `tiers`",
+        ),
+        (
+            "a stem that is not a module name",
+            vec![("bad-name.yml", area("x"))],
+            "is not a module name",
+        ),
+    ];
+    for (why, files, phrase) in cases {
+        let files: Vec<(&str, &str)> = files.iter().map(|(n, t)| (*n, t.as_str())).collect();
+        let dir = layout(&files);
+
+        let result = load(&dir);
+
+        match result {
+            Ok(_) => panic!("{why}: loaded"),
+            Err(error) => assert!(
+                error.contains(phrase),
+                "{why}: refused for another reason: {error}"
+            ),
+        }
+    }
 }
 
 /// Every path the property draws from: each area's, each one none matches, and a full hit.
