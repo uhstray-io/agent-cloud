@@ -32,8 +32,12 @@ ignore:
 # The four modules ported from BATS (plan 24, Phase 4) guard MISTAKES-cited rules, so they are here too.
 # `rust_format` checks the suite files' formatting, which `cargo fmt` cannot reach (plan 24, D10). It is
 # here so that check never depends on lane selection.
+# `restart_policy` greps platform/, agents/ and scripts/ for a container started with the
+# unless-stopped restart flag, beyond its area's compose paths. A static module that scans past
+# its area runs in every lane; otherwise a change to a file another area claims would skip it
+# (areas.d/README.md; the `lanes` test every_repo_wide_scan_runs_when_a_file_it_reads_changes).
 always:
-  static: [approle_ttl, backup_credentials, become_password_resolution, configure_host_network, credential_leaks, deploy_playbooks_preflight, destroy_vm, host_access_gate, install_podman, ledger, ledger_citation_hook, local_dev_inventory, local_netbox, manage_github_runner_group, manage_secrets, rust_format, yaml_load]
+  static: [approle_ttl, backup_credentials, become_password_resolution, configure_host_network, credential_leaks, deploy_playbooks_preflight, destroy_vm, host_access_gate, install_podman, ledger, ledger_citation_hook, local_dev_inventory, local_netbox, manage_github_runner_group, manage_secrets, restart_policy, rust_format, yaml_load]
 
 # Tiers: static, unit, cli, http, playbook. Each lists suite module names.
 areas:
@@ -45,8 +49,9 @@ areas:
       - "agents/**/*compose*.yaml"
       - "platform/playbooks/tasks/enable-linger.yml"
       - "platform/playbooks/tasks/place-monorepo.yml"
-    tiers:
-      static: [restart_policy]
+    # Its module is in `always`; the paths stay, so a compose change is classified (it selects
+    # the security set) rather than unclassified (which runs everything).
+    tiers: {}
 
   bootstrap_12a:
     paths:
@@ -71,8 +76,14 @@ areas:
       cli: [common_sh]
 
   install_qemu_guest_agent:
+    # The playbook tier runs the playbook itself, so the playbooks it imports and the filter
+    # plugins beside it decide its result too (areas.d/README.md, "A test that reads beyond its
+    # area"). Its task includes are under platform/playbooks/tasks/, which is `full`.
     paths:
       - "platform/playbooks/install-qemu-guest-agent.yml"
+      - "platform/playbooks/refuse-internal-extra-vars.yml"
+      - "platform/playbooks/preflight-target-group.yml"
+      - "platform/playbooks/filter_plugins/**"
     tiers:
       static: [install_qemu_guest_agent]
       playbook: [install_qemu_guest_agent_playbook]
