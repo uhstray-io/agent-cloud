@@ -18,7 +18,8 @@
 # published from a bridge through rootlessport, which connects onward from the container's own
 # bridge address, so the Caddy host the trusted proxies name never matched and every sign-in
 # counted against one address (weft #580). pasta keeps the source address. The door talks to
-# nothing on this VM but staging's mail catcher, which shares its namespace (compose.mailpit.yml).
+# nothing on this VM but the mail catcher, when it runs, which shares its namespace
+# (compose.mailpit.yml).
 # The accepted cost: anything on this VM that connects to the published address arrives as the
 # VM's default gateway (podman 4.9.3), or 169.254.1.2 from podman 5.3 on, so the trusted proxies
 # name the Caddy host alone, as a /32, never a range that could hold the gateway. The published

@@ -21,9 +21,10 @@ _weft_issuer: "https://token.actions.githubusercontent.com"
 # published, weft-release:<version> for a release), fetched with oras and verified with cosign.
 _weft_oras_image: "{{ weft_oras_image | default('ghcr.io/oras-project/oras:v1.3.4@sha256:f7bc056d54d97baa399414ed5048ecc67c3371b750d4bbce1d871827a5758179') }}"
 
-# Staging's mail catcher (weft-door's compose.mailpit.yml), only where weft_door_mailpit is set,
-# which tasks/weft-door-mail.yml allows on staging alone. By digest like every image a weft host
-# runs; the tag is for the reader. The digest is the multi-arch index.
+# The front door's mail catcher (weft-door's compose.mailpit.yml), only where weft_door_mailpit is
+# set, which tasks/weft-door-mail.yml allows on staging, and on the rack only while no workspace is
+# a customer's. By digest like every image a weft host runs; the tag is for the reader. The digest
+# is the multi-arch index.
 _weft_mailpit_image: "{{ weft_mailpit_image | default('docker.io/axllent/mailpit:v1.33.0@sha256:9b3a463be15354c0f0eba91697d80e3e0d8a5623ef0e627cacc836bc17fd5231') }}"
 
 # A rack host's pin, `weft_release` in site-config: the version a person chose and the digest of

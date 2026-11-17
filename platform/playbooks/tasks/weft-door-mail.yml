@@ -1,29 +1,73 @@
 ---
-# weft-door-mail.yml — staging's mail catcher: allowed on staging alone, pinned by digest, and
-# pulled, all before anything stops.
+# weft-door-mail.yml — the front door's mail catcher: allowed on staging, and on the rack only while
+# no customer workspace is declared; pinned by digest and pulled, all before anything stops.
 #
 # The front door refuses to start without mail (weft #541). Until a transactional provider is
-# chosen for the platform, staging's door hands every message to Mailpit (weft_door_mailpit,
-# compose.mailpit.yml), which keeps it and sends nothing. On the rack that would be a front door
-# whose sign-ups and resets silently reach nobody, so a rack host (or any host not in staging) with
-# weft_door_mailpit set is refused here, where the running door is left untouched, rather than
-# found by a customer who never gets their link.
+# chosen for the platform, a front door may hand every message to Mailpit (weft_door_mailpit,
+# compose.mailpit.yml), which keeps it and sends nothing. Staging may always. The rack's front door
+# may while only the operator's own people use it (Jacob, 2026-11-17, weft #332): a customer's
+# sign-ups and resets would reach nobody, and their working links would sit in a catcher only the
+# operator reads. So the rack's door is refused the catcher once any workspace in weft_workspaces
+# is a customer's, and a customer's workspace is refused while the rack's door has the catcher.
 #
-# Caller is tasks/weft-release.yml, for the door role, in a deploy and in a rollback: a rollback
+# A workspace is the operator's own only when its host sets weft_workspace_owner: operator. Unset,
+# or any other value, counts as a customer's, so a workspace nobody marked closes the catcher.
+#
+# Both refusals are here, where the running hosts are left untouched, because either side can be
+# the one that changes: a door deploy or rollback after a customer was added, or a workspace stood
+# up or deployed while the door still has the catcher.
+#
+# Caller is tasks/weft-release.yml, for both roles, in a deploy and in a rollback: a rollback
 # renders door.env.j2 too, so the rule has to hold on both paths.
 
-- name: "Front door: refuse the mail catcher outside staging"
+- name: "Front door: refuse the mail catcher outside staging and the rack"
   ansible.builtin.assert:
     that:
-      - not (weft_door_mailpit | default(false) | bool) or weft_environment | default('') == 'staging'
+      - not (weft_door_mailpit | default(false) | bool) or weft_environment | default('') in ['staging', 'rack']
     fail_msg: >-
       {{ inventory_hostname }} sets weft_door_mailpit, and its weft_environment is
-      '{{ weft_environment | default('') }}'. Mailpit keeps every email and sends none, so on the
-      rack every sign-up and reset link would reach nobody. Only staging may run it: remove
-      weft_door_mailpit from this host. Nothing has changed on this host.
+      '{{ weft_environment | default('') }}'. Mailpit keeps every email and sends none, so only
+      staging, or a rack with no customer workspace yet, may run it: remove weft_door_mailpit from
+      this host. Nothing has changed on this host.
+  when: _weft_role == 'door'
+
+- name: "Front door: refuse the mail catcher on the rack once a workspace is a customer's"
+  ansible.builtin.assert:
+    that:
+      - hostvars[item].weft_workspace_owner | default('customer') == 'operator'
+    fail_msg: >-
+      {{ inventory_hostname }} sets weft_door_mailpit, and workspace {{ item }} is not marked
+      weft_workspace_owner: operator, so it counts as a customer's. Mailpit keeps every email and
+      sends none: that customer's sign-ups and resets would reach nobody, and their links would sit
+      in a catcher only the operator reads. Give the front door a real mail provider and remove
+      weft_door_mailpit, or mark the workspace if it is the operator's own. Nothing has changed on
+      this host.
+  loop: "{{ groups['weft_workspaces'] | default([]) }}"
+  when:
+    - _weft_role == 'door'
+    - weft_door_mailpit | default(false) | bool
+    - weft_environment | default('') != 'staging'
+
+- name: "Workspace: refuse a customer's workspace while the rack's front door has the mail catcher"
+  ansible.builtin.assert:
+    that:
+      - weft_workspace_owner | default('customer') == 'operator'
+    fail_msg: >-
+      {{ inventory_hostname }} is not marked weft_workspace_owner: operator, so it counts as a
+      customer's workspace, and the rack's front door ({{ item }}) sets weft_door_mailpit. Mailpit
+      keeps every email and sends none: this customer's sign-ups and resets would reach nobody.
+      Give the front door a real mail provider and remove weft_door_mailpit first, or mark this
+      workspace if it is the operator's own. Nothing has changed on this host.
+  loop: "{{ groups['weft_door'] | default([]) }}"
+  when:
+    - _weft_role == 'workspace'
+    - weft_environment | default('') != 'staging'
+    - hostvars[item].weft_door_mailpit | default(false) | bool
 
 - name: "Front door: the mail catcher"
-  when: weft_door_mailpit | default(false) | bool
+  when:
+    - _weft_role == 'door'
+    - weft_door_mailpit | default(false) | bool
   block:
     # A digest, never a tag, as for every image a weft host runs: a tag can move after review.
     - name: "Require the mail catcher's image by digest"

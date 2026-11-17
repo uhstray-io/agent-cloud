@@ -37,7 +37,7 @@ Each runs `weft-door.yml`:
 deployment/
 ├── deploy.sh                container lifecycle only: pull, up, stop, images, backup, restore, health, restarts
 ├── compose.yml              the front door; its key as a 0600 file, read-only
-├── compose.mailpit.yml      staging only: Mailpit in the door's network namespace, and the door's mail settings
+├── compose.mailpit.yml      staging, and the rack until a customer workspace: Mailpit in the door's network namespace, and the door's mail settings
 ├── lib/door_public_key.py   the public key from the signing key, on stdin (controller only)
 └── templates/
     ├── door.env.j2          .env: image digest, paths, the workspace address template, the client address header and its proxies (no secret)
@@ -59,7 +59,7 @@ door's `weft_release` pin are described in the workspace README. The front door'
 | `weft_door_trusted_proxies` | the front door host, required | the edge Caddy host's address, as a list of CIDR blocks, the only peers the client address header is believed from. The Caddy host alone, as a `/32`: the door is on pasta (compose.yml), and anything on this VM reaches it as the VM's default gateway (podman 4.9.3) or `169.254.1.2` (podman 5.3 on), so a range holding either would believe the header from every process on the VM. An entry wider than one address, or holding either, is refused before anything stops (`tasks/weft-bind.yml`), outside local mode | none: a deploy refuses before anything stops |
 | `weft_door_client_address_header` | optional | the header the edge overwrites with the client's address; every weft name is proxied by Cloudflare | `CF-Connecting-IP` |
 | `weft_caddy_tls` | optional | the `tls` block of the Caddy fragment | `dns cloudflare {$CLOUDFLARE_API_KEY}` |
-| `weft_door_mailpit` | staging's front door only | `true` runs Mailpit and sends the door's mail to it; refused outside staging | `false` |
+| `weft_door_mailpit` | staging's front door, or the rack's while no workspace is a customer's | `true` runs Mailpit and sends the door's mail to it; refused outside staging and the rack, and on the rack once any workspace is not marked `weft_workspace_owner: operator` | `false` |
 | `weft_door_mailpit_ui_port` | optional | the VM loopback port Mailpit's UI is published on | `8025` |
 | `weft_door_mail_from` | optional | the address the door's emails are from | `no-reply@<weft_domain>` |
 
@@ -67,28 +67,35 @@ The fragment also reads each workspace's `weft_workspace_name`, `weft_board_bind
 `weft_board_port`, so a workspace's route changes when those do: run Deploy weft Front Door after
 a rename (the workspace README, "Renaming a workspace") or Stand Up weft Workspace for a new one.
 
-## Staging mail
+## The mail catcher
 
 From weft #541 on, the front door refuses to start without mail. Until the platform has a
-transactional provider, staging's door sets `weft_door_mailpit: true` and hands every message to
+transactional provider, a front door may set `weft_door_mailpit: true` and hand every message to
 [Mailpit](https://mailpit.axllent.org/), which keeps it and sends nothing: no relay or forward is
-configured, so no address typed into staging's sign-up form receives anything.
+configured, so no address typed into its sign-up form receives anything. Staging may always. The
+rack's front door may only while the operator's own people are its only users (Jacob, 2026-11-17,
+weft #332).
 
 - **Where it runs.** In the door's network namespace (`compose.mailpit.yml`), because the door
   speaks plain SMTP only to its own loopback. `deploy.sh` loads the overlay only when `.env` names
   the image, and stops and recreates the two together: podman will not remove a container another
   shares the namespace of. The messages do not survive a deploy.
-- **Never on the rack.** `tasks/weft-door-mail.yml` refuses `weft_door_mailpit` on any host whose
-  `weft_environment` is not `staging`, in a deploy and in a rollback, before anything stops. On the
-  rack it would be a door whose sign-ups and resets reach nobody.
+- **On the rack, never with a customer.** `tasks/weft-door-mail.yml` refuses `weft_door_mailpit`,
+  in a deploy and in a rollback, before anything stops: on a host whose `weft_environment` is
+  neither `staging` nor `rack`, and on the rack's door once any host in `weft_workspaces` is not
+  marked `weft_workspace_owner: operator`. An unmarked workspace counts as a customer's. It also
+  refuses to deploy or roll back a customer's workspace while the rack's door sets
+  `weft_door_mailpit`, so standing one up cannot slip past the door's check. A customer's sign-ups
+  and resets would otherwise reach nobody, and their links would sit in a catcher only the operator
+  reads. Before the first customer the door gets a real provider (OpenSpec task 6.3).
 - **The image** is `_weft_mailpit_image` in `playbooks/vars/weft.yml`, by digest; site-config may
   override it with `weft_mailpit_image`, which must also be a digest.
-- **Reading it.** The UI has no sign-in and shows working staging links, so it is published on the
-  door VM's loopback only. Reach it with an SSH tunnel through the door VM, then open
-  `http://localhost:8025/`:
+- **Reading it.** The UI has no sign-in and shows working sign-up and reset links, so it is
+  published on the door VM's loopback only, on staging and on the rack alike. Reach it with an SSH
+  tunnel through the door VM, then open `http://localhost:8025/`:
 
   ```sh
-  ssh -N -L 8025:127.0.0.1:8025 <deploy user>@<staging door VM>
+  ssh -N -L 8025:127.0.0.1:8025 <deploy user>@<front door VM>
   ```
 
 ## What OpenBao holds for it

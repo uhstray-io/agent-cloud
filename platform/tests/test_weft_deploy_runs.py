@@ -308,10 +308,10 @@ def test_a_release_before_the_header_deploys_when_no_proxy_is_trusted(host):
     assert not [line for line in _board_table(host) if line.startswith("client_address_header")]
 
 
-def _door_env(tmp_path: Path, extra: dict) -> tuple:
+def _door_env(tmp_path: Path, extra: dict, inventory: str = "localhost,") -> tuple:
     """The front door's real header and mail checks, then its real .env template, as weft-release.yml
     and the deploy run them: the checks first, the render only if they passed. `podman` is a script
-    that logs what it is asked, in engine.log."""
+    that logs what it is asked, in engine.log. `inventory` is where the rack's workspaces are."""
     env_file = tmp_path / "door.env"
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
@@ -326,7 +326,8 @@ def _door_env(tmp_path: Path, extra: dict) -> tuple:
         "tasks": [
             {"ansible.builtin.include_tasks": str(PLAYBOOKS / "tasks/weft-bind.yml"), "vars": {"_weft_role": "door"}},
             {"ansible.builtin.include_tasks": str(PLAYBOOKS / "tasks/weft-door-header.yml")},
-            {"ansible.builtin.include_tasks": str(PLAYBOOKS / "tasks/weft-door-mail.yml")},
+            {"ansible.builtin.include_tasks": str(PLAYBOOKS / "tasks/weft-door-mail.yml"),
+             "vars": {"_weft_role": "door"}},
             {"ansible.builtin.template": {"src": str(DOOR_DIR / "templates/door.env.j2"),
                                           "dest": str(env_file), "mode": "0600"}},
         ],
@@ -334,8 +335,22 @@ def _door_env(tmp_path: Path, extra: dict) -> tuple:
     playbook = tmp_path / "door.yml"
     playbook.write_text(yaml.safe_dump(play, width=10**6))
     env = {"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "ANSIBLE_NOCOLOR": "1"}
-    proc = run_playbook(playbook, tmp_path, env=env)
+    proc = run_playbook(playbook, tmp_path, inventory=inventory, env=env)
     return proc, env_file
+
+
+def _rack_inventory(tmp_path: Path, workspaces: dict, door: dict | None = None) -> Path:
+    """An inventory with the controller, the rack's workspaces ({host: its vars}) and, given `door`,
+    a rack front door with those vars. No play reaches any host but localhost."""
+    groups = {"weft_workspaces": {"hosts": workspaces}}
+    if door is not None:
+        groups["weft_door"] = {"hosts": {"weft-door-svc": door}}
+    inventory = {"all": {"hosts": {"localhost": {"ansible_connection": "local",
+                                                 "ansible_python_interpreter": "{{ ansible_playbook_python }}"}},
+                         "children": groups}}
+    path = tmp_path / "inventory.yml"
+    path.write_text(yaml.safe_dump(inventory))
+    return path
 
 
 def test_the_front_door_is_told_which_header_names_the_client_and_which_proxy_to_believe(tmp_path):
@@ -417,19 +432,97 @@ def test_staging_s_front_door_mails_a_catcher_on_its_own_loopback_that_sends_not
         "the catcher's UI has no sign-in and shows live links: the VM's loopback only\n" + str(door["ports"]))
 
 
-@pytest.mark.parametrize("environment", ["rack", ""], ids=["rack", "unset"])
-def test_a_front_door_outside_staging_with_the_mail_catcher_is_refused_before_its_env_is_rendered(
+@pytest.mark.parametrize("environment", ["", "production"], ids=["unset", "neither-staging-nor-rack"])
+def test_a_front_door_outside_staging_and_the_rack_with_the_mail_catcher_is_refused_before_its_env_is_rendered(
         tmp_path, environment):
-    # On the rack, a catcher is a front door whose every sign-up and reset reaches nobody, found by a
-    # customer who never gets their link. Refused with the checks, so the running door is untouched.
+    # A catcher is a front door whose every sign-up and reset reaches nobody. Only staging, and the
+    # rack before its first customer, may run one; anything else is refused with the checks, so the
+    # running door is untouched.
     extra = {**PROXIES, "weft_door_mailpit": True}
     if environment:
         extra["weft_environment"] = environment
     proc, env_file = _door_env(tmp_path, extra)
     assert proc.returncode != 0, proc.stdout[-4000:]
-    assert "Only staging may run it" in proc.stdout, proc.stdout[-4000:]
+    assert "may run it" in proc.stdout and "Nothing has changed" in proc.stdout, proc.stdout[-4000:]
     assert not env_file.exists(), "the .env was rendered after the refusal"
     assert not (tmp_path / "engine.log").exists(), "the catcher was pulled after the refusal"
+
+
+@pytest.mark.parametrize("workspaces", [{}, {"weft-ws-a": {"weft_workspace_owner": "operator"},
+                                             "weft-ws-b": {"weft_workspace_owner": "operator"}}],
+                         ids=["no-workspace-yet", "every-workspace-the-operator-s"])
+def test_the_rack_s_front_door_keeps_the_mail_catcher_while_no_workspace_is_a_customer_s(tmp_path, workspaces):
+    # Jacob, 2026-11-17 (weft #332): the rack's front door serves only the operator's own people until
+    # the first customer, so it may mail the catcher, published exactly as staging's is.
+    inventory = _rack_inventory(tmp_path, workspaces)
+    proc, env_file = _door_env(tmp_path, {**PROXIES, "weft_environment": "rack", "weft_door_mailpit": True}, inventory)
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    env = _env_lines(env_file)
+    assert "@sha256:" in env["WEFT_DOOR_MAILPIT_IMAGE"], env
+    assert f"pull {env['WEFT_DOOR_MAILPIT_IMAGE']}" in (tmp_path / "engine.log").read_text()
+
+
+@pytest.mark.parametrize("owner", [None, "customer", "Operator", ""], ids=["unmarked", "customer", "miscased", "empty"])
+def test_the_rack_s_front_door_is_refused_the_mail_catcher_once_a_workspace_is_a_customer_s(tmp_path, owner):
+    # A customer's sign-ups and resets would reach nobody, and their links would sit in a catcher only
+    # the operator reads. Fail closed: a workspace nobody marked as the operator's own is a customer's.
+    customer = {} if owner is None else {"weft_workspace_owner": owner}
+    inventory = _rack_inventory(tmp_path, {"weft-ws-a": {"weft_workspace_owner": "operator"}, "weft-ws-b": customer})
+    proc, env_file = _door_env(tmp_path, {**PROXIES, "weft_environment": "rack", "weft_door_mailpit": True}, inventory)
+    assert proc.returncode != 0, proc.stdout[-4000:]
+    assert "workspace weft-ws-b is not marked" in proc.stdout, proc.stdout[-4000:]
+    assert "workspace weft-ws-a is not marked" not in proc.stdout, "the operator's own workspace was refused"
+    assert not env_file.exists(), "the .env was rendered after the refusal"
+    assert not (tmp_path / "engine.log").exists(), "the catcher was pulled after the refusal"
+
+
+def test_staging_s_front_door_keeps_the_mail_catcher_whoever_the_rack_s_workspaces_belong_to(tmp_path):
+    inventory = _rack_inventory(tmp_path, {"weft-ws-b": {}})
+    proc, _ = _door_env(tmp_path, {**PROXIES, "weft_environment": "staging", "weft_door_mailpit": True}, inventory)
+    assert proc.returncode == 0, proc.stdout[-4000:]
+
+
+def _workspace_mail_check(tmp_path: Path, workspace: dict, door: dict | None):
+    """The real tasks/weft-door-mail.yml as tasks/weft-release.yml includes it for a workspace, with
+    localhost as the workspace and `door` as the rack's front door, then a stand-in for the stop."""
+    play = [{
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars_files": [str(PLAYBOOKS / "vars/weft.yml")],
+        "vars": {"_weft_role": "workspace", **workspace},
+        "tasks": [
+            {"ansible.builtin.include_tasks": str(PLAYBOOKS / "tasks/weft-door-mail.yml")},
+            {"name": "Stand-in for the stop", "ansible.builtin.copy": {
+                "content": "stopped\n", "dest": str(tmp_path / "stopped"), "mode": "0644"}},
+        ],
+    }]
+    playbook = tmp_path / "mail.yml"
+    playbook.write_text(yaml.safe_dump(play, width=10**6))
+    return run_playbook(playbook, tmp_path, inventory=_rack_inventory(tmp_path, {}, door), env={"ANSIBLE_NOCOLOR": "1"})
+
+
+@pytest.mark.parametrize("owner", [None, "customer"], ids=["unmarked", "customer"])
+def test_a_customer_s_workspace_is_refused_while_the_rack_s_front_door_has_the_mail_catcher(tmp_path, owner):
+    # Standing a customer's workspace up does not redeploy the front door, so the door's own check
+    # would not see it: the workspace's deploy refuses instead, before anything stops.
+    workspace = {"weft_environment": "rack"}
+    if owner is not None:
+        workspace["weft_workspace_owner"] = owner
+    proc = _workspace_mail_check(tmp_path, workspace, {"weft_door_mailpit": True})
+    assert proc.returncode != 0, proc.stdout[-4000:]
+    assert "counts as a customer's workspace" in proc.stdout and "weft-door-svc" in proc.stdout, proc.stdout[-4000:]
+    assert not (tmp_path / "stopped").exists(), "the stop was reached after the refusal"
+
+
+@pytest.mark.parametrize("workspace, door", [
+    ({"weft_environment": "rack", "weft_workspace_owner": "operator"}, {"weft_door_mailpit": True}),
+    ({"weft_environment": "rack"}, {}),
+    ({"weft_environment": "rack"}, None),
+    ({"weft_environment": "staging"}, {"weft_door_mailpit": True}),
+], ids=["the-operator-s-own", "door-without-the-catcher", "no-rack-door", "staging"])
+def test_a_workspace_deploys_when_the_mail_catcher_reaches_no_customer(tmp_path, workspace, door):
+    proc = _workspace_mail_check(tmp_path, workspace, door)
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert (tmp_path / "stopped").exists()
 
 
 def test_a_front_door_without_the_mail_catcher_renders_none_of_it(tmp_path):
