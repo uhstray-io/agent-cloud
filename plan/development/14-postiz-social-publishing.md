@@ -17,7 +17,7 @@ The service directory exists today as a **compose-only stub with hardcoded crede
 
 | # | Decision | Rationale |
 |---|---|---|
-| D1 | **Pin `v2.23.0` and run a TRIMMED Temporal** — `postiz` + `postiz-postgres` + `postiz-redis` + `temporal` + `temporal-postgresql` (5 containers) — six with the required search overlay since 2026-08-30 ([service README](../../platform/services/postiz/deployment/README.md)) | Postiz ≥ v2.12.0 executes scheduled publishing through Temporal (`apps/orchestrator` is a Temporal worker), so Temporal is not optional for the actual goal. Upstream's reference compose adds Elasticsearch, `temporal-ui`, and `temporal-admin-tools` — none is needed: `temporalio/auto-setup` runs standard visibility on its Postgres with `ENABLE_ES=false`. Pinning beats `:latest` (SOURCE-OF-TRUTH §1.2) |
+| D1 | **Pin `v2.23.0` and run a TRIMMED Temporal** — `postiz` + `postiz-postgres` + `postiz-redis` + `temporal` + `temporal-postgresql` (5 containers) — six with the required search overlay since 2026-08-30 ([service README](../../platform/services/postiz/deployment/README.md)) | Postiz ≥ v2.12.0 executes scheduled publishing through Temporal (`apps/orchestrator` is a Temporal worker), so Temporal is not optional for the actual goal. Upstream's reference compose adds Elasticsearch, `temporal-ui`, and `temporal-admin-tools` — none is needed: `temporalio/auto-setup` runs standard visibility on its Postgres with `ENABLE_ES=false`. **Superseded 2026-08-30:** the search node is required as of v2.23.0 (service README). Pinning beats `:latest` (SOURCE-OF-TRUTH §1.2) |
 | D2 | **Config via Option B** — app config in `config/postiz.env` bind-mounted at `/config/postiz.env`; compose *substitution* vars in a separate `.env` | Option B is the only variant where the 60+ provider secrets are never subject to compose `$`-interpolation (a `$` inside a client secret silently corrupts Option A/C). It also maps 1:1 onto OpenBao → Jinja2 → env-file, so no secret enters git |
 | D3 | **Native OIDC to Authentik** (`POSTIZ_GENERIC_OAUTH`), not Caddy forward_auth | Postiz ships a generic OIDC provider; Authentik is the platform IdP. Decisive factor: forward_auth would gate `/api/public/v1` too, breaking API-key calls unless every API path were exempted. In-app OIDC leaves the API path clean |
 | D5 | **Greenfield** — no data migrated from the `dev-test` instance | Nothing of value there; a fresh DB lets `manage-secrets` own a strong generated password instead of inheriting the upstream default `postiz-user:postiz-password` |
@@ -49,7 +49,8 @@ flowchart TD
         PZ["postiz :5000<br/>nginx: /api-&gt;3000, /-&gt;4200"]
         PZ --> PG[("postiz-postgres 17")]
         PZ --> RD[("postiz-redis 7.2")]
-        PZ -->|":7233 workflows"| TMP["temporal (auto-setup)<br/>ENABLE_ES=false"]
+        PZ -->|":7233 workflows"| TMP["temporal (auto-setup)"]
+        TMP --> ES[("search node<br/>(compose.search.yml, required)")]
         TMP --> TPG[("temporal-postgresql 16")]
     end
 
@@ -170,7 +171,7 @@ Pass 2 of the firewall (picking up the detected `:5000`) runs in Phase 3, after 
    here is an edit to `platform/infra/cloudflare/` plus an `Apply Cloudflare Tofu` run.
 4. **Operator: update the OAuth redirect/callback URIs at X and LinkedIn (member and company page)** to the new host; YouTube and Discord are deferred (2026-11-12). Automation cannot reach those consoles; connecting an account fails until this is done.
 5. `dev` → `main` promotion PR (merge commit), so prod Semaphore deploys from `main`.
-6. Prod Semaphore, in order: `Provision Seed Environment` (`seed_template=Seed Postiz Secrets`, `seed_variant=main`) → the read-only access check (`Seed Postiz Secrets` with `postiz_verify_access_only=true`) → seed the values with `scripts/postiz-seed-input.py` (encrypted inputs, one task, inputs removed; procedure in `platform/semaphore/README.md`) → `Check Secrets` → `Deploy Authentik` (applies the blueprint with prod URLs) → `Deploy Postiz` → verify 6 containers healthy → `Manage Caddy Sites` → verify `https://postiz.uhstray.io` serves → **`Apply Firewall` pass 2** (now detects `:5000` and allows it from the Caddy host only) → re-verify the public URL still serves and SSH still works.
+6. Prod Semaphore, in order: `Provision Seed Environment` (`seed_template=Seed Postiz Secrets`, `seed_variant=main`) → the read-only access check (`Seed Postiz Secrets` with `postiz_verify_access_only=true`) → seed the values with `scripts/postiz-seed-input.py` (encrypted inputs, one task, inputs removed; procedure in `platform/semaphore/README.md`) → `Check Secrets` → `Deploy Authentik` (applies the blueprint with prod URLs) → `Deploy Postiz` → verify 6 containers healthy → `Manage Caddy Sites` → verify the public URL (`postiz_public_url`) serves → **`Apply Firewall` pass 2** (now detects `:5000` and allows it from the Caddy host only) → re-verify the public URL still serves and SSH still works.
 7. First OIDC login on prod, then flip `postiz_disable_registration: true` and redeploy.
 
 ## Risks and open items

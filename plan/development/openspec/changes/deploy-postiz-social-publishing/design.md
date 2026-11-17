@@ -28,7 +28,7 @@ One further constraint is environmental: the target host currently accepts only 
 bootstrap password, and the platform's rule is to verify before hardening. The ordering
 in the migration plan is therefore load-bearing, not stylistic.
 
-**Scope (2026-11-12).** The first production rollout connects X and LinkedIn only, the member profile and the company page. YouTube and Discord stay seedable but are deferred, so their redirect URIs are registered when those platforms are connected. The automation client is the Activepieces-based `social-content-automation` flows, which call Postiz's public API with the key at `secret/services/postiz:postiz_api_key`; n8n was retired on 2026-11-10. Postiz keeps its own bundled Temporal, which runs Postiz's internal publish executor; the platform's automation tool does not replace it.
+**Scope (2026-11-12, AC-762).** The first production rollout connects X and LinkedIn only, the member profile and the company page. YouTube and Discord stay seedable but are deferred, so their redirect URIs are registered when those platforms are connected. The automation client is the Activepieces-based `social-content-automation` flows, which call Postiz's public API with the key at `secret/services/postiz:postiz_api_key`; n8n was retired on 2026-11-10. Postiz keeps its own bundled Temporal, which runs Postiz's internal publish executor; the platform's automation tool does not replace it.
 
 ## Goals / Non-Goals
 
@@ -75,7 +75,7 @@ We also decline to set the engine's dynamic-configuration path. Leaving it unset
 the engine's built-in defaults, which means no configuration file to ship or maintain.
 Upstream mounts a file whose contents are explicitly labelled development-only.
 
-**Search node restored (2026-08-30).** The search node is back, as an inventory-gated overlay in `compose.search.yml`, applied when the inventory sets `postiz_temporal_search: true`. As of Postiz v2.23.0 the backend registers more than three `Text` search attributes at startup, and SQL visibility refuses that, so the backend never binds (measured 2026-08-30). Every working deployment therefore runs six containers: the five in the base compose and the search node. The base compose keeps `ENABLE_ES=false`, so the trim stays inspectable, and the workflow UI and admin tooling stay out. The [service README](../../../../../platform/services/postiz/deployment/README.md) records the stack and the reason.
+**Search node restored (2026-08-30).** The search node is back, as an inventory-gated overlay in `compose.search.yml`, applied by default (`platform/playbooks/deploy-postiz.yml:201`); an inventory can opt out with `postiz_temporal_search: false`. As of Postiz v2.23.0 the backend registers more than three `Text` search attributes at startup, and SQL visibility refuses that, so the backend never binds (measured 2026-08-30). Every working deployment therefore runs six containers: the five in the base compose and the search node. The base compose keeps `ENABLE_ES=false`, so the trim stays inspectable, and the workflow UI and admin tooling stay out. The [service README](../../../../../platform/services/postiz/deployment/README.md) records the stack and the reason.
 
 ### Configure the application through a mounted config file, not compose environment
 

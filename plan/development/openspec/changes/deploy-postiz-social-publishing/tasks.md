@@ -372,16 +372,17 @@ protects 1.7, which is the only irreversible step in the change.
 - [x] 6.4 Operator prerequisite: create the public DNS record for the service hostname
       — ALREADY DONE: `postiz` is declared in the Cloudflare OpenTofu root's platform
       subdomain set and the record exists live (confirmed in a plan run). No action needed.
-- [ ] 6.5 Operator prerequisite: update the OAuth redirect destination at the first-rollout
-      platforms, X and LinkedIn (member and company page), to the new public host.
+- [ ] 6.5 Operator prerequisite: update the OAuth redirect destination at X and LinkedIn
+      (member and company page), the first-rollout platforms, to the new public host.
       Scope 2026-11-12 (AC-762): YouTube and Discord are deferred; register their redirects
       when they are connected.
       Account connection fails until this is done.
       EXACT PATHS (read from upstream v2.23.0 providers, hit live 2026-08-30 —
       LinkedIn refused the unregistered local URL with "redirect_uri does not
       match the registered value"): each console must register
-      <public-url>/integrations/social/<identifier>, i.e. /discord, /linkedin,
-      /linkedin-page, /x, /youtube. The /settings path from the plan doc is the
+      <public-url>/integrations/social/<identifier>. This rollout registers /x,
+      /linkedin and /linkedin-page; /discord and /youtube are added when those
+      platforms are connected. The /settings path from the plan doc is the
       Authentik OIDC sign-in callback, NOT the social-connect one.
 - [ ] 6.6 Open the promotion pull request to the production branch **only when explicitly
       asked** and merge it with a merge commit, so the orchestrator deploys from there
