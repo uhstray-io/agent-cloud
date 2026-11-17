@@ -460,9 +460,9 @@ fn strings_of<'a>(node: &'a Node, out: &mut Vec<&'a str>) {
 }
 
 /// The `_secret` expressions in a node (a task, or a vars value) that are not on
-/// [`DEBUG_SECRET_READS`]. Every occurrence in every string under the node is judged. The match stops at a space or a filter, so `| dict2items` is
-/// judged by its base, `_secret.json.data.data`, which is not allowed. The word boundaries keep
-/// `_bao_secret_id` and `_secret_id` out of it.
+/// [`DEBUG_SECRET_READS`]. Every occurrence in every string under the node is judged. The match
+/// stops at a space or a filter, so `| dict2items` is judged by its base, `_secret.json.data.data`,
+/// which is not allowed. The word boundaries keep `_bao_secret_id` and `_secret_id` out of it.
 fn undeclared_secret_reads(node: &Node) -> Vec<String> {
     let mut strings = Vec::new();
     strings_of(node, &mut strings);
