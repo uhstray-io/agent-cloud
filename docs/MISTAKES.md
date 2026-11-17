@@ -5760,7 +5760,7 @@ for its in-flight work first. Say "checked" only about the property that was che
 
 **Occurrence 2 — 2026-11-16.** Brief 05 handed over two fixes that were already merged on `dev` (`90a6092b`, `e8f4d50a`), taken from Plane item text written before they landed. Why the rule did not fire: the brief was built from the item's description, not from the git log of `dev` for the paths it names.
 
-**Occurrence 3 — 2026-11-16.** Brief 02's AC-901 section was written at 22:56 EST and was not re-checked after operator decision 14, made at 23:22, moved AC-739 to AC-741 and to v0.18.0. PR #1177 opened stating the false milestone in four places. The coordinator caught it when it read the PR diff, and `b7b4f695` corrected it. Why the rule did not fire: a brief is a description written at one time, and nothing marks which base and which decisions it was written against.
+**Occurrence 3 — 2026-11-16.** Brief 02's AC-901 section was written at 22:56 EST and was not re-checked after operator decision 14 (23:22) moved AC-739 to AC-741 to v0.18.0. PR #1177 opened stating the false milestone in four places. The coordinator caught it when it read the PR diff, and `b7b4f695` corrected it. Why the rule did not fire: a brief is a description written at one time, and nothing marks which base and which decisions it was written against.
 
 Guard (count 3): each batch brief records the base SHA and the last index decision it was written against. The owner's first step compares both with the current state and re-reads every fact the brief touches. This is still convention, but a stale brief becomes visible.
 
