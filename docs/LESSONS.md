@@ -39,3 +39,9 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1196 (AC-961, AC-963).
 - **DERIVED:** A Rust test helper that replaces a Python or BATS one names in its doc every way its output differs from the original, found by running both on the same input; "same as the Python tests" is never written without that run. Python's `text=True` (`harness_sandbox.py`'s `run`) turns `\r\n` and a lone `\r` into `\n` and raises on bytes the locale's encoding cannot decode, so a port that assumes the two agree passes or fails on line endings alone.
 - **APPLIES TO:** helpers in `platform/tests/src/` that stand in for a Python fixture or a BATS helper, and the port briefs that cite them.
+
+### L-007 · 2026-11-18 · tests
+
+- **ACCEPTED:** #1186 (AC-949).
+- **DERIVED:** On macOS (Darwin 25.5, 2026-11-18), `mktemp -d` ignores TMPDIR, both with no template and with `-t`: the directory is made under the per-user temporary directory. A test that points a script's temporary files at a scratch directory through TMPDIR puts a stand-in `mktemp` first on the script's PATH, one that passes an explicit template under `$TMPDIR` (`FAKE_MKTEMP` in `suite/pre_push_uv.rs`). Without it, a check that the script cleaned up reads a directory the script never used, and passes.
+- **APPLIES TO:** port and hook tests that run a shell script under a scratch TMPDIR, such as `.githooks/pre-push` and the scripts it calls.
