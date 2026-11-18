@@ -74,7 +74,8 @@ const SHA: &str = "1111111111111111111111111111111111111111";
 
 /// Fake `bats`: logs the first PATH entry it ran under and, on request, its arguments, its start,
 /// its pids, the scratch directory it saw and a child process. Then it waits for FAKE_BATS_HOLD
-/// and exits FAKE_BATS_RC.
+/// and, with FAKE_BATS_RELEASE, for the fake pytest's release (5 s at most), and exits
+/// FAKE_BATS_RC.
 const FAKE_BATS: &str = r#"#!/usr/bin/env sh
 echo "${PATH%%:*}" >> "$FAKE_BATS_LOG"
 [ -n "${FAKE_BATS_ARGS:-}" ] && echo "$*" > "$FAKE_BATS_ARGS"
@@ -91,12 +92,21 @@ if [ -n "${FAKE_BATS_HOLD:-}" ]; then
   i=0
   while [ ! -e "$FAKE_BATS_HOLD" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
 fi
+# FAKE_BATS_RELEASE: the overlap handshake. Wait for the fake pytest to create it, then remove
+# FAKE_BATS_MARK, so the mark exists only while this fake runs. Bounded well inside the runner's
+# 30 s, so a hook that runs the suites one after the other leaves nothing running.
+if [ -n "${FAKE_BATS_RELEASE:-}" ]; then
+  i=0
+  while [ ! -e "$FAKE_BATS_RELEASE" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  rm -f "$FAKE_BATS_MARK"
+fi
 exit "${FAKE_BATS_RC:-0}"
 "#;
 
 /// Fake python: logs its own path and the first PATH entry for every call. The one pytest run
 /// also logs the fast lane's environment, copies the changed-path list it was given, waits for
-/// FAKE_WAIT, then prints FAKE_COLLECT_OUT and exits FAKE_COLLECT_RC. Every other call succeeds.
+/// FAKE_WAIT (and, finding it, creates FAKE_BATS_RELEASE), then prints FAKE_COLLECT_OUT and exits
+/// FAKE_COLLECT_RC. Every other call succeeds.
 const FAKE_PYTHON: &str = r#"#!/usr/bin/env sh
 echo "$0 first-path=${PATH%%:*}" >> "$FAKE_PY_LOG"
 case "$*" in
@@ -109,7 +119,10 @@ case "$*" in
     if [ -n "${FAKE_WAIT:-}" ]; then
       i=0
       while [ ! -e "$FAKE_WAIT" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
-      [ -e "$FAKE_WAIT" ] && echo "bats-started-during-pytest" >> "$FAKE_PY_LOG"
+      if [ -e "$FAKE_WAIT" ]; then
+        echo "bats-started-during-pytest" >> "$FAKE_PY_LOG"
+        [ -n "${FAKE_BATS_RELEASE:-}" ] && : > "$FAKE_BATS_RELEASE"
+      fi
     fi
     printf '%s\n' "${FAKE_COLLECT_OUT:-}"
     exit "${FAKE_COLLECT_RC:-0}" ;;
@@ -971,9 +984,12 @@ fn without_gnu_parallel_bats_runs_serially_with_a_note() {
 
 #[test]
 fn bats_is_already_running_while_pytest_runs() {
-    // Arrange
+    // Arrange: a two-way handshake. The fake bats holds its mark until the fake pytest has seen
+    // it and released it, then removes the mark, so a hook that runs the suites one after the
+    // other leaves pytest no mark to see (the original BATS test's mark outlived bats).
     let ctx = Ctx::new();
     let mark = ctx.t().join("bats.started");
+    let release = ctx.t().join("bats.release");
 
     // Act
     let run = ctx.push(
@@ -981,6 +997,7 @@ fn bats_is_already_running_while_pytest_runs() {
         &[
             ("FAKE_BATS_MARK", mark.to_str().expect("a UTF-8 path")),
             ("FAKE_WAIT", mark.to_str().expect("a UTF-8 path")),
+            ("FAKE_BATS_RELEASE", release.to_str().expect("a UTF-8 path")),
         ],
     );
 
