@@ -459,10 +459,12 @@ def _ceph_capacity(config, reads):
                           "total_gib": _gib(entry["total"]) if entry["complete"] else None,
                           "used_gib": _gib(entry["used"]) if entry["complete"] else None,
                           "percent_used": round(100 * entry["used"] / entry["total"], 1) if full else None})
-        known = [row for row in osds if row["percent_used"] is not None]
+        # Chosen on the unrounded fill, so two OSDs that both print as 75.0 still pick the fuller one.
+        known = [(float(leaf["percent_used"]), leaf.get("id"), host) for leaf, host in leaves
+                 if leaf.get("percent_used") is not None]
         if known:
-            top = max(known, key=lambda row: (row["percent_used"], -row["osd"]))
-            fullest_osd = {"osd": top["osd"], "host": top["host"], "percent_used": top["percent_used"]}
+            percent, osd, host = max(known, key=lambda k: (k[0], -k[1]))
+            fullest_osd = {"osd": osd, "host": host, "percent_used": round(percent, 1)}
     if status_read.get("status") == 200:
         data = (status_read.get("json") or {}).get("data")
         if not isinstance(data, dict):

@@ -680,6 +680,44 @@ fn an_osd_without_usage_reports_its_fill_as_null_not_zero_and_its_host_percent_n
 }
 
 #[test]
+fn the_fullest_osd_is_chosen_by_its_unrounded_fill() {
+    // Arrange: osd.0 at 75.01 and osd.1 at 75.04 both print as 75.0; osd.1 is the fuller one.
+    let mut tree = ceph_tree();
+    tree["root"]["children"][0]["children"][0]["percent_used"] = json!(75.01);
+    tree["root"]["children"][0]["children"][1]["percent_used"] = json!(75.04);
+    let payload = capacity_payload(osd_read(200, tree), status_read(200, ceph_status()));
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: osd.1 is chosen, not the lower id, and its fill is printed rounded.
+    assert_eq!(
+        out["ceph_capacity"]["fullest_osd"],
+        json!({"osd": 1, "host": "pve1", "percent_used": 75.0}),
+        "{out}"
+    );
+}
+
+#[test]
+fn osds_with_the_same_unrounded_fill_give_the_fullest_to_the_lower_id() {
+    // Arrange: osd.0 and osd.1 both at exactly 75.04.
+    let mut tree = ceph_tree();
+    tree["root"]["children"][0]["children"][0]["percent_used"] = json!(75.04);
+    tree["root"]["children"][0]["children"][1]["percent_used"] = json!(75.04);
+    let payload = capacity_payload(osd_read(200, tree), status_read(200, ceph_status()));
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: the tie goes to osd.0.
+    assert_eq!(
+        out["ceph_capacity"]["fullest_osd"],
+        json!({"osd": 0, "host": "pve1", "percent_used": 75.0}),
+        "{out}"
+    );
+}
+
+#[test]
 fn a_403_on_the_osd_tree_is_unavailable_with_its_privilege_and_the_health_still_reads() {
     // Arrange: the OSD tree answers 403; the cluster status answers 200.
     let payload = capacity_payload(osd_read(403, Value::Null), status_read(200, ceph_status()));
