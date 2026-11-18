@@ -39,7 +39,7 @@ and why.
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | 1 | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | 1 | Test |
 | 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | 1 | OPA branch rule (`agent_actions.rego`; inert until callers send fields) |
-| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused — **x2** (2026-11-15: called CodeRabbit "paused" on #1152 from `gh pr checks`' `skipping` bucket, to the operator and in a dismissal message; the check's own title read "Review rate limited", and reviews were already on the PR) | Unverified claim | 2 | Convention |
+| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused (2026-11-15: called CodeRabbit "paused" on #1152 from `gh pr checks`' `skipping` bucket, to the operator and in a dismissal message; the check's own title read "Review rate limited", and reviews were already on the PR; 2026-11-17: told the coordinator and the operator CodeRabbit was skipping #1206 from the same bucket, after a push, without listing reviews; it had requested changes on the previous head) — **x3** | Unverified claim | 3 | Convention; guard proposed in occurrence 3 |
 | 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | 1 | Test (synthetic OpenBao, mutation-proven)  |
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
@@ -755,7 +755,7 @@ indexes, and the regression asserts a sentinel argument is absent from output.
 
 ### 1.10 Reported that a review had started, from a keyword match on a comment I never read
 
-**Occurrences: 2** — 2026-09-23, 2026-11-15
+**Occurrences: 3** — 2026-09-23, 2026-11-15, 2026-11-17
 
 **What happened.** On 2026-09-23 at 15:13Z I posted review requests to CodeRabbit on four
 PRs and sorted its replies with a `jq` keyword test. My patterns for a started review
@@ -790,6 +790,23 @@ classifier's label: `gh pr checks` sorts check conclusions into buckets exactly 
 test sorted replies. The same rule covers it.
 Before saying a reviewer will or will not act, read the check run's title and summary and list the
 reviewer's reviews on the pull request, with their commit and time.
+
+**Occurrence 3 — 2026-11-17.** On #1206 I told the batch coordinator at 21:26 EST that CodeRabbit was
+skipping head `ed8606d6`, and at 21:46, after my push of `011a8003`, told the operator it had skipped
+every head since `9c598610`, both from `gh pr checks` listing its check as `skipping`. I did not list
+its reviews before the second report. CodeRabbit had
+reviewed the previous head `ed8606d6` at 21:38:51 EST (review 5950022152, CHANGES_REQUESTED, two new
+threads) while I was refreshing the branch, and had resolved its four older threads itself. The
+coordinator found the review; it became the pull request's fourth return. The rule did not fire because
+I had read the reviews earlier in the session and carried that reading across a push, instead of
+listing them again after it: occurrence 2's rule says to list them, not when. A reviewer's state is
+read again after every push and before every report that names it.
+
+**Proposed guard (count of 3).** The merge guard already reads outstanding change requests. Add a
+read-only `--reviews` mode to `scripts/merge-when-green.py` that prints every review on the pull request
+(reviewer, state, commit, submitted time) and each review check run's title and summary for the head,
+and make that output the only source an owner session quotes when it reports a reviewer's state in a
+batch report ("row green", a return, a hold).
 
 ### 1.14 A fact about the private inventory read from the public template
 

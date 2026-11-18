@@ -198,10 +198,9 @@
       no_log: true
       check_mode: false
 
-    - name: List the archives to delete
-      ansible.builtin.command:
-        argv: [python3, "{{ _cleanup }}", list]
-        stdin: >-
+    - name: Collect the list's input
+      ansible.builtin.set_fact:
+        _list_input: >-
           {{ {'nodes': _cluster_reads.results[0].json.data,
               'vms': _cluster_reads.results[2].json.data,
               'jobs': _jobs_read.json.data,
@@ -210,7 +209,13 @@
               'content_reads': _content_reads.results,
               'pairs': proxmox_backup_cleanup_pairs | default(none),
               'confirm_delete': confirm_delete | default('') | string,
-              'check_mode': ansible_check_mode} | to_json }}
+              'check_mode': ansible_check_mode} }}
+      no_log: true
+
+    - name: List the archives to delete
+      ansible.builtin.command:
+        argv: [python3, "{{ _cleanup }}", list]
+        stdin: "{{ _list_input | to_json }}"
       register: _list_run
       failed_when: false
       changed_when: false
@@ -266,6 +271,48 @@
     - name: Delete the listed archives
       when: _list.delete and not ansible_check_mode
       block:
+        # The jobs and guests were read before the storages, the privilege reads and the confirm. Both are
+        # read again and the list rebuilt by the same code: a job enabled since that covers a declared pair
+        # refuses the run naming the job, and a guest that came back changes the sha256. Proxmox holds no
+        # lock on its job list, so this narrows the window to the seconds before the first DELETE; it does
+        # not close it.
+        - name: Read the backup jobs and guests again before deleting
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/{{ item }}"
+            headers:
+              Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+          loop: [cluster/backup, "cluster/resources?type=vm"]
+          register: _rereads
+          no_log: true
+
+        - name: Require the second job and guest reads
+          ansible.builtin.assert:
+            that: _rereads.results | map(attribute='status') | list == [200, 200]
+            fail_msg: "Cleanup refused before deleting: the second read of the backup jobs or guests did not answer 200."
+
+        - name: Rebuild the list from the second reads
+          ansible.builtin.command:
+            argv: [python3, "{{ _cleanup }}", list]
+            stdin: >-
+              {{ _list_input | combine({'jobs': _rereads.results[0].json.data,
+                                        'vms': _rereads.results[1].json.data}) | to_json }}
+          register: _relist_run
+          failed_when: false
+          changed_when: false
+          no_log: true
+
+        # An empty rebuilt list passes the helper's own confirm check, so the sha256 is compared here.
+        - name: Require the same list before deleting
+          ansible.builtin.assert:
+            that:
+              - _relist_run.rc == 0
+              - (_relist_run.stdout | from_json).sha256 == _list.sha256
+              - (_relist_run.stdout | from_json).pools == _list.pools
+            fail_msg: "Cleanup refused before deleting: {{ (_relist_run.stdout | from_json).refusal
+              | default('the backup jobs or guests changed since the list was confirmed') }}"
+
+        # failed_when false: one refused DELETE must not skip settling the ones Proxmox accepted. The
+        # statuses are checked after the read-back below.
         - name: Delete each listed archive
           ansible.builtin.uri:
             url: >-
@@ -281,6 +328,7 @@
           loop_control:
             label: "{{ item.volid }}"
           register: _delete_runs
+          failed_when: false
           no_log: true
 
         # A delete still running after `delay` answers with its task id (UPID); one that finished answers
@@ -291,7 +339,7 @@
             status_code: 200
             headers:
               Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
-          loop: "{{ _delete_runs.results | selectattr('json.data') | list }}"
+          loop: "{{ _delete_runs.results | selectattr('status', 'equalto', 200) | selectattr('json.data') | list }}"
           register: _task_polls
           until: _task_polls.json.data.status == 'stopped'
           retries: 60
@@ -303,11 +351,6 @@
             _delete_exits: "{{ _task_polls.results | default([]) | map(attribute='json') | map(attribute='data')
               | map(attribute='exitstatus') | list }}"
           no_log: true
-
-        - name: Require every delete task to end OK
-          ansible.builtin.assert:
-            that: _delete_exits | reject('equalto', 'OK') | list | length == 0
-            fail_msg: "{{ _delete_exits | reject('equalto', 'OK') | list | length }} delete task(s) did not end OK."
 
         - name: Re-read the backup volumes on each backup storage
           ansible.builtin.uri:
@@ -332,6 +375,20 @@
           changed_when: false
           check_mode: false
           no_log: true
+
+        # Checked only now, after the read-back, so a refused DELETE or a failed task still leaves the accepted
+        # deletes settled and read back. The refused DELETE comes first: it is the original failure.
+        - name: Require every DELETE to be accepted
+          ansible.builtin.assert:
+            that: _delete_runs.results | rejectattr('status', 'equalto', 200) | list | length == 0
+            fail_msg: "{{ _delete_runs.results | rejectattr('status', 'equalto', 200) | list | length }} DELETE
+              request(s) were not accepted. Read-back: {{ (_verify_run.stdout | from_json).refusal
+              | default('every other listed archive is gone') }}"
+
+        - name: Require every delete task to end OK
+          ansible.builtin.assert:
+            that: _delete_exits | reject('equalto', 'OK') | list | length == 0
+            fail_msg: "{{ _delete_exits | reject('equalto', 'OK') | list | length }} delete task(s) did not end OK."
 
         - name: Require the verified result
           ansible.builtin.assert:
