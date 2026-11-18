@@ -38,8 +38,9 @@
 //! - the two identical `tasks/place-monorepo.yml` assertions of the deploy-playbook test are one.
 //!
 //! The private `task_block` and `assert_precedes` are thin wrappers that read a file by path and
-//! call `agent_cloud_tests::text`'s; `#[track_caller]` on each wrapper puts a failure at the test
-//! line, which names the file (the shared panics do not).
+//! call `agent_cloud_tests::text`'s. The shared panics name no file, so these wrappers and
+//! `assert_guard_precedes_first_uri` carry `#[track_caller]`: a failure points at the test's call
+//! line, whose file constant names the file.
 //! Helpers this file keeps privately until the batch's shared-support PR S7 lands:
 //! `assert_contains`/`refute_contains` and `assert_in`/`refute_in`.
 //!
@@ -200,7 +201,8 @@ fn assert_precedes(rel: &str, a: &str, b: &str) {
     text::assert_precedes(&text::read(rel), a, b);
 }
 
-/// The transport guard runs before the first request that carries a credential.
+/// The transport guard runs before the first request that carries a credential. `#[track_caller]`:
+/// a failure points at the caller, which names the playbook.
 #[track_caller]
 fn assert_guard_precedes_first_uri(rel: &str) {
     assert_precedes(
