@@ -376,8 +376,8 @@
           check_mode: false
           no_log: true
 
-        # Checked only now, after the read-back, so a refused DELETE or a failed task still leaves the accepted
-        # deletes settled and read back. The refused DELETE comes first: it is the original failure.
+        # Checked only now, after the read-back, so a refused DELETE, or a delete task that ended not OK, still
+        # leaves the accepted deletes read back. The refused DELETE comes first: it is the original failure.
         - name: Require every DELETE to be accepted
           ansible.builtin.assert:
             that: _delete_runs.results | rejectattr('status', 'equalto', 200) | list | length == 0

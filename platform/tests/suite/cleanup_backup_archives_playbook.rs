@@ -14,7 +14,7 @@
 //! runs it through ansible-playbook on localhost. The helper's logic is covered by the cli tier
 //! (`suite/cleanup_backup_archives.rs`).
 
-use agent_cloud_tests::{playbook, process, text};
+use agent_cloud_tests::{playbook, process, repo, text};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -254,7 +254,7 @@ fn block_task(play: &Value, name: &str) -> Value {
 fn first_list(input: &Value) -> Value {
     let home = TempDir::new().unwrap();
     let out = process::scrubbed("python3", home.path())
-        .args(["-I", playbook_repo_path(HELPER).as_str(), "list"])
+        .args(["-I", helper().as_str(), "list"])
         .write_stdin(input.to_string())
         .assert()
         .success()
@@ -263,8 +263,9 @@ fn first_list(input: &Value) -> Value {
     serde_json::from_slice(&out.stdout).expect("JSON list")
 }
 
-fn playbook_repo_path(rel: &str) -> String {
-    agent_cloud_tests::repo::path(rel).display().to_string()
+/// The helper's path, as the play's `_cleanup` names it.
+fn helper() -> String {
+    repo::path(HELPER).display().to_string()
 }
 
 fn backup(vmid: i64) -> Value {
@@ -311,7 +312,7 @@ fn the_list_is_rebuilt_from_fresh_job_and_guest_reads_before_any_delete() {
             block_task(&play, "Require the same list before deleting"),
         ]
     };
-    let vars = |input: &Value, list: &Value| json!({"_cleanup": playbook_repo_path(HELPER), "_list_input": input, "_list": list});
+    let vars = |input: &Value, list: &Value| json!({"_cleanup": helper(), "_list_input": input, "_list": list});
     let web = json!([{"vmid": 100, "name": "web", "node": "n1"}]);
     let (declared, declared_list) = confirmed(
         vec![backup(100)],
@@ -329,7 +330,7 @@ fn the_list_is_rebuilt_from_fresh_job_and_guest_reads_before_any_delete() {
         false,
     );
     let job_enabled = run(
-        tasks(rereads(job, web)),
+        tasks(rereads(job, web.clone())),
         vars(&declared, &declared_list),
         None,
         false,
@@ -343,10 +344,7 @@ fn the_list_is_rebuilt_from_fresh_job_and_guest_reads_before_any_delete() {
     let pool_job =
         json!([{"id": "backup-9", "type": "vzdump", "storage": "backups", "pool": "p1"}]);
     let pool_added = run(
-        tasks(rereads(
-            pool_job,
-            json!([{"vmid": 100, "name": "web", "node": "n1"}]),
-        )),
+        tasks(rereads(pool_job, web)),
         vars(&declared, &declared_list),
         None,
         false,
@@ -394,9 +392,9 @@ fn a_refused_delete_still_reaches_the_read_back_and_the_run_ends_red() {
         .collect();
     let (input, list) = confirmed(vec![backup(900)], json!([]));
     let vars = json!({
-        "_cleanup": playbook_repo_path(HELPER), "_list": list, "_pve_host": "http://127.0.0.1:9",
+        "_cleanup": helper(), "_list": list, "_pve_host": "http://127.0.0.1:9",
         "_pve_token_id": "t", "_pve_secret": "s",
-        "_content_reads": {"results": input["content_reads"]}, "_plan": input["plan"]
+        "_content_reads": {"results": input["content_reads"]}
     });
 
     // Act
