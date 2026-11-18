@@ -158,9 +158,7 @@ fn write_inventory(dir: &Path, address: &str, opts: &RunOpts) -> PathBuf {
             .unwrap_or(address);
         let mut vars = Map::new();
         vars.insert("openbao_addr".to_owned(), json!(declared));
-        for (name, value) in &opts.inventory_vars {
-            vars.insert(name.clone(), value.clone());
-        }
+        vars.extend(opts.inventory_vars.clone());
         json!({"vars": vars})
     };
     playbook::write(dir, "inventory.json", &json!({"all": group}))
@@ -204,9 +202,7 @@ pub fn run_seed(
 ) -> (i32, String) {
     let inventory = write_inventory(dir, address, opts);
     let mut extra = role();
-    for (name, value) in &opts.extra {
-        extra.insert(name.clone(), value.clone());
-    }
+    extra.extend(opts.extra.clone());
     let extra_json =
         serde_json::to_string(&Value::Object(extra)).expect("a JSON object serializes");
 
@@ -225,11 +221,7 @@ pub fn run_seed(
         cmd.env("OPENBAO_ADDR", addr);
     }
     let out = process::run(&mut cmd);
-    let output = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let output = process::output_text(&out);
 
     let inputs: Vec<(&str, &str)> = opts
         .inputs
