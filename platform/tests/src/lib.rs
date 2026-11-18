@@ -9,7 +9,8 @@
 //! - [`lanes`]: which tests a lane runs, from `areas.yml` and the changed paths (the
 //!   `testsel` binary and `lane.sh` use it);
 //! - [`playbook`]: repository playbooks lifted to JSON with YAML 1.1 types, for running a play's
-//!   tasks through [`process::ansible_playbook`] (AC-943).
+//!   tasks through [`process::ansible_playbook`] (AC-943);
+//! - [`seed`]: the fake OpenBao and the seed-playbook runner of `seed_harness.py` (AC-950).
 
 pub mod http;
 pub mod lanes;
@@ -17,6 +18,7 @@ pub mod text;
 
 pub mod forgeries;
 pub mod playbook;
+pub mod seed;
 
 pub mod yaml {
     //! YAML as PyYAML's `SafeLoader` reads it.
