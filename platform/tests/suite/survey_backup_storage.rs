@@ -497,6 +497,38 @@ fn the_planner_reads_no_disabled_storage_even_when_its_status_row_says_active() 
 }
 
 #[test]
+fn a_content_read_or_prune_preview_that_answers_200_without_a_list_refuses_the_survey() {
+    // Arrange: one storage whose content read, or whose one prune preview, answers 200 with no data list.
+    let (plan, content) = cephfs_read("backups", 0);
+    let prune = json!({"item": [{"node": "n1", "storage": "backups"}, "keep-last=1"], "status": 200,
+                       "json": {"data": []}});
+    for (what, mut content, mut prune) in [
+        ("content", content.clone(), prune.clone()),
+        ("prune preview", content, prune),
+    ] {
+        let target = if what == "content" {
+            &mut content
+        } else {
+            &mut prune
+        };
+        target["json"] = json!({"data": null});
+        let payload = json!({
+            "plan": {"reads": [plan.clone()]}, "vms": [], "storage_config": [], "jobs": [],
+            "content_reads": [content], "prune_reads": [prune]
+        });
+
+        // Act
+        let text = refusal(&payload);
+
+        // Assert
+        assert!(
+            text.contains(&format!("no {what} list for storage backups")),
+            "{text}"
+        );
+    }
+}
+
+#[test]
 fn a_disk_listing_that_answers_200_without_a_list_refuses_the_survey() {
     // Arrange: n1 answers 200 with no data list. That is not a disk list, so nothing is summarized.
     let payload = json!({

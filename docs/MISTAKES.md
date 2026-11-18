@@ -39,13 +39,13 @@ and why.
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | 1 | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | 1 | Test |
 | 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | 1 | OPA branch rule (`agent_actions.rego`; inert until callers send fields) |
-| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused — **x2** (2026-11-15: called CodeRabbit "paused" on #1152 from `gh pr checks`' `skipping` bucket, to the operator and in a dismissal message; the check's own title read "Review rate limited", and reviews were already on the PR) | Unverified claim | 2 | Convention |
+| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused (2026-11-15: called CodeRabbit "paused" on #1152 from `gh pr checks`' `skipping` bucket, to the operator and in a dismissal message; the check's own title read "Review rate limited", and reviews were already on the PR; 2026-11-17: told the coordinator and the operator CodeRabbit was skipping #1206 from the same bucket, after a push, without listing reviews; it had requested changes on the previous head) — **x3** | Unverified claim | 3 | Convention; guard proposed in occurrence 3 |
 | 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | 1 | Test (synthetic OpenBao, mutation-proven)  |
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
 | 1.15 | **x4** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars (x4: a plan generalised "the guard renders no value" from one name; the guard references three) | Unverified claim | 4 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries, or use `forgeries.by_name` with an assertion of the run-start guard's message; the guard's own test proves it never renders a forged value) |
-| 1.16 | **x4** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41) | Unverified claim | 4 | Convention; mechanical check proposed (count ≥ 3) |
+| 1.16 | **x6** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41; x5: a review reply said every failure message carried the read-back result; one did not; x6: the correction of that reply said only the last one did; three did) | Unverified claim | 6 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6; widened by 1.35, 1.37) | Unverified claim | 1 | Convention |
@@ -53,7 +53,7 @@ and why.
 | 1.21 | **x5** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe; x4: said production skynet launches through the launch gate from probes that only reached and authenticated to it) | Unverified claim | 5 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed; skynet-client launch probe proposed; OPA loaded-policy verify proposed (AC-845) |
 | 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
 | 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
-| 1.24 | Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB | Unverified claim | 1 | Convention |
+| 1.24 | **x2** — Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB (x2: told the operator a backup retention fits a CephFS storage's total, which is used space plus what Ceph can still place) | Unverified claim | 2 | Convention |
 | 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there (widened by 1.28) | Unverified claim | 1 | Convention |
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
@@ -168,7 +168,7 @@ and why.
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | `scripts/merge-when-green.py` (`check_dev_drift`) + test |
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, and six launch-gate PRs, with no pass or a pass on an earlier head | Process | 5 | Superseded by 5.25 |
-| 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on — **x3** (2026-11-16 to 2026-11-17: statuses on merge-only and hand-checked heads across twelve PRs; four merged on them) — **x4** (2026-11-17 to 2026-11-18: statuses from Agent dispatches, not Skill-tool runs, on five PRs; four merged) | Process | 4 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test; per-head pass receipt proposed (count 3) |
+| 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on — **x3** (2026-11-16 to 2026-11-17: statuses on merge-only and hand-checked heads across twelve PRs; four merged on them — **x4** (2026-11-18): #1206's statuses on `750f7000` came from agents dispatched by hand, not runs of the two skills) — **x5** (2026-11-17 to 2026-11-18: statuses from Agent dispatches, not Skill-tool runs, on five PRs; four merged) | Process | 5 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test; per-head pass receipt proposed (count 3) |
 | 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories (2026-11-16: also `--budget-acknowledged`) | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
 | 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
 | 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
@@ -177,7 +177,8 @@ and why.
 | 5.31 | A peer session allowed `SKIP_TESTS=1` for docs-only pushes; two owners retried a denied compound command as a standalone push | Process | 1 | Convention (deny rule for the skipped push proposed; operator's decision) |
 | 5.32 | Ran `git branch -D` on a scratch branch the brief said to keep if `git branch -d` refused; recreated from the reflog | Process | 1 | Convention (deny rule for forced branch deletes proposed; operator's decision) |
 | 5.33 | Refreshed a PR over a newly landed area rule and checked it only where the rule's own test looks; the playbook-tier area omitted the filter plugins `ansible.cfg` loads | Process | 1 | Convention until S9 (AC-977) part C lands |
-| 5.34 | Skipped a skill-pass finding that a port test held wider rows than its original, on a comment saying the filter reads only tag and spec; carried as decided until the third return | Process | 1 | Convention |
+| 5.34 | Fixed a destructive block's failure paths one review finding at a time on #1206; returns 4 and 5 found four more paths in the same block | Process | 1 | Convention (failure table accepted for later briefs, 2026-11-18) |
+| 5.35 | Skipped a skill-pass finding that a port test held wider rows than its original, on a comment saying the filter reads only tag and spec; carried as decided until the third return | Process | 1 | Convention |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -757,7 +758,7 @@ indexes, and the regression asserts a sentinel argument is absent from output.
 
 ### 1.10 Reported that a review had started, from a keyword match on a comment I never read
 
-**Occurrences: 2** — 2026-09-23, 2026-11-15
+**Occurrences: 3** — 2026-09-23, 2026-11-15, 2026-11-17
 
 **What happened.** On 2026-09-23 at 15:13Z I posted review requests to CodeRabbit on four
 PRs and sorted its replies with a `jq` keyword test. My patterns for a started review
@@ -792,6 +793,23 @@ classifier's label: `gh pr checks` sorts check conclusions into buckets exactly 
 test sorted replies. The same rule covers it.
 Before saying a reviewer will or will not act, read the check run's title and summary and list the
 reviewer's reviews on the pull request, with their commit and time.
+
+**Occurrence 3 — 2026-11-17.** On #1206 I told the batch coordinator at 21:26 EST that CodeRabbit was
+skipping head `ed8606d6`, and at 21:46, after my push of `011a8003`, told the operator it had skipped
+every head since `9c598610`, both from `gh pr checks` listing its check as `skipping`. I did not list
+its reviews before the second report. CodeRabbit had
+reviewed the previous head `ed8606d6` at 21:38:51 EST (review 5950022152, CHANGES_REQUESTED, two new
+threads) while I was refreshing the branch, and had resolved its four older threads itself. The
+coordinator found the review; it became the pull request's fourth return. The rule did not fire because
+I had read the reviews earlier in the session and carried that reading across a push, instead of
+listing them again after it: occurrence 2's rule says to list them, not when. A reviewer's state is
+read again after every push and before every report that names it.
+
+**Proposed guard (count of 3).** The merge guard already reads outstanding change requests. Add a
+read-only `--reviews` mode to `scripts/merge-when-green.py` that prints every review on the pull request
+(reviewer, state, commit, submitted time) and each review check run's title and summary for the head,
+and make that output the only source an owner session quotes when it reports a reviewer's state in a
+batch report ("row green", a return, a hold).
 
 ### 1.14 A fact about the private inventory read from the public template
 
@@ -909,7 +927,7 @@ variable keep all three spellings.
 
 ### 1.16 A count written into a committed plan without running the count
 
-**Occurrences: 4** — 2026-09-25, 2026-10-03, 2026-11-02, 2026-11-10
+**Occurrences: 6** — 2026-09-25, 2026-10-03, 2026-11-02, 2026-11-10, 2026-11-18, 2026-11-18
 
 **What happened.** Recording the launch-permission gap for #264, I wrote into
 `plan/development/01-secrets-credentials.md` that "44 playbook and task files log in to
@@ -974,6 +992,26 @@ instead of extending the existing one. Corrected in PR #1023 (open when this was
 arrived from a subagent with `file:line` citations, so it read as measured (the 1.25 pattern), and
 the rule's own wording, "run at the time of writing", was not applied to a relayed count. The rule
 covers it: a relayed count is re-run before it is written. The proposed mechanical check above would not have caught it: it reads a pull request's Evidence section, and this count sat in a plan bullet that carried a `file:line` citation.
+
+**Occurrence 5 — 2026-11-18.** Answering CodeRabbit's thread on #1206 about a failed DELETE skipping
+the read-back (reply 4609907472, head `7ac3385f`), I wrote that the run fails on each kind of failure
+in turn and "Each message carries the read-back result". Three of the four failure messages did; the
+"did not end OK" message (`cleanup-proxmox-backup-archives.yml:415-418` at that head) carried only its
+count. The final-head review round and CodeRabbit's next comment both found it, and it was part of the
+pull request's fifth return. Why the rule did not fire: the claim was an "every" over the messages of
+a block I had just edited, so it read as known, and it was written into a review reply, not a plan or
+an Evidence section. The rule covers it: an "every" in written evidence, a review reply included, is
+checked against each member of the set when it is written; here, by reading each `fail_msg`.
+
+**Occurrence 6 — 2026-11-18.** Correcting that reply on the same thread (reply 4615480262, head
+`750f7000`), I wrote that at `7ac3385f` "only the last message carried the read-back". Three of the four
+did: the not-accepted and not-seen-stopped messages and the verify refusal (`git show
+7ac3385f:platform/playbooks/cleanup-proxmox-backup-archives.yml`, lines 407, 413 and 423); only "did not
+end OK" (line 418) did not. This ledger's own occurrence 5, already on the branch, said "Three of the four
+failure messages did". The final-head review round found it, and reply 4615598461 corrected it. Why the
+rule did not fire: the correction was written from memory of the earlier mistake, not from the file at
+the old head, and a correction reads as already checked. The rule covers it: a claim about an earlier
+head is read from that head (`git show <sha>:<path>`) when it is written, a correction included.
 
 ### 1.17 Explained a 401 as the token's scope; the service's database had just gone down
 
@@ -1261,6 +1299,8 @@ from the shared mapping, or inlining the environment on a rollback task, fails t
 
 ### 1.24 A growth projection extrapolated from a net change that retention was already offsetting
 
+**Occurrences: 2** — 2026-10-13, 2026-11-17
+
 **What happened.** The first daily o11y baseline (production receipt task 5329, 2026-10-13) reported
 Prometheus block bytes of 992,962,502 and a 24 h change of +26,487,309, read with
 `delta(prometheus_tsdb_storage_blocks_bytes[24h])`. The operator was told, and a records PR stated,
@@ -1282,6 +1322,18 @@ reading. When they disagree, report the bound each one gives, not the product of
 1.21 (cite only what the check measures); this is the arithmetic form.
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-11-17.** After the production backup-storage survey (Semaphore task 17695), the
+operator was told, on Plane AC-856 and in chat, that the planned retention (6 archives per guest, 3 for
+honcho) needs about 628.5 of the CephFS backup storage's 752.8 GiB, and that the chosen cleanup frees
+only 78.5 GiB on that storage. Both read the storage's `total` by its label as a fixed capacity. For a
+CephFS storage it is used space plus what Ceph can still place in the pool, so it moves with the free
+space of every pool on the same OSDs. The same receipt contradicted the reading: both CephFS storages
+showed exactly 0.1 GiB free, and each pool's raw usage was its storage's usage times its 3 replicas. An
+advisor review caught it the same hour; a correction went on AC-856 and the question moved to AC-975
+(an OSD fill read). The rule above names deletion and compaction as what a figure is net of; it did not
+fire because a capacity is not a rate, though the error is the same: a figure used by its label without
+asking what it measures, with a contradicting figure in the same reading left unchecked.
 
 ### 1.25 Line references relayed from a scout that read a stale checkout
 
@@ -5252,7 +5304,7 @@ PR. None of the six heads carries either commit status, which 5.25's guard now r
 
 ### 5.25 A review pass is a commit status on the head it covered (supersedes 5.24's rule)
 
-**Occurrences: 4** — 2026-11-12, 2026-11-12, 2026-11-16 to 2026-11-17, 2026-11-17 to 2026-11-18. The four that earned this rule are 5.24's.
+**Occurrences: 5** — 2026-11-12, 2026-11-12, 2026-11-16 to 2026-11-17, 2026-11-18, 2026-11-17 to 2026-11-18. The four that earned this rule are 5.24's.
 
 **What happened.** 5.24's rule (one PR-body line per pass) lived in prose, and its fourth occurrence retired
 `Convention` as its enforcement.
@@ -5291,7 +5343,17 @@ hand check of a small delta is not a pass, and its status must not say it is.
 
 **Occurrence 3 — 2026-11-16 to 2026-11-17.** Across the v0.17.0 batch, twelve pull requests had review-pass statuses posted on heads that no pass had covered, or that a hand check had covered instead. Four merged on those statuses and were remediated after merge: both passes were run on the merged diff, and the results were commented on each pull request. Those four were #1132 (heads `dbfd373e` for simplify and `878740d3` for both), #1167 (`89e186a1`, `60b93932`, `65af7c67`), #1168 (`23ca133f`, `3c614adf`, `20c2a667`) and #1173 (`3699d955` for simplify, `049f930e` for both). Eight were caught before merge: #1130 (`de50963c`), #1169 (`68a722d7`, `823501fc`, `39b6d0ad`), #1170 (`48819ef8`, `06740da6`), #1171 (`c531b8d9`, `593ef213`; its owner reports that the statuses rested on reviewer deltas and owner checks, not on runs of both passes), #1172 (`19da1375`, `1038df87`), #1174 (`0ce1b0da`, `532eaeba`, `15e89205`, `b1908d29`, `354cd478`; both skills ran on `354cd478` before it merged), #1175 (`ec203fa8`) and #1176 (`13f36338`, `36faea03`). What the real passes then found: /simplify on #1172's `1038df87` found a claim the dev merge had made false. Plan 28 said no file names Activepieces, and plan 27 had just landed and names it. Fixed in `abe56f39`. /security-review on #1169's `39b6d0ad` found a pre-existing quote-blanking bypass in a guard condition, fixed before that pull request's next push. Why the rule did not fire: the statuses are self-attested, and the guard checks only that they exist. Owners treated an unchanged pull request diff after a dev merge, or their own read of a small delta, as the pass. Several of the coordinator's refresh messages said "statuses" without "both passes". Guard (count 3): each pass writes a receipt for the head it read, in the shape `--review-receipt` already takes (`scripts/merge-when-green.py:811-827`, `valid_receipt`, whose required fields are repository, pr, head_sha, reviewer, session, verdict and evidence). The guard refuses a pass status on a head with no matching receipt. The receipt is still self-attested, but it binds each status to a named run on that exact head.
 
-**Occurrence 4 — 2026-11-17 to 2026-11-18.** One owner session in this batch (the units of #1183, #1192, #1198, #1201 and #1202) posted `simplify` and `security-review` statuses that came from Agent dispatches with prompts shaped like the skills, not from Skill-tool runs of `/simplify` and `/security-review`. Its transcript, which starts 2026-11-17 11:03Z, holds one Skill-tool run of `/security-review` (#1183 `14125d46`) and nine of `/simplify`. Statuses with no Skill-tool run of that pass on a head covering the code:
+**Occurrence 4 — 2026-11-18.** On #1206 I posted the `simplify` and `security-review` statuses on `750f7000`
+after four rounds of review agents that I dispatched by hand, one agent per angle of `/simplify` and one for
+`/security-review`, with briefs I wrote. Neither skill was invoked through the Skill tool on that head, so the
+statuses claimed runs that did not happen as named, and a round on the next local head (`8a9cc20f`) began the same
+way. The coordinator asked, after #1186's owner found the same on its pull request, and the hand-built round was
+stopped before any push. Why the rule did not fire: earlier in the session, before a context compaction, both
+skills had been invoked on an earlier head, and after it I reproduced their steps from memory. Copying a skill's
+steps reads as running it. The rule covers it: a pass status names a run of that skill on that head, and a
+hand-made copy of its steps is not one.
+
+**Occurrence 5 — 2026-11-17 to 2026-11-18.** One owner session in this batch (the units of #1183, #1192, #1198, #1201 and #1202) posted `simplify` and `security-review` statuses that came from Agent dispatches with prompts shaped like the skills, not from Skill-tool runs of `/simplify` and `/security-review`. Its transcript, which starts 2026-11-17 11:03Z, holds one Skill-tool run of `/security-review` (#1183 `14125d46`) and nine of `/simplify`. Statuses with no Skill-tool run of that pass on a head covering the code:
 - #1183 `653236f9`, `096470d9`, `277de029`, `bcf13e1b` and `e74fde48`, both passes; merged as `757a5f67`. On `bcf13e1b` the status was posted eleven minutes before that head's real `/simplify` run, whose fixes made `e74fde48`.
 - #1192 `c287a71b`, both passes; merged as `0d465519`.
 - #1198 `a5a2ec67`, `e0d14414` and `1eaac135`, both passes; `35e757ee`, `security-review` only, since its `simplify` rests on a real run on `219b2569` followed only by `docs/MISTAKES.md` edits; merged as `3fd66df5`.
@@ -5494,7 +5556,37 @@ delta reviews on.
 
 **Enforced by.** Convention until S9 (AC-977) part C lands. Part C fails the `lanes` suite when a change to `ansible.cfg` or under `platform/playbooks/filter_plugins/` does not select a playbook-tier module in the push lane, and its fixes add the path to the areas it names. On `dev` `4a0e3d49` the same gap is in three more areas: `areas.d/cloudflare_edge.yml` claims no filter plugin, `areas.d/firewall.yml` claims `filter_plugins/ufw_rules.py` alone, and `areas.d/support_forgeries.yml` has `paths: []`.
 
-### 5.34 Skipped a skill-pass finding on a comment's word that the code under test reads only certain fields, then carried the skip as decided
+### 5.34 Fixed a destructive block's failure paths one review finding at a time; two more returns found the rest
+
+**Occurrences: 1** — 2026-11-18
+
+**What happened.** On #1206 (the backup-archive cleanup, AC-856), CodeRabbit's review of `ed8606d6`
+said a failed DELETE skipped the wait, the read-back and the verify for the deletes Proxmox had
+accepted. I fixed that one path (`3fed32e3`), within a scope the coordinator had cut to the review's
+two threads (batch decision 42), then a second path I reported myself, a delete task still running when
+the poll ran out (`336c8d00`, decision 45). The pull request's fourth return was that review; its fifth, at
+`7ac3385f`, found two more paths in the same block: a failed storage re-read still ended it before the
+verify, and one failure message carried no read-back result. The coordinator found a third (a
+verifier that prints no JSON failed a hidden task before every message), and a test written for the
+sweep found a fourth (an accepted DELETE whose reply body had no `data` made the selection of running
+deletes raise). Each was a task after the first DELETE that could end the block before the read-back,
+or hide the first failure. Nothing was deleted: the template has never run for real.
+
+**Root cause.** Each finding was repaired as one path, not read as a sample of a class. The delete
+block had no stated rule for what any failure after the first DELETE does, so each fix answered its
+thread and stopped at the thread's edge, and the scope set for the fix (per thread) made the same
+cut. The class was only listed after the fifth return, as a table of every task in the block.
+
+**The rule.** When a finding is about a failure path in a block that changes live state, list every
+task of the block and write, for each, what its failure does: whether the next step is reached and
+what the operator sees. Fix the class in one change, with a test per row fixed, and put the table in
+the pull request. A brief or decision that scopes such a fix names the class and asks for that table,
+not the one path.
+
+**Enforced by.** Convention. On 2026-11-18 the batch coordinator accepted the failure table for the
+batch's later briefs; that is a brief convention, not a check.
+
+### 5.35 Skipped a skill-pass finding on a comment's word that the code under test reads only certain fields, then carried the skip as decided
 
 **Occurrences: 1** — 2026-11-17
 
