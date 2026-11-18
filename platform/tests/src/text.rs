@@ -6,10 +6,10 @@
 //!
 //! `any_line` and the line assertions read lines as grep does: the text is split at each `\n`,
 //! each line is matched on its own (so `^` and `$` anchor each line), and a `\r` before the `\n`
-//! stays part of its line. As with grep, no match spans two lines: a pattern that only a newline
-//! would satisfy matches nothing. Patterns are the `regex` crate's syntax, which reads the ERE
-//! constructs the ported BATS patterns use; its escapes such as `\d` and `\t` are its own, not
-//! GNU grep's. A bare `{` is a compile error there (`mv {{`), so a ported pattern writes `\{`.
+//! stays part of its line. As with grep, no match spans two lines. Patterns are the `regex` crate's
+//! syntax, which reads the ERE constructs the ported BATS patterns use; its escapes such as `\d`
+//! and `\t` are its own, not GNU grep's. A bare `{` is a compile error there (`mv {{`), so a
+//! ported pattern writes `\{`.
 //! A pattern that cannot match text free of a line feed (`\n`, `\x0a`, `[\n]`) is refused like a
 //! raw newline, since no line holds one, unless only an assertion stops it (`(?m)$\s`, `\b\B` are
 //! kept). `matches_without_line_feed` says what the check reads.
