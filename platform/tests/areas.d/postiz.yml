@@ -1,12 +1,13 @@
 # Postiz (plan 24, AC-967): the static tests of the postiz service, ported from BATS.
 #
-# The module sits under `always`: one test scans every tracked playbook, script and template for
-# the loopback workflow-engine address, and a static scan beyond its area's paths goes under
-# `always: static` (README, "A test that reads beyond its area"). docs/MISTAKES.md also cites three
-# of its tests (2.2, 2.19, 10.1). The paths name only postiz-owned files. The shared files the tests
-# read by name are not listed: the module runs in every lane anyway, and three of them (the
-# production and local-dev inventories, templates-local.yml) no area claims, so naming them here
-# would take their changes off the run-everything fallback.
+# The module sits under `always`: one test scans every tracked `.yml`, `.sh` and `.j2` file
+# under platform/ for the loopback workflow-engine address, and a static scan beyond its area's
+# paths goes under `always: static` (README, "A test that reads beyond its area").
+# docs/MISTAKES.md also cites three of its tests (2.2, 2.19, 10.1). The paths name only
+# postiz-owned files. The shared files the tests read by name are not listed: the module runs in
+# every lane anyway, and three of them (the production and local-dev inventories,
+# templates-local.yml) no area claims, so naming them here would take their changes off the
+# run-everything fallback.
 paths:
   - "platform/services/postiz/**"
   - "platform/playbooks/deploy-postiz.yml"
