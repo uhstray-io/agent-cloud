@@ -148,7 +148,8 @@ impl Ctx {
         self.push(&self.repo, envs, &[branch])
     }
 
-    /// Starts a push of `branch` that stays inside its suite until `release` exists.
+    /// Starts a push of `branch` that stays inside its suite until `release` exists, and returns
+    /// once the suite has started (20 s at most, then it panics).
     fn start_holding(&self, repo: &Path, branch: &str) -> Holding {
         let started = self.home.path().join("started");
         let release = self.home.path().join("release");

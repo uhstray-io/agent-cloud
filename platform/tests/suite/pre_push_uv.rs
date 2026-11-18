@@ -14,7 +14,7 @@
 //!
 //! The cases drive the real hook in a scratch repository with fake `uv`, `python3`, `bats` and
 //! `parallel` on PATH, and read what ran from logs rather than from output. The fake `bats` logs
-//! the first PATH entry it ran under and, on request, its arguments, its start, its pids, the
+//! the first PATH entry it ran under and, on request, its arguments, a start mark, its pids, the
 //! scratch directory it saw and a child process. The fake `python3` logs its own path and the
 //! first PATH entry for every call, and the `-m pytest` run again on its own line. The fake `uv`
 //! logs its arguments, one per line. The fake `parallel` logs
@@ -76,8 +76,8 @@ const URL: &str = "https://example.invalid/repo.git";
 const SHA: &str = "1111111111111111111111111111111111111111";
 
 /// Fake `bats`: logs the first PATH entry it ran under and, on request, its arguments (one per
-/// line), its start,
-/// its pids, the scratch directory it saw and a child process. Then it waits for FAKE_BATS_HOLD
+/// line), a start mark (FAKE_BATS_MARK, present only while it runs), its pids, the scratch
+/// directory it saw and a child process. Then it waits for FAKE_BATS_HOLD
 /// and, with FAKE_BATS_RELEASE, for the fake pytest's release (15 s at most), and exits
 /// FAKE_BATS_RC.
 const FAKE_BATS: &str = r#"#!/usr/bin/env sh
@@ -407,25 +407,23 @@ fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-/// The pytest run used the fakebin python3 with fakebin first on PATH, and no call saw a `.venv`.
+/// The pytest run used the fakebin python3 with fakebin first on PATH, and no logged line names
+/// `.venv/bin`.
 #[track_caller]
 fn assert_pytest_ran_on_fakebin(ctx: &Ctx) {
+    let log = read(&ctx.py_log);
     assert!(
         any_line(
-            &read(&ctx.py_log),
+            &log,
             r"^pytest-run .*/fakebin/python3 first-path=.*/fakebin$"
         ),
-        "{}",
-        read(&ctx.py_log)
+        "{log}"
     );
-    assert!(
-        !read(&ctx.py_log).contains(".venv/bin"),
-        "{}",
-        read(&ctx.py_log)
-    );
+    assert!(!log.contains(".venv/bin"), "{log}");
 }
 
-/// A file's text, empty when the file was never written.
+/// A file's text, empty when it cannot be read: a log never written reads as no calls. A check
+/// that needs the file to exist uses `read`, which panics.
 fn read_or_empty(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
@@ -1138,8 +1136,8 @@ fn held_push(ctx: &Ctx, envs: &[(&str, &str)]) -> (String, String, HeldPush) {
         release,
         handle: Some(handle),
     };
-    // The bound is 20 s: a 10 s bound timed out in four of six full-module runs on this machine
-    // before the change, and the cause is not identified. `spawn_held`'s 60 s bound caps the held
+    // The bound is 20 s: a 10 s bound timed out in four of six full-module runs on this machine,
+    // and the cause is not identified. `spawn_held`'s 60 s bound caps the held
     // hook.
     let deadline = Instant::now() + Duration::from_secs(20);
     let (hook, bats) = loop {
