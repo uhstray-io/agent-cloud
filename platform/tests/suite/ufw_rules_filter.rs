@@ -36,11 +36,18 @@ fn exported() -> Vec<String> {
 
 /// The body of the dict literal `FilterModule.filters` returns, or `None` unless the method is
 /// that one `return {...}` and nothing follows it in the file. Python keeps the last definition,
-/// so this is the method Ansible calls; another statement first, a second `filters`, a merge or
-/// conditional after the `}`, or a decorator (which can replace the class) would export names
-/// this does not read, and refuses instead.
+/// so this is the method Ansible calls. A decorator can replace the class, and a line break or
+/// encoding Python reads differently from `\n` and UTF-8 can hide one, so any of them refuses.
+/// Code before the class that changes how classes are built is out of a text read's reach; the
+/// in-process read is AC-983's.
 fn filter_literal(source: &str) -> Option<&str> {
-    if source.starts_with('@') || source.contains("\n@") {
+    let unread = source.contains(['\r', '\x0c', '\u{feff}'])
+        || source.lines().any(|l| l.starts_with('@'))
+        || source
+            .lines()
+            .take(2)
+            .any(|l| l.contains("coding:") || l.contains("coding="));
+    if unread {
         return None;
     }
     let (_, method) = source.split_once("\nclass FilterModule:\n    def filters(self):\n")?;
@@ -53,9 +60,8 @@ fn filter_literal(source: &str) -> Option<&str> {
 
 /// The quoted keys of a Python dict literal's body, in order, or `None` when the body holds
 /// anything but comma-separated `"key": name` pairs, each key in matching quotes. A key may be
-/// any text without a quote or backslash, so a key a playbook could not call still counts. A
-/// shape this cannot read (a `**` splat, a key held in a variable, a value with a brace, an
-/// escape, mismatched quotes) refuses rather than drops a key the pytest saw.
+/// any text without a quote or backslash, so a key a playbook could not call still counts; any
+/// other shape refuses rather than drops a key the pytest saw.
 fn dict_keys(literal: &str) -> Option<Vec<String>> {
     let pair = r#"(?:"([^"'\\]+)"|'([^"'\\]+)')\s*:\s*[A-Za-z_]\w*"#;
     let whole = Regex::new(&format!(r"^\s*(?:{pair}(?:\s*,\s*{pair})*\s*,?)?\s*$")).unwrap();
@@ -99,8 +105,16 @@ fn a_filters_method_the_reader_cannot_read_refuses() {
     let head = "import re\n\nclass FilterModule:\n    def filters(self):\n";
     let plain = format!("{head}        return {{\"a\": f}}\n");
     assert_eq!(filter_literal(&plain), Some(r#""a": f"#));
-    let decorated = plain.replace("\nclass", "\n@wrap\nclass");
-    assert_eq!(filter_literal(&decorated), None, "{decorated}");
+    for source in [
+        plain.replace("\nclass", "\n@wrap\nclass"),
+        plain.replace("\nclass", "\n\x0c@wrap\nclass"),
+        plain.replace("\nclass", "\n\r@wrap\nclass"),
+        format!("# -*- coding: latin-1 -*-\n{plain}"),
+        format!("# c\r\n# coding: latin-1\n{plain}"),
+        format!("\u{feff}{plain}"),
+    ] {
+        assert_eq!(filter_literal(&source), None, "{source:?}");
+    }
     for body in [
         "        if X:\n            return {\"a\": f}\n        return {\"b\": g}\n",
         "        d = {\"a\": f}\n        return d\n",
