@@ -192,8 +192,8 @@ fn bats_gets_ci_flags_and_the_job_shell() {
         .expect("git starts");
     let toplevel = String::from_utf8_lossy(&toplevel.stdout).trim().to_owned();
     assert_eq!(
-        fixture.bats_shell().trim_end(),
-        format!("{toplevel}/platform/tests/bin/parallel-job-shell")
+        fixture.bats_shell(),
+        format!("{toplevel}/platform/tests/bin/parallel-job-shell\n")
     );
     assert!(!text(&out).contains("runs serially"), "{}", text(&out));
 }
@@ -209,7 +209,7 @@ fn a_checkout_without_the_job_shell_runs_bats_serially_saying_why() {
     // Assert
     assert!(out.status.success(), "{}", text(&out));
     assert_eq!(fixture.bats_args(), "platform/tests/\n");
-    assert_eq!(fixture.bats_shell().trim_end(), "unset");
+    assert_eq!(fixture.bats_shell(), "unset\n");
     assert!(
         text(&out).contains("parallel-job-shell is missing from this checkout"),
         "{}",
