@@ -9,7 +9,8 @@
 //! hardcodes. No hardcoded addresses or credentials.
 //!
 //! Ports the 46 `@test`s of the deleted `platform/tests/test_service_postiz.bats`. Structural only:
-//! file reads, no deploy. The checks read the raw text, as the BATS helpers did. BATS `! grep` lines
+//! file reads, no deploy. Each kept BATS check reads the raw text, as the BATS helpers did; the
+//! checks added beside them read the parsed compose file or task. BATS `! grep` lines
 //! mid-body never failed under `set -e`, so every absence check here is a real assertion, scoped to
 //! its task block where the BATS check was.
 //!
