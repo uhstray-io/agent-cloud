@@ -3251,18 +3251,18 @@ that timed out for a cause not identified, and a trufflehog exclusion for a dele
 dispatch on `784f8889`, fixed in `c1a451c7`. Among its fixes was the git-env fake bats, which on
 macOS left a scratch repository in the system temp directory on every run. A fallback review
 round then approved `c1a451c7` (PR comment, 2026-11-17 13:19Z) without finding the gap below.
-Return 3 was CodeRabbit's review of `31297a21` on 2026-11-18. It found that
+Return 3 was CodeRabbit's review 5951303435 of `31297a21` (2026-11-18 05:32Z). It found that
 `bats_is_already_running_while_pytest_runs` passed when the hook ran BATS to the end before
 pytest. The fake bats's mark file outlived it, and the fake pytest only checked that the file
 existed. The BATS original, which #1186 deletes, had the same gap: its fake bats creates the
-mark on start and never removes it. Joseph chose to fix it in place (batch index decision 46).
-Return 4 was CodeRabbit's review of `ad345c9b` on 2026-11-18: four more assertions that
+mark on start and never removes it. Joseph chose to fix it in place (2026-11-18 06:01Z).
+Return 4 was CodeRabbit's review 5957037051 of `ad345c9b` (2026-11-18 13:01Z): four more assertions that
 normalised what they compared (`trim_end`, `lines()`) or read an unreadable lock directory as
-empty. Joseph chose one sweep of the file (decision 48, 08:10 EST): one mutant per test of
+empty. Joseph chose one sweep of the file (2026-11-18 13:10Z): one mutant per test of
 `pre_push_uv.rs` on the property its name states. Of 28 tests, 21 went red as written and 7
-stayed green and were strengthened. The same class outside that file (decision 49): 2 assertions
-in `pre_push_parallel_sigalrm.rs`, and 2 of the 7 lock-release tests in
-`pre_push_branch_lock.rs` that passed on a hook that never took the lock.
+stayed green and were strengthened. The batch coordinator added the same class outside that file: 2
+assertions in `pre_push_parallel_sigalrm.rs`, and 2 of the 7 tests in `pre_push_branch_lock.rs`
+that call its no-locks check, which passed on a hook that never took the lock.
 
 **Root cause.** The PR's mutation pass ran one mutant per guard the ledger cites. It did not run
 a mutant for the property each test's name states. A test ported faithfully keeps every gap of
@@ -3275,10 +3275,11 @@ the test cites. A sequential hook is the mutant for "runs while", an unused dire
 nothing behind", an early exit for "cannot reach". A test that only passes because the original
 did is not yet a port. When the original has the gap, the port fixes it and the PR body says so.
 
-**Enforced by.** Convention. This instance: `bats_is_already_running_while_pytest_runs` holds the
-fake bats until the fake pytest releases it (`FAKE_BATS_RELEASE`, `7fa584cc`), and a scratch
-copy of the hook made sequential turns it red. The test from before the fix passes against that
-copy.
+**Enforced by.** Convention. This instance: every test of `pre_push_uv.rs` goes red under one
+mutant of the property its name states. The first was `bats_is_already_running_while_pytest_runs`,
+which holds the fake bats until the fake pytest releases it (`FAKE_BATS_RELEASE`, `7fa584cc`): a
+scratch copy of the hook made sequential turns it red, and the test from before the fix passes
+against that copy.
 
 ## 3. Acting on live state
 
