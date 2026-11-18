@@ -1390,6 +1390,13 @@ def test_native_promql_runner_fails_closed_on_nonsemantic_mutant_errors():
     assert not any(argument in forbidden_args for argument in command)
 
 
+# The runner keeps min(PROCESS_CLEANUP_RESERVE_SECONDS, a quarter of the time left) for cleanup and
+# PROCESS_REAP_FRACTION of that to reap a killed child. A 0.2 s deadline left 30 ms, which a late
+# wake-up under pre-push load used up (AC-968); 2 s leaves 0.3 s, near what the runner's own 3-4 s
+# engine calls get. The refusal is proven by a stub, below.
+DEADLINE_TEST_SECONDS = 2.0
+
+
 def test_native_promql_runner_process_io_and_post_eof_wait_respect_deadline(monkeypatch):
     real_popen = NATIVE_PROMQL.subprocess.Popen
     processes = []
@@ -1414,6 +1421,11 @@ def test_native_promql_runner_process_io_and_post_eof_wait_respect_deadline(monk
                 self.reaped_after_kill = True
             return result
 
+    reap_window = (
+        min(NATIVE_PROMQL.PROCESS_CLEANUP_RESERVE_SECONDS, DEADLINE_TEST_SECONDS * 0.25)
+        * NATIVE_PROMQL.PROCESS_REAP_FRACTION
+    )
+    assert reap_window >= 0.25, "the runner's reap window shrank: raise DEADLINE_TEST_SECONDS"
     monkeypatch.setattr(NATIVE_PROMQL.subprocess, "Popen", TrackingPopen)
     cases = (
         ("import time; time.sleep(5)", b"x" * (2 * 1024 * 1024)),
@@ -1423,18 +1435,58 @@ def test_native_promql_runner_process_io_and_post_eof_wait_respect_deadline(monk
         started = NATIVE_PROMQL.time.monotonic()
         result = NATIVE_PROMQL._bounded_process(
             [NATIVE_PROMQL.sys.executable, "-c", program],
-            deadline=started + 0.2,
+            deadline=started + DEADLINE_TEST_SECONDS,
             input_bytes=input_bytes,
         )
         elapsed = NATIVE_PROMQL.time.monotonic() - started
         assert result[2] is True
-        assert elapsed < 1.0
+        # Past the deadline the runner only closes a pipe and returns; 1 s absorbs a late wake-up and
+        # stays under the child's 5 s sleep, so a runner that waited for the child still fails.
+        assert elapsed < DEADLINE_TEST_SECONDS + 1.0
         process = processes[-1]
         assert process.was_killed
         assert process.post_kill_wait_timeouts
         assert process.post_kill_wait_timeouts[-1] > 0
         assert process.reaped_after_kill
         assert process.returncode is not None
+
+
+def test_native_promql_runner_refuses_a_child_not_reaped_in_its_window(monkeypatch):
+    real_popen = NATIVE_PROMQL.subprocess.Popen
+    processes = []
+
+    class UnreapedPopen(real_popen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.was_killed = False
+            processes.append(self)
+
+        def kill(self):
+            self.was_killed = True
+            return super().kill()
+
+        def wait(self, timeout=None):
+            raise NATIVE_PROMQL.subprocess.TimeoutExpired(self.args, timeout)
+
+    monkeypatch.setattr(NATIVE_PROMQL.subprocess, "Popen", UnreapedPopen)
+    threads_before = set(threading.enumerate())
+    try:
+        with pytest.raises(NATIVE_PROMQL.RunnerError, match="not reaped within its reserved cleanup window"):
+            NATIVE_PROMQL._bounded_process(
+                [NATIVE_PROMQL.sys.executable, "-c", "import time; time.sleep(5)"],
+                deadline=NATIVE_PROMQL.time.monotonic() + DEADLINE_TEST_SECONDS,
+            )
+        assert processes[-1].was_killed
+    finally:
+        for process in processes:
+            process.kill()
+            real_popen.wait(process, timeout=5)
+        # The runner raised before joining its output reader; it ends at the dead child's EOF.
+        for thread in set(threading.enumerate()) - threads_before:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+        for process in processes:
+            process.stdout.close()
 
 
 def test_native_promql_runner_caps_subprocess_output_while_draining():
@@ -1516,12 +1568,14 @@ else:
     return executable, inspected, removals
 
 
+# _cleanup gets the runner's whole TOTAL_SECONDS budget, far more than its per-call caps add up to,
+# so only those caps bind; a 2 s budget was used up by slow starts under load (AC-968).
 def test_native_promql_runner_cleans_only_exact_name_and_label_owned_containers(tmp_path):
     name = "o11y-promql-unique-1"
     owner = "invocation-unique"
     engine, inspected, removals = _write_fake_container_engine(tmp_path, name, owner)
     NATIVE_PROMQL._cleanup(
-        str(engine), owner, [name, name + "-absent"], NATIVE_PROMQL.time.monotonic() + 2,
+        str(engine), owner, [name, name + "-absent"], NATIVE_PROMQL.time.monotonic() + NATIVE_PROMQL.TOTAL_SECONDS,
     )
     assert inspected.read_text(encoding="utf-8") == name
     assert json.loads(removals.read_text(encoding="utf-8")) == [
@@ -1537,7 +1591,7 @@ def test_native_promql_runner_refuses_cleanup_when_labels_do_not_prove_ownership
     )
     with pytest.raises(NATIVE_PROMQL.RunnerError, match="ownership mismatch"):
         NATIVE_PROMQL._cleanup(
-            str(engine), owner, [name], NATIVE_PROMQL.time.monotonic() + 2,
+            str(engine), owner, [name], NATIVE_PROMQL.time.monotonic() + NATIVE_PROMQL.TOTAL_SECONDS,
         )
     assert not removals.exists()
 

@@ -1391,10 +1391,10 @@ def test_release_budget_starts_from_the_release_merged_into_main_ref(tmp_path):
         ("prs", 80, True, False),
         ("prs", 100, True, False),
         ("prs", 101, True, True),
-        ("files", 95, False, False),
-        ("files", 96, True, False),
+        ("files", 119, False, False),
         ("files", 120, True, False),
-        ("files", 121, True, True),
+        ("files", 150, True, False),
+        ("files", 151, True, True),
     ],
 )
 def test_release_budget_warns_at_80_percent_and_is_full_past_each_limit(tmp_path, kind, count, warn, full):
@@ -1403,8 +1403,8 @@ def test_release_budget_warns_at_80_percent_and_is_full_past_each_limit(tmp_path
     budget = semver.release_budget(repo.root, "main", "dev", **extra)
     assert budget[kind] == count
     assert (budget["warn"], budget["full"]) == (warn, full)
-    assert budget["limits"] == {"prs": 100, "files": 120}
-    assert budget["remaining"] == {"prs": 100 - budget["prs"], "files": 120 - budget["files"]}
+    assert budget["limits"] == {"prs": 100, "files": 150}
+    assert budget["remaining"] == {"prs": 100 - budget["prs"], "files": 150 - budget["files"]}
 
 
 def test_release_budget_extra_files_already_in_the_diff_are_not_counted_twice(tmp_path):

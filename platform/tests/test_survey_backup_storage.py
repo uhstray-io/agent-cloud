@@ -479,3 +479,40 @@ def test_the_survey_runs_only_at_the_reviewed_commit():
     templates = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
     template = next(t for t in templates if t["name"] == "Survey Proxmox Backup Storage (Dev)")
     assert [(v["name"], v["required"]) for v in template["survey_vars"]] == [("expected_repository_sha", True)]
+
+
+@pytest.mark.parametrize(("storage_config", "expected"), [
+    ([{"storage": "cephA", "type": "cephfs", "content": "backup"}], True),
+    ([{"storage": "cephA", "type": "cephfs", "content": "backup", "disable": "0"}], True),
+    ([{"storage": "cephExt", "type": "cephfs", "content": "backup", "monhost": "192.0.2.50"}], False),
+    ([{"storage": "cephOff", "type": "cephfs", "content": "backup", "disable": 1}], False),
+    ([{"storage": "backups", "type": "nfs", "server": "192.0.2.10", "export": "/tank"}], False),
+    ([], False),
+])
+def test_the_plan_reads_the_ceph_listing_only_for_a_cephfs_on_this_clusters_own_ceph(storage_config, expected):
+    plan = survey.plan({"nodes": NODES, "jobs": [], "storage_listings": [_listing("n1")],
+                        "storage_config": storage_config})
+    assert plan["ceph"] is expected
+
+
+def _cephfs_summary(storage_config, ceph_reads):
+    payload = {"plan": {"reads": []}, "vms": [], "jobs": [], "content_reads": [], "prune_reads": [],
+               "storage_config": storage_config, "ceph_reads": ceph_reads}
+    return survey.summarize(payload)["cephfs"]
+
+
+def test_a_cephfs_reason_comes_from_the_config_so_a_skipped_listing_is_not_read_and_no_cephfs_says_so():
+    own = [{"storage": "cephA", "type": "cephfs", "content": "backup"}]
+    skipped = [{"item": "fs", "skipped": True}, {"item": "pool", "skipped": True}]
+    assert _cephfs_summary(own, skipped)["reason"] == "the Ceph listing was not read"
+    assert _cephfs_summary([], [])["reason"] == "no CephFS storage on this cluster's own Ceph"
+
+
+def test_a_ceph_listing_that_answers_200_without_a_list_refuses_the_survey():
+    payload = {"plan": {"reads": []}, "vms": [], "jobs": [], "content_reads": [], "prune_reads": [],
+               "storage_config": [{"storage": "cephA", "type": "cephfs", "content": "backup"}],
+               "ceph_reads": [{"item": "fs", "status": 200, "json": {"data": None}},
+                              {"item": "pool", "status": 200, "json": {"data": []}}]}
+    out = io.StringIO()
+    assert survey.main(["summarize"], stdin=io.StringIO(json.dumps(payload)), stdout=out) == 1
+    assert "no Ceph fs list" in json.loads(out.getvalue())["refusal"]
