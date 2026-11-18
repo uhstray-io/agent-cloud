@@ -174,7 +174,7 @@ and why.
 | 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
 | 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
 | 5.29 | Briefed six port workers never to edit the ledger, which forbade the "Enforcement moved" note a deleted cited test needs; the ratchet kept every gate green (widens 5.28) — **x2** (2026-11-16: brief 11 repeated the ledger prohibition; caught before any port) | Process | 2 | Convention (a ledger test requiring the note proposed) |
-| 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 1 | Convention (per-agent scratch directory in every brief) |
+| 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 2 | Convention (per-agent scratch directory in every brief) |
 | 5.31 | A peer session allowed `SKIP_TESTS=1` for docs-only pushes; two owners retried a denied compound command as a standalone push | Process | 1 | Convention (deny rule for the skipped push proposed; operator's decision) |
 | 5.32 | Ran `git branch -D` on a scratch branch the brief said to keep if `git branch -d` refused; recreated from the reflog | Process | 1 | Convention (deny rule for forced branch deletes proposed; operator's decision) |
 | 5.33 | Refreshed a PR over a newly landed area rule and checked it only where the rule's own test looks; the playbook-tier area omitted the filter plugins `ansible.cfg` loads | Process | 1 | Convention until S9 (AC-977) part C lands |
@@ -3281,7 +3281,10 @@ three files. Read line by line against the originals, 3 were weaker than them (a
 the test runner's 30 s bound can kill inside a 20 s readiness wait, a `perl` spawn that panics
 where the original skipped, a PATH dropped whole when one entry is not UTF-8) and 10 had the
 original's gap. Joseph chose to fix all 13, and their siblings in the same three files
-(2026-11-18 17:22Z): `1df57765`, `72c67e21`, `8193cad9`.
+(2026-11-18 17:22Z): `1df57765`, `72c67e21`, `8193cad9`. Those three left one sibling: the
+uv and branch-lock fixtures still dropped a PATH holding one non-UTF-8 entry, as did the
+git-env fixture outside the three files. The simplify pass on the whole PR found it, and
+`342be0e5` fixed all three.
 
 **Root cause.** The PR's mutation pass ran one mutant per guard the ledger cites. It did not run
 a mutant for the property each test's name states. A test ported faithfully keeps every gap of
@@ -5523,7 +5526,7 @@ entry naming at least one `#[test]` fn. Entry 6.9 gains its missing note in this
 
 ### 5.30 Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14)
 
-**Occurrences: 1** — 2026-11-13
+**Occurrences: 2** — 2026-11-13, 2026-11-18
 
 **What happened.** During wave 1 of the BATS port, five `pr-reviewer` agents ran at once, each told
 only to use "scratch" under the session's scratchpad. Two reviewers (AC-874, AC-875) both created
@@ -5542,6 +5545,8 @@ elsewhere in the scratchpad and recursive deletes.
 
 **Enforced by.** Convention (the brief template). Applied to every brief from the AC-874 and AC-875
 delta reviews on.
+
+**Occurrence 2 — 2026-11-18.** On #1186 (AC-949) the owner dispatched four parallel `/simplify` review agents over the whole PR range. The briefs said read-only and named no scratch directory and no ban on recursive deletes. The efficiency agent measured symlink cost with a script that ran `rm -rf` in a loop on temporary directories it had made in the scratchpad, and reported it. Nothing in the worktree or another agent's files was touched. Why the rule did not fire: the briefs were written as short review prompts, not from the brief template, so the template's scratch and delete lines were never added.
 
 ### 5.31 A peer session allowed a guard skip, and two denied compound commands were retried as a standalone push
 
