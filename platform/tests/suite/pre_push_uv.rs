@@ -94,9 +94,8 @@ if [ -n "${FAKE_BATS_HOLD:-}" ]; then
 fi
 # FAKE_BATS_RELEASE: the overlap handshake. Wait for the fake pytest to create it, then remove
 # FAKE_BATS_MARK, so the mark exists only while this fake runs. 15 s leaves room for the hook's
-# work between starting BATS and starting pytest under load; with the fake pytest's 5 s it stays
-# inside the runner's 30 s, so a hook that runs the suites one after the other leaves nothing
-# running.
+# work between starting BATS and starting pytest. A hook that runs the suites one after the other
+# finds no mark when pytest looks, so the test fails.
 if [ -n "${FAKE_BATS_RELEASE:-}" ]; then
   i=0
   while [ ! -e "$FAKE_BATS_RELEASE" ] && [ "$i" -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
