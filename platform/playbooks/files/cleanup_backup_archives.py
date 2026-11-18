@@ -60,7 +60,12 @@ def _read_data(read, storage):
         raise Refusal(f"The Proxmox token may not list the content of storage {storage} (needs Datastore.Audit there).")
     if read.get("status") != 200:
         raise Refusal(f"Proxmox answered {read.get('status')} listing the content of storage {storage}.")
-    return (read.get("json") or {}).get("data") or []
+    # A 200 without a list is refused, never read as an empty storage: in the read-back that would report
+    # every listed archive gone.
+    data = (read.get("json") or {}).get("data")
+    if not isinstance(data, list):
+        raise Refusal(f"Proxmox returned no content list for storage {storage}.")
+    return data
 
 
 def _backups(content_reads):

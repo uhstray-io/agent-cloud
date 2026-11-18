@@ -464,6 +464,23 @@ fn verify_refuses_a_listed_archive_still_present() {
 }
 
 #[test]
+fn a_read_back_answered_200_without_a_list_is_refused_not_read_as_empty() {
+    // Arrange: the storage held only the listed archive, and its read-back answers 200 with no `data` list.
+    for json_body in [json!({}), json!({"data": null}), json!(null)] {
+        let mut payload = verify_payload(vec![]);
+        payload["before"] = json!([read("n1", "backups", vec![archive("backups", 900, 1)])]);
+        payload["after"][0]["json"] = json_body;
+
+        // Act + Assert
+        let text = refusal("verify", &payload);
+        assert!(
+            text.contains("no content list for storage backups"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
 fn verify_refuses_an_unlisted_archive_that_disappeared() {
     let text = refusal("verify", &verify_payload(vec![]));
     assert!(text.contains("100-2"), "{text}");
