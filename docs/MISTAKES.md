@@ -176,6 +176,7 @@ and why.
 | 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 1 | Convention (per-agent scratch directory in every brief) |
 | 5.31 | A peer session allowed `SKIP_TESTS=1` for docs-only pushes; two owners retried a denied compound command as a standalone push | Process | 1 | Convention (deny rule for the skipped push proposed; operator's decision) |
 | 5.32 | Ran `git branch -D` on a scratch branch the brief said to keep if `git branch -d` refused; recreated from the reflog | Process | 1 | Convention (deny rule for forced branch deletes proposed; operator's decision) |
+| 5.33 | Refreshed a PR over a newly landed area rule and checked it only where the rule's own test looks; the playbook-tier area omitted the filter plugins `ansible.cfg` loads | Process | 1 | Convention until S9 (AC-977) part C lands |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -5470,6 +5471,18 @@ delta reviews on.
 **The rule.** No forced or recursive delete. One plain delete per item, and a refusal is the answer: stop and report it.
 
 **Enforced by.** Convention. Proposed: permission deny rules for `git branch -D` and `git branch --delete --force` (the operator's decision).
+
+### 5.33 Refreshed a PR over a newly landed area rule and checked it only where the rule's own test looks
+
+**Occurrences: 1** — 2026-11-17
+
+**What happened.** On 2026-11-17 the owner of #1198 (the S4 seed harness, AC-950) merged `dev` `4a0e3d49` into head `e0d14414`. That merge brought in the `platform/tests/areas.d/README.md` section "A test that reads beyond its area". It says the configuration a playbook run loads must be listed in its area's `paths`; the root `ansible.cfg:19` loads `platform/playbooks/filter_plugins`. The owner read the section and checked the seed modules for `repo::grep`, `repo::ls_files` and named-file reads, found none, and left `areas.d/support_seed.yml` at `paths: []`. The `pr-reviewer` round on the final head `1eaac135` asked for changes. `support_seed_playbook` runs `ansible-playbook` from the repository root, so a commit that changes only a filter plugin selects other areas, never the unclassified fallback. The push and CI lanes then skip the test. The reviewer reproduced it: a filter-plugin-only commit gave selections without `support_seed`, and the same plugin turned `support_seed_playbook` red. It was the unit's fourth return, and it went to the operator through the batch coordinator. Three areas already listed the plugins: two in `areas.yml` (the suite's own, and `install_qemu_guest_agent`) and `areas.d/support_lift.yml`.
+
+**Root cause.** The rule names two kinds of reads. The `lanes` test `every_repo_wide_scan_runs_when_a_file_it_reads_changes` checks only `repo::grep` and `repo::ls_files`. The README says named-file reads and the configuration a playbook run loads are not checked mechanically. The owner checked the reads a test can see in its own source. A playbook-tier module's dependence on `ansible.cfg` is not written in that source, so it was missed. All gates were green.
+
+**The rule.** After refreshing a branch over a rule that landed on `dev`, check the branch against every clause of the rule, not only the ones its test enforces. A module in the `playbook` tier loads the filter plugins through the root `ansible.cfg`, so a change to a filter plugin must select it in the push lane. While other areas claim the plugins, its own area lists `"platform/playbooks/filter_plugins/**"` in `paths` too.
+
+**Enforced by.** Convention until S9 (AC-977) part C lands. Part C fails the `lanes` suite when a change to `ansible.cfg` or under `platform/playbooks/filter_plugins/` does not select a playbook-tier module in the push lane, and its fixes add the path to the areas it names. On `dev` `4a0e3d49` the same gap is in three more areas: `areas.d/cloudflare_edge.yml` claims no filter plugin, `areas.d/firewall.yml` claims `filter_plugins/ufw_rules.py` alone, and `areas.d/support_forgeries.yml` has `paths: []`.
 
 ## 6. Working from assumptions about files
 
