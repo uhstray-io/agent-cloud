@@ -27,6 +27,7 @@ TOKEN_ID_VAR = {
     "attach-pbs-data-disk.yml": "_pve_token_id",
     "backup-o11y-to-pbs.yml": "_pve_token_id",
     "cleanup-o11y-isolated-restore.yml": "_cleanup_pve_token_id",
+    "cleanup-proxmox-backup-archives.yml": "_pve_token_id",
     "configure-pbs-backup-access.yml": "_pve_token_id",
     "destroy-vm.yml": "_pve_token_id",
     "enable-o11y-pbs-import-content.yml": "_pve_token_id",
