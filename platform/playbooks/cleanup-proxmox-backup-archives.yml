@@ -335,20 +335,30 @@
           no_log: true
 
         # A delete still running after `delay` answers with its task id (UPID); one that finished answers
-        # null. Only the running ones are polled, on the node each delete went to (item.item, its volume).
+        # null. Every other accepted answer, one without a body included, counts as running, so a reply the
+        # poll cannot use is counted as not stopped instead of dropped.
+        - name: Select the accepted deletes still running
+          ansible.builtin.set_fact:
+            _delete_running: "{{ (_delete_runs.results | selectattr('status', 'equalto', 200)
+              | selectattr('json', 'defined') | rejectattr('json.data', 'none') | list)
+              + (_delete_runs.results | selectattr('status', 'equalto', 200) | rejectattr('json', 'defined') | list) }}"
+          no_log: true
+
+        # Each is polled on the node its delete went to (item.item, its volume).
         - name: Wait for each running delete task
           ansible.builtin.uri:
             url: "{{ _pve_host }}/api2/json/nodes/{{ item.item.node }}/tasks/{{ item.json.data | urlencode }}/status"
             status_code: 200
             headers:
               Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
-          loop: "{{ _delete_runs.results | selectattr('status', 'equalto', 200) | selectattr('json.data') | list }}"
+          loop: "{{ _delete_running }}"
           register: _task_polls
           until: _task_polls.json is defined and _task_polls.json.data.status == 'stopped'
           retries: 60
           delay: 5
           # A task still running when the retries run out fails the poll whatever failed_when says (ansible-core
-          # marks it failed after failed_when). It must not skip the read-back: the count is checked below.
+          # marks it failed after failed_when). It must not skip the read-back: the count is checked below,
+          # against _delete_running, so a poll that fails whole counts every task as not seen stopped.
           ignore_errors: true
           no_log: true
 
@@ -356,7 +366,6 @@
           ansible.builtin.set_fact:
             _delete_stopped: "{{ _task_polls.results | default([]) | selectattr('json', 'defined')
               | map(attribute='json.data') | selectattr('status', 'equalto', 'stopped') | list }}"
-            _delete_polled: "{{ _task_polls.results | default([]) | length }}"
           no_log: true
 
         - name: Re-read the backup volumes on each backup storage
@@ -383,22 +392,25 @@
           check_mode: false
           no_log: true
 
-        # Checked only now, after the read-back, so a refused DELETE, a delete task still running when the wait
-        # ended, or one that ended not OK, still leaves the accepted deletes read back. The refused DELETE comes
+        - name: Keep the read-back's result for the messages below
+          ansible.builtin.set_fact:
+            _readback: "{{ (_verify_run.stdout | from_json).refusal | default('every listed archive is gone') }}"
+          no_log: true
+
+        # Checked only now, after the read-back, so a refused DELETE, a delete task not seen stopped when the
+        # wait ended, or one that ended not OK, still leaves the accepted deletes read back. The refused DELETE comes
         # first: it is the original failure.
         - name: Require every DELETE to be accepted
           ansible.builtin.assert:
             that: _delete_runs.results | rejectattr('status', 'equalto', 200) | list | length == 0
             fail_msg: "{{ _delete_runs.results | rejectattr('status', 'equalto', 200) | list | length }} DELETE
-              request(s) were not accepted. Read-back: {{ (_verify_run.stdout | from_json).refusal
-              | default('every other listed archive is gone') }}"
+              request(s) were not accepted. Read-back: {{ _readback }}"
 
         - name: Require every delete task to have stopped
           ansible.builtin.assert:
-            that: _delete_stopped | length == _delete_polled | int
-            fail_msg: "{{ _delete_polled | int - _delete_stopped | length }} delete task(s) had not stopped when the
-              wait ended. Read-back: {{ (_verify_run.stdout | from_json).refusal
-              | default('every other listed archive is gone') }}"
+            that: _delete_stopped | length == _delete_running | length
+            fail_msg: "{{ _delete_running | length - _delete_stopped | length }} delete task(s) were not seen stopped
+              when the wait ended. Read-back: {{ _readback }}"
 
         - name: Require every delete task to end OK
           ansible.builtin.assert:

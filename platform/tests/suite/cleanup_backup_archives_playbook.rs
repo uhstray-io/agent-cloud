@@ -8,7 +8,7 @@
 //!   the run is not in check mode.
 //! - Before the first DELETE the jobs and guests are read again and the list rebuilt; a changed list
 //!   (a covering job, a guest back, a new pool job) is refused.
-//! - A refused DELETE, or a delete task still running when the wait ends, still reaches the read-back
+//! - A refused DELETE, or a delete task not seen stopped when the wait ends, still reaches the read-back
 //!   and verify, and the run ends red.
 //!
 //! Each behavioural test lifts the play's own task, with its `when` and assertion untouched, and
@@ -416,14 +416,14 @@ fn a_refused_delete_still_reaches_the_read_back_and_the_run_ends_red() {
 }
 
 #[test]
-fn a_delete_task_still_running_when_the_wait_ends_still_reaches_the_read_back() {
-    // Arrange: the block from its wait on, after one accepted DELETE whose task never reports stopped (its
-    // status is read from a closed local port), the retries cut to two, and the re-read replaced by a read
-    // that still holds the archive.
+fn a_delete_task_not_seen_stopped_when_the_wait_ends_still_reaches_the_read_back() {
+    // Arrange: the block from its selection of running deletes on, the retries cut to two, task status read
+    // from a closed local port (never seen stopped), and the re-read replaced by a read that still holds the
+    // archive. Two accepted answers: a task id, and a reply with no body the poll cannot use.
     let play = cleanup_play();
     let tasks: Vec<Value> = block_tasks(&play)
         .into_iter()
-        .skip_while(|t| t["name"] != "Wait for each running delete task")
+        .skip_while(|t| t["name"] != "Select the accepted deletes still running")
         .map(|mut t| {
             if t["name"] == "Wait for each running delete task" {
                 t["retries"] = json!(2);
@@ -437,27 +437,63 @@ fn a_delete_task_still_running_when_the_wait_ends_still_reaches_the_read_back() 
         })
         .collect();
     let (input, list) = confirmed(vec![backup(900)], json!([]));
-    let accepted = json!({"results": [{"status": 200, "json": {"data": "UPID:n1:0:0:0:imgdel:900:t:"},
-                                       "item": list["volumes"][0]}]});
+    let vars = |answer: Value| {
+        json!({
+            "_cleanup": helper(), "_list": list, "_delete_runs": {"results": [answer]},
+            "_pve_host": "http://127.0.0.1:9", "_pve_token_id": "t", "_pve_secret": "s",
+            "_content_reads": {"results": input["content_reads"]}
+        })
+    };
+    let item = list["volumes"][0].clone();
+    let upid =
+        json!({"status": 200, "json": {"data": "UPID:n1:0:0:0:imgdel:900:t:"}, "item": item});
+    let no_body = json!({"status": 200, "item": item});
+
+    // Act + Assert: each run is red naming the task not seen stopped, and the read-back and verify ran.
+    for answer in [upid, no_body] {
+        let out = run(tasks.clone(), vars(answer.clone()), None, false);
+        assert!(!out.ok, "{answer}: {}", out.out);
+        assert!(
+            out.out.contains("1 delete task(s) were not seen stopped"),
+            "{answer}: {}",
+            out.out
+        );
+        assert!(
+            out.out.contains("Listed archives are still present"),
+            "{answer}: {}",
+            out.out
+        );
+    }
+}
+
+#[test]
+fn a_delete_that_finished_within_its_delay_is_not_polled_and_the_run_passes() {
+    // Arrange: the block from its selection of running deletes on, one accepted DELETE that answered null
+    // (finished within `delay`), task status on a closed port, and a re-read in which the archive is gone.
+    let play = cleanup_play();
+    let tasks: Vec<Value> = block_tasks(&play)
+        .into_iter()
+        .skip_while(|t| t["name"] != "Select the accepted deletes still running")
+        .map(|t| {
+            if t["name"] == "Re-read the backup volumes on each backup storage" {
+                json!({"name": t["name"], "ansible.builtin.set_fact": {"_content_rereads": {"results": [
+                    {"item": {"node": "n1", "storage": "backups"}, "status": 200, "json": {"data": []}}]}}})
+            } else {
+                t
+            }
+        })
+        .collect();
+    let (input, list) = confirmed(vec![backup(900)], json!([]));
     let vars = json!({
-        "_cleanup": helper(), "_list": list, "_delete_runs": accepted, "_pve_host": "http://127.0.0.1:9",
-        "_pve_token_id": "t", "_pve_secret": "s", "_content_reads": {"results": input["content_reads"]}
+        "_cleanup": helper(), "_list": list,
+        "_delete_runs": {"results": [{"status": 200, "json": {"data": null}, "item": list["volumes"][0]}]},
+        "_pve_host": "http://127.0.0.1:9", "_pve_token_id": "t", "_pve_secret": "s",
+        "_content_reads": {"results": input["content_reads"]}
     });
 
     // Act
     let out = run(tasks, vars, None, false);
 
-    // Assert: the run is red naming the task that had not stopped, and the read-back and verify ran before.
-    assert!(!out.ok, "{}", out.out);
-    assert!(
-        out.out
-            .contains("1 delete task(s) had not stopped when the wait ended"),
-        "{}",
-        out.out
-    );
-    assert!(
-        out.out.contains("Listed archives are still present"),
-        "{}",
-        out.out
-    );
+    // Assert: nothing is polled, the read-back finds the archive gone, and the run passes.
+    assert!(out.ok, "{}", out.out);
 }
