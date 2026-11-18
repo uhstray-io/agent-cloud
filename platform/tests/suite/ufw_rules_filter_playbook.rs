@@ -252,7 +252,7 @@ fn dual_by_spec(rules: &Value) -> Value {
 }
 
 /// A stored rule with family and peer blank. Production passes `ufw_parse_added` output, which
-/// sets family and peer for a four-field tag (ufw_rules.py:180-181); no case here does, so a
+/// sets family and peer from a four-field tag; no case here does, so a
 /// filter that read them would go unchecked (AC-983).
 fn held(spec: &str, tag: impl Into<Value>) -> Value {
     json!({"spec": spec, "tag": tag.into(), "family": "", "peer": ""})
@@ -489,7 +489,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         ]),
     );
     let bridge_desired = "(['192.0.2.0/24'] | ufw_desired_rules(bridges=['podman1']))";
-    // Each declared rule held as `held` builds one: spec and tag only, family and peer blank. A
+    // Each declared rule held in the shape `held` gives: spec and tag only, family and peer blank. A
     // copy of the whole declared rule would carry keys the read-back never has (dual_family, cmd,
     // is_ssh), and ufw_absent could then rely on them.
     let bridge_held = format!(
