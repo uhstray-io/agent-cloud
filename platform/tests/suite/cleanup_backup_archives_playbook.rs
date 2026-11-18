@@ -445,17 +445,33 @@ fn a_refused_delete_still_reaches_the_read_back_and_the_run_ends_red() {
     let play = cleanup_play();
     let tasks = block_from(&play, "Delete each listed archive", &[reread()]);
 
+    // A DELETE whose reply was cut off after its headers comes back with no `status` at all.
+    let cut_off = block_from(&play, "Keep the accepted DELETE answers", &[reread()]);
+    let mut no_status = accepted(json!({"failed": true}));
+    no_status["results"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("status");
+
     // Act
     let out = run(tasks, block_vars(json!({})), None, false);
-
-    // Assert: red, counting the refused DELETE, with the read-back's result in the same message.
-    red_with(
-        &out,
-        &[
-            "1 DELETE request(s) not accepted",
-            "Read-back: every listed archive is gone",
-        ],
+    let cut = run(
+        cut_off,
+        block_vars(json!({"_delete_runs": no_status})),
+        None,
+        false,
     );
+
+    // Assert: each is red, counting the refused DELETE, with the read-back's result in the same message.
+    for out in [&out, &cut] {
+        red_with(
+            out,
+            &[
+                "1 DELETE request(s) not accepted",
+                "Read-back: every listed archive is gone",
+            ],
+        );
+    }
 }
 
 #[test]
@@ -463,11 +479,7 @@ fn a_delete_task_not_seen_stopped_when_the_wait_ends_still_reaches_the_read_back
     // Arrange: the block from its selection of running deletes on, task status on a closed port. Three
     // accepted answers: a task id, a reply with no body, and a body without `data`.
     let play = cleanup_play();
-    let tasks = block_from(
-        &play,
-        "Select the accepted deletes still running",
-        &[reread()],
-    );
+    let tasks = block_from(&play, "Keep the accepted DELETE answers", &[reread()]);
 
     // Act + Assert: each run is red naming the task not seen stopped, with the read-back's result.
     for answer in [
@@ -491,11 +503,7 @@ fn a_delete_task_not_seen_stopped_when_the_wait_ends_still_reaches_the_read_back
 fn a_delete_that_finished_within_its_delay_is_not_polled_and_the_run_passes() {
     // Arrange: one accepted DELETE that answered null (finished within `delay`), the archive gone.
     let play = cleanup_play();
-    let tasks = block_from(
-        &play,
-        "Select the accepted deletes still running",
-        &[reread()],
-    );
+    let tasks = block_from(&play, "Keep the accepted DELETE answers", &[reread()]);
     let vars = block_vars(json!({"_delete_runs": accepted(json!({"json": {"data": null}}))}));
 
     // Act
@@ -509,7 +517,7 @@ fn a_delete_that_finished_within_its_delay_is_not_polled_and_the_run_passes() {
 fn a_failed_storage_re_read_still_reaches_the_verifier_and_the_one_check() {
     // Arrange: a finished delete, then the real re-read sent to a closed port.
     let play = cleanup_play();
-    let tasks = block_from(&play, "Select the accepted deletes still running", &[]);
+    let tasks = block_from(&play, "Keep the accepted DELETE answers", &[]);
     let vars = block_vars(json!({"_delete_runs": accepted(json!({"json": {"data": null}}))}));
 
     // Act
@@ -529,11 +537,7 @@ fn a_failed_storage_re_read_still_reaches_the_verifier_and_the_one_check() {
 fn a_verifier_that_gives_no_result_is_a_refusal_in_the_one_check() {
     // Arrange: a finished delete, the archive gone, and a verifier that exits without printing.
     let play = cleanup_play();
-    let tasks = block_from(
-        &play,
-        "Select the accepted deletes still running",
-        &[reread()],
-    );
+    let tasks = block_from(&play, "Keep the accepted DELETE answers", &[reread()]);
     let dir = TempDir::new().unwrap();
     let crash = dir.path().join("crash.py");
     std::fs::write(&crash, "raise SystemExit(3)\n").unwrap();
@@ -552,13 +556,15 @@ fn a_verifier_that_gives_no_result_is_a_refusal_in_the_one_check() {
 #[test]
 fn a_delete_task_that_ended_not_ok_carries_the_read_back_and_a_poll_body_without_data_counts() {
     // Arrange: the block from the end-state collection on, after one running task whose poll answered
-    // `stopped` with an error exit, or answered a body without `data` or with `data` null.
+    // `stopped` with an error exit or with no exit status, or answered a body without `data` or with `data`
+    // null.
     let play = cleanup_play();
     let tasks = block_from(&play, "Collect the delete tasks' end states", &[reread()]);
     let running = accepted(json!({"json": {"data": UPID}}))["results"].clone();
     let with = |poll: Value| {
         block_vars(
-            json!({"_delete_runs": {"results": running}, "_delete_running": running, "_task_polls": {"results": [poll]}}),
+            json!({"_delete_runs": {"results": running}, "_delete_accepted": running, "_delete_running": running,
+                   "_task_polls": {"results": [poll]}}),
         )
     };
 
@@ -569,18 +575,26 @@ fn a_delete_task_that_ended_not_ok_carries_the_read_back_and_a_poll_body_without
         None,
         false,
     );
+    let no_exit = run(
+        tasks.clone(),
+        with(json!({"json": {"data": {"status": "stopped"}}})),
+        None,
+        false,
+    );
     let no_data = run(tasks.clone(), with(json!({"json": {}})), None, false);
     let null_data = run(tasks, with(json!({"json": {"data": null}})), None, false);
 
     // Assert: each is red, counted in its own column, with the read-back's result beside it.
-    red_with(
-        &not_ok,
-        &[
-            "0 delete task(s) not seen stopped",
-            "1 delete task(s) not ended OK",
-            "Read-back: every listed archive is gone",
-        ],
-    );
+    for out in [&not_ok, &no_exit] {
+        red_with(
+            out,
+            &[
+                "0 delete task(s) not seen stopped",
+                "1 delete task(s) not ended OK",
+                "Read-back: every listed archive is gone",
+            ],
+        );
+    }
     for out in [&no_data, &null_data] {
         red_with(
             out,
