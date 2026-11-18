@@ -251,9 +251,9 @@ fn dual_by_spec(rules: &Value) -> Value {
     Value::Object(map)
 }
 
-/// A held rule in the pytest `_held` shape: its spec and tag, family and peer blank. The parser
-/// fills family and peer from a tag; no case gives ufw_absent or ufw_masking a held rule with them
-/// set.
+/// A stored rule with family and peer blank. Production passes `ufw_parse_added` output, which
+/// sets family and peer for a four-field tag (ufw_rules.py:180-181); no case here does, so a
+/// filter that read them would go unchecked (AC-983).
 fn held(spec: &str, tag: impl Into<Value>) -> Value {
     json!({"spec": spec, "tag": tag.into(), "family": "", "peer": ""})
 }
@@ -489,10 +489,9 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         ]),
     );
     let bridge_desired = "(['192.0.2.0/24'] | ufw_desired_rules(bridges=['podman1']))";
-    // Each declared rule held in the pytest `_held` shape: only its spec and tag, family and peer
-    // blank (the parser fills family and peer from a tag; no case sets them here). A copy of the
-    // whole declared rule would carry keys the read-back never has (dual_family, cmd, is_ssh), and
-    // ufw_absent could then rely on them.
+    // Each declared rule held as `held` builds one: spec and tag only, family and peer blank. A
+    // copy of the whole declared rule would carry keys the read-back never has (dual_family, cmd,
+    // is_ssh), and ufw_absent could then rely on them.
     let bridge_held = format!(
         "{{{{ {bridge_desired} | map('dict2items') | map('selectattr', 'key', 'in', ['spec', 'tag']) \
          | map('items2dict') | map('combine', {{'family': '', 'peer': ''}}) | list }}}}"
