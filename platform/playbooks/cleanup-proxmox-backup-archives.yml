@@ -9,7 +9,10 @@
 #   - gone:     an archive whose guest (vmid) no longer exists in the cluster, on a storage no other
 #               cluster can write to: a node-local one, or CephFS on this cluster's own Ceph. On any
 #               other shared storage (NFS, CIFS, PBS, an external CephFS) the vmid may belong to another
-#               cluster's guest, so those archives are counted (gone_on_shared) and kept unless declared;
+#               cluster's guest, so those archives are counted (gone_on_shared) and kept unless declared.
+#               That CephFS on this cluster's own Ceph has no other writer is the operator's statement
+#               (operator, 2026-11-18), not a read: nothing this run reads shows who else mounts the
+#               filesystem. Confirm it before the first real run;
 #   - declared: an archive matching a (vmid, storage) pair in the inventory variable
 #               proxmox_backup_cleanup_pairs (site-config; never an extra var). A pair that an enabled
 #               vzdump job still backs up to that storage is refused, naming the job.

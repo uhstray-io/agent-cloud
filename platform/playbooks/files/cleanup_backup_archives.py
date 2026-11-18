@@ -140,6 +140,8 @@ def list_archives(data):
     # A guest missing from this cluster is gone only on a storage no other cluster can write to:
     # a node-local one, or CephFS on this cluster's own Ceph. On any other shared storage (NFS, CIFS,
     # PBS, an external CephFS) the vmid may be another cluster's guest, so it is kept unless declared.
+    # That an own CephFS has no other writer is the operator's statement (operator, 2026-11-18): no read
+    # here shows who else mounts the filesystem.
     config = {c.get("storage"): c for c in data.get("storage_config") or []}
     # Unknown counts as shared: a status with no `shared` field is not taken as node-local.
     own = {r["storage"] for r in data["plan"]["reads"]
