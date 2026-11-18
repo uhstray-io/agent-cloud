@@ -407,13 +407,20 @@
           check_mode: false
           no_log: true
 
-        # The verifier prints one JSON document for every result and refusal it knows. Output that does not
-        # start with `{` (python3 could not run it, or it crashed before printing) is a refusal too, so the
-        # check below still runs.
+        # The verifier prints one JSON document for every result and refusal it knows. Any other output (none,
+        # or a partial document from a crash) fails the parse, which is ignored, and the next task makes it a
+        # refusal, so the check below still runs.
         - name: Keep the read-back's result
           ansible.builtin.set_fact:
-            _verify: "{{ _verify_run.stdout | from_json if (_verify_run.stdout | trim).startswith('{')
-              else {'refusal': 'the verifier gave no result'} }}"
+            _verify: "{{ _verify_run.stdout | from_json }}"
+          register: _verify_parse
+          ignore_errors: true
+          no_log: true
+
+        - name: Treat a read-back with no result as a refusal
+          ansible.builtin.set_fact:
+            _verify: "{{ _verify if (_verify | default(none)) is mapping
+              else dict(refusal='the verifier gave no result') }}"
           no_log: true
 
         # Every task after the first DELETE leaves the block running, so this one check sees every failure at

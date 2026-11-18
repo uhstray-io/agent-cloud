@@ -535,22 +535,29 @@ fn a_failed_storage_re_read_still_reaches_the_verifier_and_the_one_check() {
 
 #[test]
 fn a_verifier_that_gives_no_result_is_a_refusal_in_the_one_check() {
-    // Arrange: a finished delete, the archive gone, and a verifier that exits without printing.
+    // Arrange: a finished delete, the archive gone, and a verifier that exits without printing, or prints a
+    // partial document.
     let play = cleanup_play();
     let tasks = block_from(&play, "Keep the accepted DELETE answers", &[reread()]);
     let dir = TempDir::new().unwrap();
-    let crash = dir.path().join("crash.py");
-    std::fs::write(&crash, "raise SystemExit(3)\n").unwrap();
-    let vars = block_vars(json!({
-        "_delete_runs": accepted(json!({"json": {"data": null}})),
-        "_cleanup": crash.display().to_string()
-    }));
 
-    // Act
-    let out = run(tasks, vars, None, false);
-
-    // Assert
-    red_with(&out, &["Read-back: the verifier gave no result"]);
+    // Act + Assert: each is red with the fallback refusal as the read-back.
+    for (name, body) in [
+        ("silent.py", "raise SystemExit(3)\n"),
+        (
+            "partial.py",
+            "print('{\"refus', end='')\nraise SystemExit(1)\n",
+        ),
+    ] {
+        let script = dir.path().join(name);
+        std::fs::write(&script, body).unwrap();
+        let vars = block_vars(json!({
+            "_delete_runs": accepted(json!({"json": {"data": null}})),
+            "_cleanup": script.display().to_string()
+        }));
+        let out = run(tasks.clone(), vars, None, false);
+        red_with(&out, &["Read-back: the verifier gave no result"]);
+    }
 }
 
 #[test]
