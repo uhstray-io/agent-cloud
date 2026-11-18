@@ -5,12 +5,12 @@
 //! only the app publishing a port; the inventory-gated search-node overlay; the two-file config split
 //! that keeps the app's credentials out of compose's `$` interpolation; a container-only `deploy.sh`
 //! that refuses to start without both rendered env files; the composable deploy, seed and store
-//! playbooks; and a config-as-code Authentik OIDC blueprint whose redirect matches what upstream
-//! hardcodes. No hardcoded addresses or credentials.
+//! playbooks; and a config-as-code Authentik OIDC blueprint whose redirect ends in `/settings`, the
+//! path upstream builds it from. No private addresses or upstream default passwords in the compose.
 //!
 //! Ports the 46 `@test`s of the deleted `platform/tests/test_service_postiz.bats`. Structural only:
-//! file reads, no deploy. Each kept BATS check reads the raw text, as the BATS helpers did; the
-//! checks added beside them read the parsed compose file or task. BATS `! grep` lines
+//! file reads, no deploy. Each kept BATS check reads the raw text, as the BATS helpers did; some
+//! added checks read the parsed compose file or task. BATS `! grep` lines
 //! mid-body never failed under `set -e`, so every absence check here is a real assertion, scoped to
 //! its task block where the BATS check was.
 //!
@@ -37,9 +37,9 @@
 //! - `[ -x ]` is checked as any execute bit, not the owner bit alone;
 //! - the two identical `tasks/place-monorepo.yml` assertions of the deploy-playbook test are one.
 //!
-//! Helpers this file keeps privately until the batch's shared-support PR S7 lands: `task_block`,
-//! `assert_precedes`, `assert_contains`/`refute_contains` and `assert_in`/`refute_in`. The `text`
-//! helpers come from `agent_cloud_tests::text`.
+//! `task_block` and `assert_precedes` are `agent_cloud_tests::text`'s, over a file read by path.
+//! Helpers this file keeps privately until the batch's shared-support PR S7 lands:
+//! `assert_contains`/`refute_contains` and `assert_in`/`refute_in`.
 //!
 //! ## Port map (BATS @test -> Rust fn)
 //!
@@ -192,24 +192,10 @@ fn non_comment_lines(rel: &str) -> String {
         .join("\n")
 }
 
-/// `grep -nE <pattern> <rel> | head -1`: the 1-based line of the first match, `None` when none.
-fn first_match(text: &str, pattern: &str) -> Option<usize> {
-    let re = Regex::new(pattern).unwrap_or_else(|e| panic!("bad pattern {pattern:?}: {e}"));
-    text.split_terminator('\n')
-        .position(|line| re.is_match(line))
-        .map(|i| i + 1)
-}
-
-/// The first line matching `a` comes before the first line matching `b` (assert_helpers.bash
-/// `assert_precedes`). Both patterns are ERE, read per line.
+/// `text::assert_precedes` over the file at `rel`.
+#[track_caller]
 fn assert_precedes(rel: &str, a: &str, b: &str) {
-    let text = text::read(rel);
-    let la = first_match(&text, a).unwrap_or_else(|| panic!("no match for {a:?} in {rel}"));
-    let lb = first_match(&text, b).unwrap_or_else(|| panic!("no match for {b:?} in {rel}"));
-    assert!(
-        la < lb,
-        "{a:?} (line {la}) after {b:?} (line {lb}) in {rel}"
-    );
+    text::assert_precedes(&text::read(rel), a, b);
 }
 
 /// The transport guard runs before the first request that carries a credential.
@@ -221,28 +207,10 @@ fn assert_guard_precedes_first_uri(rel: &str) {
     );
 }
 
-/// 1-based position of the first `-` in a line, 0 when none (awk `index($0, "-")`).
-fn dash_at(line: &str) -> usize {
-    line.find('-').map_or(0, |i| i + 1)
-}
-
-/// One task's body lines: everything after the first line containing `- name: "<name>` (a prefix
-/// match), until the next `- name:` at the same or shallower indent. The text semantics of
-/// assert_helpers.bash `task_block`. Panics when the task is missing.
+/// `text::task_block` over the file at `rel`.
+#[track_caller]
 fn task_block(rel: &str, name: &str) -> String {
-    let start = format!("- name: \"{name}");
-    let next = Regex::new(r"^[[:space:]]*- name:").expect("task pattern");
-    let text = text::read(rel);
-    let mut lines = text.split_terminator('\n');
-    let indent = lines
-        .by_ref()
-        .find(|l| l.contains(&start))
-        .map(dash_at)
-        .unwrap_or_else(|| panic!("{rel}: no task named {name:?}"));
-    lines
-        .take_while(|l| !(next.is_match(l) && dash_at(l) <= indent))
-        .collect::<Vec<_>>()
-        .join("\n")
+    text::task_block(&text::read(rel), name)
 }
 
 /// `grep -qE <pattern> <haystack>`: a line of the text matches.
