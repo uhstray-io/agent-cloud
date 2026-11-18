@@ -288,7 +288,7 @@ fn the_sha_ignores_content_order_and_the_node_read_through() {
         "backups",
         vec![archive("backups", 901, 2), archive("backups", 900, 1)],
     )]);
-    b["plan"] = json!({"reads": [{"node": "n2", "storage": "backups"}]});
+    b["plan"] = json!({"reads": [{"node": "n2", "storage": "backups", "status": {"type": "cephfs", "shared": 1}}]});
     // Act / Assert
     assert_eq!(ok("list", &a)["sha256"], ok("list", &b)["sha256"]);
 }
@@ -443,7 +443,7 @@ fn authorize_refuses_a_permission_read_answered_403() {
 }
 
 fn verify_payload(after: Vec<Value>) -> Value {
-    json!({"volumes": [{"volid": "backups:backup/vzdump-qemu-900-1.vma.zst"}],
+    json!({"volumes": [{"volid": "backups:backup/vzdump-qemu-900-1.vma.zst", "node": "n1"}],
            "before": [read("n1", "backups", vec![archive("backups", 900, 1), archive("backups", 100, 2)])],
            "after": [read("n1", "backups", after)]})
 }
@@ -682,4 +682,50 @@ fn authorize_requires_pool_audit_on_a_named_pool() {
     // Assert
     assert!(text.contains("Pool.Audit on /pool/prod"), "{text}");
     assert_eq!(ok("authorize", &with)["authorized"], 1);
+}
+
+#[test]
+fn the_sha_changes_when_a_node_local_archive_is_on_another_node() {
+    // Arrange: the same gone guest's archive, same volid, size and ctime, on node-local `local`, held by
+    // n1 in one run and by n2 in the other. A node-local volid names a different file on each node.
+    let a = base(vec![read("n1", "local", vec![archive("local", 900, 1)])]);
+    let mut b = base(vec![read("n2", "local", vec![archive("local", 900, 1)])]);
+    b["nodes"] = json!([{"node": "n1", "status": "online"}, {"node": "n2", "status": "online"}]);
+    b["plan"] = json!({"reads": [{"node": "n2", "storage": "local", "status": {"type": "dir", "shared": 0}}]});
+
+    // Act
+    let (sha_a, sha_b) = (
+        ok("list", &a)["sha256"].clone(),
+        ok("list", &b)["sha256"].clone(),
+    );
+
+    // Assert: a confirmed sha cannot carry the delete to the other node's archive.
+    assert_eq!(ok("list", &a)["count"], 1);
+    assert_ne!(sha_a, sha_b);
+}
+
+fn node_local_verify(after: Vec<Value>) -> Value {
+    // n1's copy of the volid is listed; n2 holds an archive with the same volid that was not listed.
+    let x = archive("local", 900, 1);
+    json!({"volumes": [{"volid": x["volid"], "node": "n1"}],
+           "before": [read("n1", "local", vec![x.clone()]), read("n2", "local", vec![x.clone()])],
+           "after": [read("n1", "local", vec![]), read("n2", "local", after)]})
+}
+
+#[test]
+fn verify_matches_node_local_archives_by_node() {
+    // Arrange: after the delete, n2's unlisted archive with the same volid either remains or is gone.
+    let x = archive("local", 900, 1);
+
+    // Act
+    let kept = ok("verify", &node_local_verify(vec![x]));
+    let text = refusal("verify", &node_local_verify(vec![]));
+
+    // Assert: n2's archive staying is not read as the listed one still present, and n2's archive
+    // disappearing is refused, named with its node.
+    assert_eq!(kept, json!({"deleted": 1, "new_archives": 0}));
+    assert!(
+        text.contains("disappeared") && text.contains("on n2"),
+        "{text}"
+    );
 }

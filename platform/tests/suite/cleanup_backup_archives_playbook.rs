@@ -200,3 +200,35 @@ fn a_backup_job_list_answered_403_refuses_the_run_before_any_storage_is_read() {
     assert!(allowed.ok, "{}", allowed.out);
     assert!(at("Require the backup job list") < at("Read each online node's storage status"));
 }
+
+#[test]
+fn the_delete_request_outlasts_the_wait_it_asks_proxmox_for() {
+    // Arrange: the delete task inside the play's delete block.
+    let play = cleanup_play();
+    let block = task(&play, "Delete the listed archives");
+    let delete = block["block"]
+        .as_array()
+        .expect("block")
+        .iter()
+        .find(|t| t["name"] == "Delete each listed archive")
+        .expect("the delete task")
+        .clone();
+    let uri = &delete["ansible.builtin.uri"];
+    let url = uri["url"].as_str().expect("url");
+    let delay: u64 = url
+        .split("delay=")
+        .nth(1)
+        .expect("a delay")
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .expect("a numeric delay");
+
+    // Assert: Proxmox may hold the request for `delay` seconds, so the socket timeout must be longer.
+    let timeout = uri["timeout"].as_u64().expect("an explicit timeout");
+    assert!(
+        timeout > delay,
+        "timeout {timeout} must exceed delay {delay}"
+    );
+}

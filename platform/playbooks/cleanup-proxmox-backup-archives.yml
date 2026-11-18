@@ -273,6 +273,8 @@
               }}/content/{{ item.volid | urlencode }}?delay=30
             method: DELETE
             status_code: 200
+            # Proxmox may hold the request up to `delay` (30 s) before answering; the socket timeout must outlast it.
+            timeout: 60
             headers:
               Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
           loop: "{{ _list.volumes }}"

@@ -22,10 +22,13 @@ Three modes, JSON on stdin, JSON on stdout:
              no enabled job would be seen backing it up), and Pool.Audit on /pool/<pool> for each of
              `pools` (without it the guest listing drops a guest's pool, so a pool job's guests look empty).
   verify     {volumes, before, after} -> refused if a listed archive is still present, or an archive
-             not listed disappeared between the two content reads.
+             not listed disappeared between the two content reads. Archives are matched by node and
+             volid: both reads go through the same node per storage, and a node-local storage holds a
+             separate volid space on each node.
 
-The sha256 covers each archive's volid, size and ctime, never the node it was read through, so a
-shared storage read via another node on the next run gives the same value.
+The sha256 covers each archive's volid, size and ctime, and for a node-local storage the node that holds
+it, since the same volid can name a different archive on another node. A shared storage's node is left
+out, so the same storage read via another node on the next run gives the same value.
 A refusal exits 1 with {"refusal": "..."} so the play can print why without the input.
 """
 
@@ -91,8 +94,10 @@ def _pairs(raw, storages):
     return pairs
 
 
-def _sha(volumes):
-    rows = sorted([v["volid"], int(v["size"]), int(v["ctime"])] for v in volumes)
+def _sha(volumes, shared):
+    # `shared`: the storage IDs Proxmox reports as shared; any other storage's archives carry their node.
+    rows = sorted([v["volid"], "" if v["storage"] in shared else v["node"], int(v["size"]), int(v["ctime"])]
+                  for v in volumes)
     return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -168,7 +173,8 @@ def list_archives(data):
         tally[bucket][0] += 1
         tally[bucket][1] += size
     listed.sort(key=lambda e: (e["storage"], e["vmid"], e["ctime"], e["volid"]))
-    sha = _sha(listed)
+    shared = {r["storage"] for r in data["plan"]["reads"] if survey._flag((r.get("status") or {}).get("shared"))}
+    sha = _sha(listed, shared)
     confirm = data.get("confirm_delete") or ""
     check_mode = bool(data.get("check_mode"))
     if listed and not check_mode and confirm != sha:
@@ -225,15 +231,15 @@ def authorize(data):
 
 
 def verify(data):
-    listed = {v["volid"] for v in data["volumes"]}
-    before = {v["volid"] for _, _, v in _backups(data["before"])}
-    after = {v["volid"] for _, _, v in _backups(data["after"])}
+    listed = {(v["node"], v["volid"]) for v in data["volumes"]}
+    before = {(node, v["volid"]) for node, _, v in _backups(data["before"])}
+    after = {(node, v["volid"]) for node, _, v in _backups(data["after"])}
     present = sorted(listed & after)
     if present:
-        raise Refusal(f"Listed archives are still present: {', '.join(present)}.")
+        raise Refusal(f"Listed archives are still present: {', '.join(f'{v} on {n}' for n, v in present)}.")
     vanished = sorted((before - listed) - after)
     if vanished:
-        raise Refusal(f"Archives that were not listed disappeared: {', '.join(vanished)}.")
+        raise Refusal(f"Archives that were not listed disappeared: {', '.join(f'{v} on {n}' for n, v in vanished)}.")
     return {"deleted": len(listed), "new_archives": len(after - before)}
 
 

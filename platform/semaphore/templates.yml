@@ -2364,7 +2364,7 @@ templates:
         required: true
       - name: confirm_delete
         title: "Confirm delete (sha256)"
-        description: "Leave empty for the dry run. For the real run: the sha256 the dry run printed."
+        description: "Leave empty and turn on Semaphore's Dry Run for the first run. For the real run (Dry Run off): the sha256 the dry run printed."
         type: string
         required: false
 
