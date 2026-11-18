@@ -3,9 +3,12 @@
 # `support_http` is; `support_seed_playbook` runs seed playbooks against that fake in the playbook
 # tier.
 #
-# paths: []. A change under platform/tests/** is a full trigger, which is checked before any area,
-# so this area names no paths: it only lists the modules, once.
-paths: []
+# paths: the filter plugins. support_seed_playbook runs ansible-playbook from the repository root,
+# whose ansible.cfg loads platform/playbooks/filter_plugins/, so a change there must select it
+# (areas.d/README.md, "A test that reads beyond its area"). A change under platform/tests/** is a
+# full trigger anyway.
+paths:
+  - "platform/playbooks/filter_plugins/**"
 tiers:
   http: [support_seed]
   playbook: [support_seed_playbook]
