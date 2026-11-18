@@ -11,10 +11,12 @@
 //! | pytest (`test_ufw_rules_filter.py`) | Rust fn |
 //! |---|---|
 //! | test_every_exported_filter_is_called_by_a_playbook | `every_exported_filter_is_called_by_a_playbook` |
+//! | (none: guards the text read below) | `a_quoted_key_of_any_shape_counts_as_exported` |
 //!
-//! The pytest read `FilterModule().filters()` in-process; here the names are the keys of the
-//! dict literal `filters()` returns, read from the plugin's text. Like the pytest, a name counts
-//! as called when it appears anywhere in a `platform/playbooks/**/*.yml` file.
+//! The pytest read `FilterModule().filters()` in-process, so it saw every key; here the names are
+//! the quoted keys of the dict literal `filters()` returns, read from the plugin's text, whatever
+//! their shape. Like the pytest, a name counts as called when it appears anywhere in a
+//! `platform/playbooks/**/*.yml` file.
 
 use agent_cloud_tests::{repo, text};
 use regex::Regex;
@@ -33,11 +35,27 @@ fn exported() -> Vec<String> {
         .and_then(|(_, rest)| rest.split_once('}'))
         .unwrap_or_else(|| panic!("{PLUGIN}: filters() does not return a dict literal"))
         .0;
-    // Either quote: Python accepts both, and a single-quoted key must not slip past.
-    let key = Regex::new(r#"["']([A-Za-z_][A-Za-z0-9_]*)["']\s*:"#).unwrap();
+    dict_keys(literal)
+}
+
+/// The quoted keys of a Python dict literal's body, in order. Either quote, and any key text:
+/// the pytest saw every key `filters()` returns, so a key that is not identifier-shaped (one a
+/// playbook could not call) must not slip past either.
+fn dict_keys(literal: &str) -> Vec<String> {
+    let key = Regex::new(r#"["']([^"']+)["']\s*:"#).unwrap();
     key.captures_iter(literal)
         .map(|c| c[1].to_string())
         .collect()
+}
+
+#[test]
+fn a_quoted_key_of_any_shape_counts_as_exported() {
+    let literal = r#""ufw_address": ufw_address, 'ufw_tag': f,
+                "ufw-unused": g, "ufw.dot": h, "9lead": i"#;
+    assert_eq!(
+        dict_keys(literal),
+        ["ufw_address", "ufw_tag", "ufw-unused", "ufw.dot", "9lead"]
+    );
 }
 
 #[test]
