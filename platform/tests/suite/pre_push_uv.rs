@@ -108,8 +108,10 @@ exit "${FAKE_BATS_RC:-0}"
 "#;
 
 /// Fake python: logs its own path and the first PATH entry for every call. The one pytest run
-/// logs them again as `pytest-run`, and also logs the fast lane's environment, copies the changed-path list it was given, waits for
-/// FAKE_WAIT (and, finding it, creates FAKE_BATS_RELEASE), then prints FAKE_COLLECT_OUT and exits
+/// logs them again as `pytest-run` and logs the fast lane's environment. It copies the
+/// PYTEST_FAST_CHANGED list to FAKE_FAST_COPY when both are set, and, when FAKE_WAIT is set,
+/// waits for that file; finding it, it logs `bats-started-during-pytest` and creates
+/// FAKE_BATS_RELEASE when that is set. It then prints FAKE_COLLECT_OUT and exits
 /// FAKE_COLLECT_RC. Every other call succeeds, except the `import pytest` probe under
 /// FAKE_NO_PYTEST=1.
 const FAKE_PYTHON: &str = r#"#!/usr/bin/env sh
@@ -1018,7 +1020,10 @@ fn without_gnu_parallel_bats_runs_serially_with_a_note() {
     // (`nouv:/usr/bin:/bin`) found it. This fallback PATH leaves parallel out (`NOUV_EXCLUDED`),
     // so the case could run there; the skip stays because a port keeps its original's skips
     // (docs/MISTAKES.md 2.40), and it says so on stderr.
-    if Path::new("/usr/bin/parallel").exists() || Path::new("/bin/parallel").exists() {
+    if SYSTEM_DIRS
+        .iter()
+        .any(|dir| Path::new(dir).join("parallel").exists())
+    {
         eprintln!("skipped: GNU parallel is installed system-wide, so the fallback PATH finds it");
         return;
     }
