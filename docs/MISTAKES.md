@@ -3281,7 +3281,7 @@ three files. Read line by line against the originals, 3 were weaker than them (a
 the test runner's 30 s bound can kill inside a 20 s readiness wait, a `perl` spawn that panics
 where the original skipped, a PATH dropped whole when one entry is not UTF-8) and 10 had the
 original's gap. Joseph chose to fix all 13, and their siblings in the same three files
-(2026-11-18 17:22Z).
+(2026-11-18 17:22Z): `1df57765`, `72c67e21`, `8193cad9`.
 
 **Root cause.** The PR's mutation pass ran one mutant per guard the ledger cites. It did not run
 a mutant for the property each test's name states. A test ported faithfully keeps every gap of
