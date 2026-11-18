@@ -27,7 +27,6 @@ use std::path::Path;
 use agent_cloud_tests::process;
 use agent_cloud_tests::repo;
 use agent_cloud_tests::text;
-use regex::Regex;
 use tempfile::TempDir;
 
 const HOOK: &str = ".githooks/pre-push";
@@ -119,37 +118,19 @@ fn a_suites_git_commands_cannot_reach_the_pushing_repository() {
 fn the_git_environment_is_cleared_before_any_suite_runs() {
     // Arrange
     let hook = text::read(HOOK);
-    let clear = Regex::new(r"^unset GIT_DIR GIT_WORK_TREE").expect("a valid pattern");
-    let suite = Regex::new(r"^[ \t]*bats ").expect("a valid pattern");
 
-    // Act: positions, not presence, because the order is the point; text::any_line only says
-    // whether a line matches.
-    let cleared_at = hook.lines().position(|line| clear.is_match(line));
-    let first_bats_at = hook.lines().position(|line| suite.is_match(line));
-
-    // Assert
-    let cleared_at = cleared_at.expect("the hook clears the git environment");
-    let first_bats_at = first_bats_at.expect("the hook runs bats");
-    assert!(
-        cleared_at < first_bats_at,
-        "bats (line {}) runs before the unset (line {})",
-        first_bats_at + 1,
-        cleared_at + 1
-    );
+    // Act + Assert: the first unset strictly before the first bats line; a missing one panics.
+    text::assert_precedes(&hook, r"^unset GIT_DIR GIT_WORK_TREE", r"^[ \t]*bats ");
 }
 
 /// The git variables a bash file clears in its `unset GIT_DIR ...` statement, sorted. The
 /// statement may span lines joined by a trailing backslash.
 fn unset_git_vars(text: &str) -> Vec<String> {
     let mut words = Vec::new();
-    let mut inside = false;
-    for line in text.lines() {
-        if !inside {
-            if !line.starts_with("unset GIT_DIR") {
-                continue;
-            }
-            inside = true;
-        }
+    for line in text
+        .lines()
+        .skip_while(|line| !line.starts_with("unset GIT_DIR"))
+    {
         words.extend(
             line.replace('\\', " ")
                 .split_whitespace()

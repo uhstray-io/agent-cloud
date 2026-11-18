@@ -24,6 +24,7 @@
 //! the job shell is a perl script, and a machine without perl has no GNU parallel to run it.
 
 use std::ffi::OsString;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
@@ -146,17 +147,11 @@ impl Fixture {
 
 fn write_executable(path: &Path, body: &str) {
     std::fs::write(path, body).expect("the fake is written");
-    std::fs::set_permissions(path, executable()).expect("the mode");
-}
-
-fn executable() -> std::fs::Permissions {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::Permissions::from_mode(0o755)
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("the mode");
 }
 
 /// Whether an executable `perl` is on PATH.
 fn perl_on_path() -> bool {
-    use std::os::unix::fs::PermissionsExt;
     std::env::var_os("PATH").is_some_and(|path| {
         std::env::split_paths(&path).any(|dir| {
             std::fs::metadata(dir.join("perl"))

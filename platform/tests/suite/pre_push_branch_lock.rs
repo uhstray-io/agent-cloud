@@ -43,7 +43,9 @@ use tempfile::TempDir;
 const HOOK: &str = ".githooks/pre-push";
 const URL: &str = "https://example.invalid/repo.git";
 
-/// Fake `bats`: waits FAKE_BATS_DELAY seconds when set (a slow suite start), records that the
+/// Fake `bats`: waits FAKE_BATS_DELAY seconds when set (a slow suite start; no test sets it, it is
+/// the knob the held push's 60 s bound was checked with: an 18 s delay and a contender 13 s
+/// late fail under the old 30 s bound), records that the
 /// suite started, and, when FAKE_BATS_LOCKS names a file, the entries of FAKE_BATS_LOCK_DIR while
 /// the suite runs; when FAKE_BATS_OWNER names a file, it records its parent's pid (bats is a direct
 /// child of the hook, so that is the hook) and the owner line of the lock FAKE_BATS_OWNER_LOCK,
@@ -159,7 +161,7 @@ impl Ctx {
             .arg("origin")
             .arg(URL)
             .write_stdin(refline(branch))
-            // Above the 20 s readiness wait plus a slow contender's budget: a holder killed at
+            // Above the 20 s readiness wait plus the contender's own run: a holder killed at
             // the scrubbed 30 s default runs no EXIT trap, so its lock stays with a dead owner
             // and the contender reclaims it instead of being refused.
             .timeout(Duration::from_secs(60));

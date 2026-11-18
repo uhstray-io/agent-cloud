@@ -58,7 +58,6 @@
 //! | pre-push rust: the push lane of the Rust suite runs | `the_push_lane_of_the_rust_suite_runs` |
 //! | pre-push rust: a failing Rust lane blocks the push even when the other suites pass | `a_failing_rust_lane_blocks_the_push_even_when_the_other_suites_pass` |
 
-use std::cell::OnceCell;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -174,8 +173,6 @@ struct Ctx {
     uv_log: PathBuf,
     tmp: PathBuf,
     fakepython: PathBuf,
-    /// Set once the no-uv PATH's `system` directory is filled; only the cases that use it pay.
-    linked: OnceCell<()>,
 }
 
 /// A hook run: its exit status and its output, stdout and stderr together (as BATS `run` shows).
@@ -230,7 +227,6 @@ impl Ctx {
             nouv,
             tmp,
             fakepython,
-            linked: OnceCell::new(),
         }
     }
 
@@ -245,11 +241,10 @@ impl Ctx {
     fn path_for(&self, bin: &Path) -> OsString {
         let mut entries = vec![bin.to_path_buf()];
         if bin == self.nouv {
+            // Filled here, not in `new`, so only the cases that use the no-uv PATH pay for it.
             let system = self.t().join("system");
-            self.linked.get_or_init(|| {
-                let dirs: Vec<&Path> = SYSTEM_DIRS.iter().map(Path::new).collect();
-                link_system_tools(&system, &dirs);
-            });
+            let dirs: Vec<&Path> = SYSTEM_DIRS.iter().map(Path::new).collect();
+            link_system_tools(&system, &dirs);
             entries.push(system);
         } else if let Some(inherited) = std::env::var_os("PATH") {
             entries.extend(std::env::split_paths(&inherited));
@@ -310,8 +305,8 @@ impl Ctx {
         self.run_hook(SHA, bin, ("origin", URL), envs)
     }
 
-    /// The hook as a background job: the held push runs until `release` exists, and its pids are
-    /// written to `pids` by the fake bats.
+    /// The hook as a background job. The caller's `envs` name the fake bats's release file
+    /// (FAKE_BATS_HOLD) and pids file (FAKE_BATS_PIDS).
     fn spawn_held(&self, envs: &[(&str, &str)]) -> JoinHandle<Output> {
         let mut cmd = self.hook_command(SHA, &self.fakebin, ("origin", URL), envs);
         // Above the 20 s readiness wait plus the fake bats's own 30 s hold: a held hook killed at
@@ -1154,18 +1149,11 @@ fn held_push(ctx: &Ctx, envs: &[(&str, &str)]) -> (String, String, HeldPush) {
     let pids = ctx.t().join("bats.pids");
     let release = ctx.t().join("release");
     let mut all = vec![
-        (
-            "FAKE_BATS_PIDS",
-            pids.to_str().expect("a UTF-8 path").to_owned(),
-        ),
-        (
-            "FAKE_BATS_HOLD",
-            release.to_str().expect("a UTF-8 path").to_owned(),
-        ),
+        ("FAKE_BATS_PIDS", pids.to_str().expect("a UTF-8 path")),
+        ("FAKE_BATS_HOLD", release.to_str().expect("a UTF-8 path")),
     ];
-    all.extend(envs.iter().map(|(k, v)| (*k, (*v).to_owned())));
-    let borrowed: Vec<(&str, &str)> = all.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    let handle = ctx.spawn_held(&borrowed);
+    all.extend_from_slice(envs);
+    let handle = ctx.spawn_held(&all);
     let held = HeldPush {
         release,
         handle: Some(handle),
