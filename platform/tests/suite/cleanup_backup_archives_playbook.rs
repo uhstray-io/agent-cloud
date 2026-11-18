@@ -211,17 +211,14 @@ fn the_delete_request_outlasts_the_wait_it_asks_proxmox_for() {
         .expect("block")
         .iter()
         .find(|t| t["name"] == "Delete each listed archive")
-        .expect("the delete task")
-        .clone();
+        .expect("the delete task");
     let uri = &delete["ansible.builtin.uri"];
     let url = uri["url"].as_str().expect("url");
     let delay: u64 = url
-        .split("delay=")
-        .nth(1)
+        .rsplit_once("delay=")
         .expect("a delay")
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect::<String>()
+        .1
+        .trim()
         .parse()
         .expect("a numeric delay");
 

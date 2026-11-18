@@ -23,12 +23,13 @@ Three modes, JSON on stdin, JSON on stdout:
              `pools` (without it the guest listing drops a guest's pool, so a pool job's guests look empty).
   verify     {volumes, before, after} -> refused if a listed archive is still present, or an archive
              not listed disappeared between the two content reads. Archives are matched by node and
-             volid: both reads go through the same node per storage, and a node-local storage holds a
-             separate volid space on each node.
+             volid: each storage read goes through the same node before and after the deletes, and a
+             node-local storage holds a separate volid space on each node.
 
-The sha256 covers each archive's volid, size and ctime, and for a node-local storage the node that holds
-it, since the same volid can name a different archive on another node. A shared storage's node is left
-out, so the same storage read via another node on the next run gives the same value.
+The sha256 covers each archive's volid, size and ctime, and the node that holds it unless Proxmox reports
+its storage as shared, since on a node-local storage the same volid can name a different archive on
+another node. A shared storage's node is left out, so the same storage read via another node on the
+next run gives the same value.
 A refusal exits 1 with {"refusal": "..."} so the play can print why without the input.
 """
 
@@ -173,6 +174,8 @@ def list_archives(data):
         tally[bucket][0] += 1
         tally[bucket][1] += size
     listed.sort(key=lambda e: (e["storage"], e["vmid"], e["ctime"], e["volid"]))
+    # Only a storage Proxmox reports as shared leaves its node out of the sha; one whose sharing is unknown
+    # keeps it, the stricter binding (the opposite default to `own` above, and also failing closed).
     shared = {r["storage"] for r in data["plan"]["reads"] if survey._flag((r.get("status") or {}).get("shared"))}
     sha = _sha(listed, shared)
     confirm = data.get("confirm_delete") or ""

@@ -690,18 +690,14 @@ fn the_sha_changes_when_a_node_local_archive_is_on_another_node() {
     // n1 in one run and by n2 in the other. A node-local volid names a different file on each node.
     let a = base(vec![read("n1", "local", vec![archive("local", 900, 1)])]);
     let mut b = base(vec![read("n2", "local", vec![archive("local", 900, 1)])]);
-    b["nodes"] = json!([{"node": "n1", "status": "online"}, {"node": "n2", "status": "online"}]);
     b["plan"] = json!({"reads": [{"node": "n2", "storage": "local", "status": {"type": "dir", "shared": 0}}]});
 
     // Act
-    let (sha_a, sha_b) = (
-        ok("list", &a)["sha256"].clone(),
-        ok("list", &b)["sha256"].clone(),
-    );
+    let (out_a, out_b) = (ok("list", &a), ok("list", &b));
 
     // Assert: a confirmed sha cannot carry the delete to the other node's archive.
-    assert_eq!(ok("list", &a)["count"], 1);
-    assert_ne!(sha_a, sha_b);
+    assert_eq!(out_a["count"], 1);
+    assert_ne!(out_a["sha256"], out_b["sha256"]);
 }
 
 fn node_local_verify(after: Vec<Value>) -> Value {
