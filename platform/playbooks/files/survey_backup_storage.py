@@ -199,11 +199,15 @@ def _day(ts):
 
 def _ok(read, what, storage, privilege):
     if read.get("status") == 403:
-        raise Refusal(f"The Proxmox token may not read {what} on storage {storage} "
-                      f"(needs {privilege} there). Nothing was summarized.")
+        raise Refusal(f"The Proxmox token may not read {what} on storage {storage} (needs {privilege} there).")
     if read.get("status") != 200:
         raise Refusal(f"Proxmox answered {read.get('status')} reading {what} on storage {storage}.")
-    return (read.get("json") or {}).get("data") or []
+    # A 200 without a list is refused, never read as empty: an empty content read under-reports a storage
+    # (and in the cleanup's read-back reports every listed archive gone), an empty prune preview removes nothing.
+    data = (read.get("json") or {}).get("data")
+    if not isinstance(data, list):
+        raise Refusal(f"Proxmox returned no {what} list for storage {storage}.")
+    return data
 
 
 def _backend(cfg):

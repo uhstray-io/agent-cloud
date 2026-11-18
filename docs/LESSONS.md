@@ -40,7 +40,19 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **DERIVED:** A Rust test helper that replaces a Python or BATS one names in its doc every way its output differs from the original, found by running both on the same input; "same as the Python tests" is never written without that run. Python's `text=True` (`harness_sandbox.py`'s `run`) turns `\r\n` and a lone `\r` into `\n` and raises on bytes the locale's encoding cannot decode, so a port that assumes the two agree passes or fails on line endings alone.
 - **APPLIES TO:** helpers in `platform/tests/src/` that stand in for a Python fixture or a BATS helper, and the port briefs that cite them.
 
-### L-007 · 2026-11-18 · tests
+### L-007 · 2026-11-17 · playbooks
+
+- **ACCEPTED:** #1206 (AC-856).
+- **DERIVED:** Proxmox's `GET /access/permissions` maps each held privilege to its propagate flag, so a privilege is held when its key is present, whatever the value (0 included); Proxmox's own permission check tests only that the key is defined. A check that reads the value as the grant refuses a token Proxmox would allow.
+- **APPLIES TO:** playbooks and helpers under `platform/playbooks/` that read `access/permissions` to decide whether a token may act.
+
+### L-008 · 2026-11-17 · playbooks
+
+- **ACCEPTED:** #1206 (AC-856).
+- **DERIVED:** A vmid that this cluster does not know is "gone" only on a storage no other cluster can write to: node-local storage, or CephFS on this cluster's own Ceph (no monitor list). On shared NFS, CIFS, PBS or an external CephFS the vmid may be another cluster's guest, and a storage whose sharing is unknown counts as shared. Work that deletes by "guest no longer exists" restricts itself the same way, or needs the operator to declare each pair. That no client outside this cluster's storage configuration mounts its own CephFS comes from the operator (operator, 2026-11-18), not from a Proxmox or Ceph read: no read the run makes shows such a mount, so the work states it as an assumption the operator confirms.
+- **APPLIES TO:** playbooks that remove or prune Proxmox volumes because their guest is missing.
+
+### L-009 · 2026-11-18 · tests
 
 - **ACCEPTED:** #1186 (AC-949).
 - **DERIVED:** On macOS (Darwin 25.5, 2026-11-18), `mktemp -d` ignores TMPDIR, both with no template and with `-t`: the directory is made under the per-user temporary directory. A test that points a script's temporary files at a scratch directory through TMPDIR puts a stand-in `mktemp` first on the script's PATH, one that passes an explicit template under `$TMPDIR` (`FAKE_MKTEMP` in `suite/pre_push_uv.rs`). Without it, a check that the script cleaned up reads a directory the script never used, and passes.
