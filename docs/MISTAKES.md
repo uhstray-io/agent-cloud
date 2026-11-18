@@ -3275,11 +3275,11 @@ the test cites. A sequential hook is the mutant for "runs while", an unused dire
 nothing behind", an early exit for "cannot reach". A test that only passes because the original
 did is not yet a port. When the original has the gap, the port fixes it and the PR body says so.
 
-**Enforced by.** Convention. This instance: every test of `pre_push_uv.rs` goes red under one
-mutant of the property its name states. The first was `bats_is_already_running_while_pytest_runs`,
-which holds the fake bats until the fake pytest releases it (`FAKE_BATS_RELEASE`, `7fa584cc`): a
-scratch copy of the hook made sequential turns it red, and the test from before the fix passes
-against that copy.
+**Enforced by.** Convention. This instance: the 2026-11-18 sweep (recorded at `c770400b`) put one
+mutant under each of the 28 tests of `pre_push_uv.rs`, and each went red; no check re-runs it. The
+return-3 fix, `bats_is_already_running_while_pytest_runs`, holds the fake bats until the fake
+pytest releases it (`FAKE_BATS_RELEASE`, `7fa584cc`). In that sweep a copy of the hook made
+sequential turned it red.
 
 ## 3. Acting on live state
 
