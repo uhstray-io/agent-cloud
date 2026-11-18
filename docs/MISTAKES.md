@@ -5480,9 +5480,9 @@ delta reviews on.
 
 **Root cause.** The rule names two kinds of reads. The `lanes` test `every_repo_wide_scan_runs_when_a_file_it_reads_changes` checks only `repo::grep` and `repo::ls_files`. The README says named-file reads and the configuration a playbook run loads are not checked mechanically. The owner checked the reads a test can see in its own source. A playbook-tier module's dependence on `ansible.cfg` is not written in that source, so it was missed. All gates were green.
 
-**The rule.** After refreshing a branch over a rule that landed on `dev`, check the branch against every clause of the rule, not only the ones its test enforces. A module in the `playbook` tier loads the filter plugins through the root `ansible.cfg`, so its area lists `"platform/playbooks/filter_plugins/**"` in `paths`.
+**The rule.** After refreshing a branch over a rule that landed on `dev`, check the branch against every clause of the rule, not only the ones its test enforces. A module in the `playbook` tier loads the filter plugins through the root `ansible.cfg`, so a change to a filter plugin must select it in the push lane. While other areas claim the plugins, its own area lists `"platform/playbooks/filter_plugins/**"` in `paths` too.
 
-**Enforced by.** Convention until S9 (AC-977) lands. Its part C fails the `lanes` suite when a change under `platform/playbooks/filter_plugins/` does not select a playbook-tier module in the push lane, and its fixes add the path to the areas it names. On `dev` `4a0e3d49` the same gap is in three more areas: `areas.d/cloudflare_edge.yml` claims no filter plugin, `areas.d/firewall.yml` claims `filter_plugins/ufw_rules.py` alone, and `areas.d/support_forgeries.yml` has `paths: []`.
+**Enforced by.** Convention until S9 (AC-977) part C lands. Part C fails the `lanes` suite when a change to `ansible.cfg` or under `platform/playbooks/filter_plugins/` does not select a playbook-tier module in the push lane, and its fixes add the path to the areas it names. On `dev` `4a0e3d49` the same gap is in three more areas: `areas.d/cloudflare_edge.yml` claims no filter plugin, `areas.d/firewall.yml` claims `filter_plugins/ufw_rules.py` alone, and `areas.d/support_forgeries.yml` has `paths: []`.
 
 ## 6. Working from assumptions about files
 
