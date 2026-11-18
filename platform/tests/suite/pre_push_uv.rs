@@ -268,6 +268,15 @@ impl Ctx {
         Run::of(out)
     }
 
+    /// A stale `.venv` in the checkout, holding the fake python: a hook that puts it on PATH
+    /// when it must not shows up in the python log.
+    fn stale_venv(&self) {
+        let venv = self.repo.join(".venv/bin");
+        std::fs::create_dir_all(&venv).expect("the stale .venv");
+        std::fs::copy(&self.fakepython, venv.join("python")).expect("the stale python");
+        std::fs::copy(&self.fakepython, venv.join("python3")).expect("the stale python3");
+    }
+
     /// The push of SHA to the ordinary remote.
     fn push(&self, bin: &Path, envs: &[(&str, &str)]) -> Run {
         self.run_hook(SHA, bin, ("origin", URL), envs)
@@ -519,10 +528,7 @@ fn sync_that_leaves_no_venv_falls_back_with_warning_not_blocked() {
 fn uv_project_environment_elsewhere_ignores_stale_venv_and_falls_back() {
     // Arrange: a stale .venv in the checkout, and UV_PROJECT_ENVIRONMENT pointing elsewhere.
     let ctx = Ctx::new();
-    let venv = ctx.repo.join(".venv/bin");
-    std::fs::create_dir_all(&venv).expect("the stale .venv");
-    std::fs::copy(&ctx.fakepython, venv.join("python")).expect("the stale python");
-    std::fs::copy(&ctx.fakepython, venv.join("python3")).expect("the stale python3");
+    ctx.stale_venv();
     let elsewhere = ctx.t().join("elsewhere");
 
     // Act
@@ -565,10 +571,7 @@ fn uv_project_environment_elsewhere_ignores_stale_venv_and_falls_back() {
 fn failed_sync_falls_back_to_python3_with_warning() {
     // Arrange: a stale .venv in the checkout, which a failed sync must not put on PATH.
     let ctx = Ctx::new();
-    let venv = ctx.repo.join(".venv/bin");
-    std::fs::create_dir_all(&venv).expect("the stale .venv");
-    std::fs::copy(&ctx.fakepython, venv.join("python")).expect("the stale python");
-    std::fs::copy(&ctx.fakepython, venv.join("python3")).expect("the stale python3");
+    ctx.stale_venv();
 
     // Act
     let run = ctx.push(&ctx.fakebin, &[("FAKE_UV_RC", "1")]);
@@ -650,7 +653,8 @@ fn missing_module_on_python3_fallback_still_skips_and_names_module() {
     // Assert
     assert!(run.passed(), "{}", run.text);
     assert!(run.text.contains("not collectable here"), "{}", run.text);
-    // The hook's own indented line names the module; pytest's echoed output alone does not.
+    // The hook's own indented line names the module. pytest's unindented output, which the hook
+    // echoes, names it too, so only the indented line shows the hook printed it.
     assert!(
         run.text
             .contains("\n          E   ModuleNotFoundError: No module named 'nope'\n"),

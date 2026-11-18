@@ -184,10 +184,8 @@ impl Ctx {
         let seen = self.home.path().join("locks-seen");
         let dir = self.lock_dir(&self.repo);
         let mut all: Vec<(&str, &str)> = envs.to_vec();
-        let seen_s = seen.to_str().expect("a UTF-8 path").to_owned();
-        let dir_s = dir.to_str().expect("a UTF-8 path").to_owned();
-        all.push(("FAKE_BATS_LOCKS", &seen_s));
-        all.push(("FAKE_BATS_LOCK_DIR", &dir_s));
+        all.push(("FAKE_BATS_LOCKS", seen.to_str().expect("a UTF-8 path")));
+        all.push(("FAKE_BATS_LOCK_DIR", dir.to_str().expect("a UTF-8 path")));
         let out = self.push(&self.repo, &all, &[branch]);
         let listing = std::fs::read_to_string(&seen).expect("the fake bats recorded the locks");
         (out, listing)
