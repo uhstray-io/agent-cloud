@@ -3336,7 +3336,11 @@ original's gap. Joseph chose to fix all 13, and their siblings in the same three
 (2026-11-18 17:22Z): `1df57765`, `72c67e21`, `8193cad9`. Those three commits left the same
 PATH fault in three fixtures: the uv and branch-lock fixtures (two of the three files) and the
 git-env fixture (outside them) still dropped a PATH holding one non-UTF-8 entry. The simplify
-pass on the whole PR found it, and `342be0e5` fixed all three.
+pass on the whole PR found it, and `342be0e5` fixed all three. Round 7 of that pass found one
+more, outside the hook fixtures: the port of the settings-registration test read
+`.claude/settings.json` with the suite's YAML reader where the original used `json.loads`, so a
+trailing comma the original refused passed. The commit that adds this note parses it as JSON; a
+scratch copy with the comma left the old test green and turned the new one red.
 
 **Root cause.** The PR's mutation pass ran one mutant per guard the ledger cites. It did not run
 a mutant for the property each test's name states. A test ported faithfully keeps every gap of

@@ -39,13 +39,13 @@ const REFLINE: &str = "refs/heads/x 1111111111111111111111111111111111111111 ref
 /// writes FAKE_BATS_MARKER, so the test can tell the hook reached its BATS step. The scratch
 /// repository goes under TMPDIR, the test's own TempDir: macOS `mktemp -d` ignores TMPDIR, so a
 /// `mktemp -d` here left a repository in the system temp directory after every run.
-const FAKE_BATS: &str = "#!/usr/bin/env sh
+const FAKE_BATS: &str = r#"#!/usr/bin/env sh
 # What the 2026-09-23 test setup did, from a scratch directory.
-: > \"$FAKE_BATS_MARKER\"
-cd \"$TMPDIR\" && git init -q scratch && cd scratch \\
+: > "$FAKE_BATS_MARKER"
+cd "$TMPDIR" && git init -q scratch && cd scratch \
   && git config user.email hacked@example.invalid && git config user.name hacked
 exit 0
-";
+"#;
 
 /// `git -C <dir> config --local <key>` read with a clean environment: its stdout, trimmed.
 fn local_config(home: &Path, dir: &Path, key: &str) -> String {

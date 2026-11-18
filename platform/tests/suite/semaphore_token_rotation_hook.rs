@@ -25,7 +25,8 @@ use std::process::Output;
 
 use agent_cloud_tests::process;
 use agent_cloud_tests::repo;
-use agent_cloud_tests::yaml::{self, Node};
+use agent_cloud_tests::text;
+use serde_json::Value;
 use tempfile::TempDir;
 
 const GUARD: &str = ".claude/hooks/guard-secret-stdin.py";
@@ -84,28 +85,19 @@ fn the_hook_allows_a_script_file_fed_a_secret_path() {
 
 #[test]
 fn the_project_settings_register_the_bash_pretool_guard() {
-    // Arrange
-    let settings = yaml::load_one(&repo::path(".claude/settings.json"))
-        .expect(".claude/settings.json holds one document");
+    // Arrange: parsed as JSON, as the original's json.loads did. A YAML reader also accepts text
+    // that is not JSON, such as a trailing comma.
+    let settings: Value = serde_json::from_str(&text::read(".claude/settings.json"))
+        .expect(".claude/settings.json is JSON");
 
-    // Act: JSON is YAML, so the settings load through the same reader as every other file here.
-    let hook = settings
-        .get("hooks")
-        .and_then(|hooks| hooks.get("PreToolUse"))
-        .and_then(Node::as_seq)
-        .and_then(|entries| entries.first())
-        .expect("a PreToolUse entry");
-    let matcher = hook.get("matcher").and_then(Node::as_str);
-    let inner = hook
-        .get("hooks")
-        .and_then(Node::as_seq)
-        .and_then(|h| h.first());
-    let kind = inner.and_then(|h| h.get("type")).and_then(Node::as_str);
-    let command = inner.and_then(|h| h.get("command")).and_then(Node::as_str);
+    // Act
+    let hook = &settings["hooks"]["PreToolUse"][0];
+    let inner = &hook["hooks"][0];
 
     // Assert
-    assert_eq!(matcher, Some("Bash"));
-    assert_eq!(kind, Some("command"));
+    assert_eq!(hook["matcher"], "Bash");
+    assert_eq!(inner["type"], "command");
+    let command = inner["command"].as_str();
     assert!(
         command.is_some_and(|c| c.contains("guard-secret-stdin.py")),
         "the registered command is {command:?}"

@@ -1286,7 +1286,7 @@ fn a_push_to_a_url_with_credentials_never_prints_the_url() {
     let run = ctx.run_hook(SHA, &ctx.fakebin, (url, url), &[]);
 
     // Assert
-    // The messages never print the output: it would carry the URL when the hook leaks it.
+    // The failure messages leave the output out: it would carry the URL when the hook leaks it.
     assert!(
         run.text.contains("full Python suite, not the fast lane"),
         "the full-suite message is missing"
