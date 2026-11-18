@@ -108,7 +108,7 @@ and why.
 | 2.37 | A credential probe passed on the operator's own git login: the App token mint had failed, the stored password was empty, and a global helper answered; the probe tag was pushed under the operator's identity | Wrong-reason pass | 1 | Test (`platform/tests/test_release_version_playbook.py`) for the playbook; workstation probes Convention |
 | 2.38 | A mutation check swapped one character for another and restored the file within the same second; Python kept loading the mutant's cached bytecode, and the next test run tested the mutant (widens 2.28) | Wrong-reason result | 1 | Convention (a fresh `PYTHONPYCACHEPREFIX` per mutation run) |
 | 2.39 | A "no user is signed in after a refused callback" test asked with the pre-sign-in cookie, which could never show a user; a callback that stored the user and then refused stayed green | False-green test | 2 | Test (`callback_with_a_wrong_nonce_is_refused` and `callback_with_a_token_signed_by_another_key_is_refused` probe with the cookie the refusal sets; leak mutant red) |
-| 2.40 | A port PR (#1186) returned three times, twice for checks copied from their originals that could not fail (an emptiness check that, on macOS, read a directory the hook never used; an overlap check that passed on a sequential hook) | False-green test | 1 | Convention (this instance: overlap handshake, sequential-hook mutant red) |
+| 2.40 | A port PR (#1186) returned four times, three times for checks copied from their originals that could not fail (an emptiness check that, on macOS, read a directory the hook never used; an overlap check that passed on a sequential hook; trimmed comparisons and a lock check that read an unreadable directory as empty) | False-green test | 1 | Convention (this instance: one mutant per test of `pre_push_uv.rs`, each red) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -3238,16 +3238,16 @@ first asserts that the scratch directory existed while BATS ran. The rule did no
 the check was carried over from the original rather than written: nobody chose the handle, so
 nobody asked whether the code under test hands back the same one.
 
-### 2.40 A port PR returned three times, twice for checks copied from originals that could not fail
+### 2.40 A port PR returned four times, three times for checks copied from originals that could not fail
 
 **What happened.** PR #1186 (AC-949) ported the git-hook and commit-gate tests from BATS and
-Python to Rust. It was returned three times. Returns 1 and 2 were correction dispatches from the
+Python to Rust. It was returned four times. Returns 1 and 2 were correction dispatches from the
 PR's owner session to its executor, not posted on the PR. Return 1 was on `0381e46f`,
 fixed in `89002167`, `9b3ac6b7` and `856e6f69`. Its fixes included two checks that could
 pass without the property they name: the scratch-directory emptiness checks, which on macOS
 read a directory the hook never used (2.39, occurrence 2), and a git-environment case that
 passed when the hook stopped before its BATS step. They also raised a readiness wait
-too short under load and a trufflehog exclusion for a deleted file. Return 2 was a correction
+that timed out for a cause not identified, and a trufflehog exclusion for a deleted file. Return 2 was a correction
 dispatch on `784f8889`, fixed in `c1a451c7`. Among its fixes was the git-env fake bats, which on
 macOS left a scratch repository in the system temp directory on every run. A fallback review
 round then approved `c1a451c7` (PR comment, 2026-11-17 13:19Z) without finding the gap below.
@@ -3256,6 +3256,13 @@ Return 3 was CodeRabbit's review of `31297a21` on 2026-11-18. It found that
 pytest. The fake bats's mark file outlived it, and the fake pytest only checked that the file
 existed. The BATS original, which #1186 deletes, had the same gap: its fake bats creates the
 mark on start and never removes it. Joseph chose to fix it in place (batch index decision 46).
+Return 4 was CodeRabbit's review of `ad345c9b` on 2026-11-18: four more assertions that
+normalised what they compared (`trim_end`, `lines()`) or read an unreadable lock directory as
+empty. Joseph chose one sweep of the file (decision 48, 08:10 EST): one mutant per test of
+`pre_push_uv.rs` on the property its name states. Of 28 tests, 21 went red as written and 7
+stayed green and were strengthened. The same class outside that file (decision 49): 2 assertions
+in `pre_push_parallel_sigalrm.rs`, and 2 of the 7 lock-release tests in
+`pre_push_branch_lock.rs` that passed on a hook that never took the lock.
 
 **Root cause.** The PR's mutation pass ran one mutant per guard the ledger cites. It did not run
 a mutant for the property each test's name states. A test ported faithfully keeps every gap of
