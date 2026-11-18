@@ -16,7 +16,8 @@
 //! `parallel` on PATH, and read what ran from logs rather than from output. The fake `bats` logs
 //! the first PATH entry it ran under and, on request, its arguments, its start, its pids, the
 //! scratch directory it saw and a child process. The fake `python3` logs its own path and the
-//! first PATH entry for every call. The fake `uv` logs its arguments. The fake `parallel` logs
+//! first PATH entry for every call, and the `-m pytest` run again on its own line. The fake `uv`
+//! logs its arguments, one per line. The fake `parallel` logs
 //! nothing: it only answers the presence check. The fake `mktemp` honours TMPDIR, as GNU `mktemp`
 //! does and macOS `mktemp` does not, so the scratch directory is in the cases' sight. A held push
 //! runs on a thread through `process::scrubbed`, bounded by its 30 s timeout; `HeldPush` writes
@@ -72,13 +73,14 @@ const JOB_SHELL: &str = "platform/tests/bin/parallel-job-shell";
 const URL: &str = "https://example.invalid/repo.git";
 const SHA: &str = "1111111111111111111111111111111111111111";
 
-/// Fake `bats`: logs the first PATH entry it ran under and, on request, its arguments, its start,
+/// Fake `bats`: logs the first PATH entry it ran under and, on request, its arguments (one per
+/// line), its start,
 /// its pids, the scratch directory it saw and a child process. Then it waits for FAKE_BATS_HOLD
 /// and, with FAKE_BATS_RELEASE, for the fake pytest's release (15 s at most), and exits
 /// FAKE_BATS_RC.
 const FAKE_BATS: &str = r#"#!/usr/bin/env sh
 echo "${PATH%%:*}" >> "$FAKE_BATS_LOG"
-[ -n "${FAKE_BATS_ARGS:-}" ] && echo "$*" > "$FAKE_BATS_ARGS"
+[ -n "${FAKE_BATS_ARGS:-}" ] && printf '%s\n' "$@" > "$FAKE_BATS_ARGS"
 [ -n "${FAKE_BATS_MARK:-}" ] && : > "$FAKE_BATS_MARK"
 [ -n "${FAKE_BATS_SEEN:-}" ] && ls -A "$TMPDIR" > "$FAKE_BATS_SEEN"
 [ -n "${FAKE_BATS_PIDS:-}" ] && echo "$PPID $$" > "$FAKE_BATS_PIDS"
@@ -105,7 +107,7 @@ exit "${FAKE_BATS_RC:-0}"
 "#;
 
 /// Fake python: logs its own path and the first PATH entry for every call. The one pytest run
-/// also logs the fast lane's environment, copies the changed-path list it was given, waits for
+/// logs them again as `pytest-run`, and also logs the fast lane's environment, copies the changed-path list it was given, waits for
 /// FAKE_WAIT (and, finding it, creates FAKE_BATS_RELEASE), then prints FAKE_COLLECT_OUT and exits
 /// FAKE_COLLECT_RC. Every other call succeeds.
 const FAKE_PYTHON: &str = r#"#!/usr/bin/env sh
@@ -113,6 +115,7 @@ echo "$0 first-path=${PATH%%:*}" >> "$FAKE_PY_LOG"
 case "$*" in
   *"import pytest"*) [ "${FAKE_NO_PYTEST:-0}" = 1 ] && exit 1; exit 0 ;;
   *"-m pytest"*)
+    echo "pytest-run $0 first-path=${PATH%%:*}" >> "$FAKE_PY_LOG"
     echo "pytest PYTEST_FAST=${PYTEST_FAST:-unset} PYTEST_FAST_CHANGED=${PYTEST_FAST_CHANGED:-unset}" >> "$FAKE_PY_LOG"
     if [ -n "${PYTEST_FAST_CHANGED:-}" ] && [ -n "${FAKE_FAST_COPY:-}" ]; then
       cp "$PYTEST_FAST_CHANGED" "$FAKE_FAST_COPY"
@@ -131,10 +134,10 @@ esac
 exit 0
 "#;
 
-/// Fake uv: records its arguments, exits FAKE_UV_RC, and on success creates .venv/bin's python
+/// Fake uv: records its arguments, one per line, exits FAKE_UV_RC, and on success creates .venv/bin's python
 /// and python3 as the real sync does, unless FAKE_UV_NOVENV=1. `@FAKEPY@` is the fake python.
 const FAKE_UV: &str = r#"#!/usr/bin/env sh
-echo "$*" >> "$FAKE_UV_LOG"
+printf '%s\n' "$@" >> "$FAKE_UV_LOG"
 [ "${FAKE_UV_RC:-0}" = 0 ] || exit "$FAKE_UV_RC"
 [ "${FAKE_UV_NOVENV:-0}" = 1 ] && exit 0
 mkdir -p .venv/bin && cp "@FAKEPY@" .venv/bin/python && cp "@FAKEPY@" .venv/bin/python3
@@ -151,9 +154,9 @@ exec /usr/bin/mktemp -d "$TMPDIR/tmp.XXXXXXXX"
 /// A `parallel` that is installed and does nothing: the hook asks for it by name.
 const FAKE_PARALLEL: &str = "#!/bin/sh\nexit 0\n";
 
-/// A fake platform/tests/lane.sh: records its argument and exits FAKE_LANE_RC.
+/// A fake platform/tests/lane.sh: records its arguments, one per line, and exits FAKE_LANE_RC.
 const FAKE_LANE: &str = r#"#!/usr/bin/env sh
-echo "$*" > "@LANE_ARGS@"
+printf '%s\n' "$@" > "@LANE_ARGS@"
 exit "${FAKE_LANE_RC:-0}"
 "#;
 
@@ -183,8 +186,9 @@ impl Ctx {
         let repo = t.join("repo");
         let fakebin = t.join("fakebin");
         let nouv = t.join("nouv");
+        let system = t.join("system");
         let tmp = t.join("tmp");
-        for dir in [&fakebin, &nouv, &tmp] {
+        for dir in [&fakebin, &nouv, &system, &tmp] {
             std::fs::create_dir(dir).expect("a scratch directory");
         }
         std::fs::create_dir_all(repo.join("platform/tests/bin")).expect("the checkout");
@@ -210,6 +214,8 @@ impl Ctx {
         );
         write_executable(&fakebin.join("parallel"), FAKE_PARALLEL);
         write_executable(&fakebin.join("mktemp"), FAKE_MKTEMP);
+        let dirs: Vec<&Path> = SYSTEM_DIRS.iter().map(Path::new).collect();
+        link_system_tools(&system, &dirs);
 
         Self {
             py_log: t.join("python.log"),
@@ -228,11 +234,12 @@ impl Ctx {
         self.home.path()
     }
 
-    /// The PATH a run gets: the bin directory first. The `nouv` directory is paired with
-    /// /usr/bin:/bin only, so no real uv can be found on it.
+    /// The PATH a run gets: the bin directory first. The `nouv` directory is paired only with
+    /// the scratch `system` directory: links to every tool of /usr/bin and /bin except uv, uvx
+    /// and GNU parallel, so no real uv can be found on it, wherever the machine installs one.
     fn path_for(&self, bin: &Path) -> String {
         if bin == self.nouv {
-            format!("{}:/usr/bin:/bin", bin.display())
+            format!("{}:{}", bin.display(), self.t().join("system").display())
         } else {
             format!(
                 "{}:{}",
@@ -364,6 +371,35 @@ impl Run {
     }
 }
 
+/// The directories the original BATS fixture put after `nouv` (`nouv:/usr/bin:/bin`).
+const SYSTEM_DIRS: &[&str] = &["/usr/bin", "/bin"];
+
+/// Never linked onto the no-uv PATH, wherever the machine installs them: uv and uvx would turn
+/// the no-uv case into a sync, and GNU parallel would change how BATS runs.
+const NOUV_EXCLUDED: &[&str] = &["uv", "uvx", "parallel"];
+
+/// Links every entry of `from` into `dir` under its own name, the first directory winning, except
+/// `NOUV_EXCLUDED`. Every tool the original fixture's PATH held stays, so the hook's own tools
+/// (cksum, ln, ps, ...) need no list kept in step with it.
+fn link_system_tools(dir: &Path, from: &[&Path]) {
+    for source in from {
+        let Ok(entries) = std::fs::read_dir(source) else {
+            continue;
+        };
+        for entry in entries {
+            let entry = entry.expect("a system directory entry");
+            let name = entry.file_name();
+            if NOUV_EXCLUDED.iter().any(|x| name == *x) {
+                continue;
+            }
+            let link = dir.join(&name);
+            if link.symlink_metadata().is_err() {
+                std::os::unix::fs::symlink(entry.path(), link).expect("a system tool link");
+            }
+        }
+    }
+}
+
 fn write_executable(path: &Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::write(path, body).expect("the fake is written");
@@ -477,8 +513,9 @@ fn successful_locked_sync_puts_venv_first_on_path_for_both_suites() {
 
     // Assert
     assert!(run.passed(), "{}", run.text);
-    assert!(
-        any_line(&read(&ctx.uv_log), "^sync --locked"),
+    assert_eq!(
+        read(&ctx.uv_log),
+        "sync\n--locked\n--quiet\n",
         "uv was not synced locked"
     );
     assert!(
@@ -487,6 +524,15 @@ fn successful_locked_sync_puts_venv_first_on_path_for_both_suites() {
             r"\.venv/bin/python3 first-path=.*/\.venv/bin$"
         ),
         "python3 did not run from .venv/bin: {}",
+        read(&ctx.py_log)
+    );
+    // On the `-m pytest` run itself: the import probe alone logs the same interpreter.
+    assert!(
+        any_line(
+            &read(&ctx.py_log),
+            r"^pytest-run .*/\.venv/bin/python3 first-path=.*/\.venv/bin$"
+        ),
+        "pytest did not run from .venv/bin: {}",
         read(&ctx.py_log)
     );
     assert!(
@@ -512,7 +558,10 @@ fn sync_that_leaves_no_venv_falls_back_with_warning_not_blocked() {
     // Assert
     assert!(run.passed(), "{}", run.text);
     assert!(
-        read(&ctx.py_log).contains("fakebin/python3 "),
+        any_line(
+            &read(&ctx.py_log),
+            r"^pytest-run .*/fakebin/python3 first-path=.*/fakebin$"
+        ),
         "{}",
         read(&ctx.py_log)
     );
@@ -543,7 +592,10 @@ fn uv_project_environment_elsewhere_ignores_stale_venv_and_falls_back() {
     // Assert
     assert!(run.passed(), "{}", run.text);
     assert!(
-        read(&ctx.py_log).contains("fakebin/python3 "),
+        any_line(
+            &read(&ctx.py_log),
+            r"^pytest-run .*/fakebin/python3 first-path=.*/fakebin$"
+        ),
         "{}",
         read(&ctx.py_log)
     );
@@ -564,7 +616,7 @@ fn uv_project_environment_elsewhere_ignores_stale_venv_and_falls_back() {
     // empty log above means the hook did not call it.
     let control = ctx.push(&ctx.fakebin, &[]);
     assert!(control.passed(), "{}", control.text);
-    assert_eq!(read(&ctx.uv_log), "sync --locked --quiet\n");
+    assert_eq!(read(&ctx.uv_log), "sync\n--locked\n--quiet\n");
 }
 
 #[test]
@@ -579,7 +631,10 @@ fn failed_sync_falls_back_to_python3_with_warning() {
     // Assert
     assert!(run.passed(), "{}", run.text);
     assert!(
-        read(&ctx.py_log).contains("fakebin/python3 "),
+        any_line(
+            &read(&ctx.py_log),
+            r"^pytest-run .*/fakebin/python3 first-path=.*/fakebin$"
+        ),
         "{}",
         read(&ctx.py_log)
     );
@@ -606,7 +661,10 @@ fn without_uv_the_suite_runs_on_python3_with_warning() {
     // Assert
     assert!(run.passed(), "{}", run.text);
     assert!(
-        read(&ctx.py_log).contains("nouv/python3 "),
+        any_line(
+            &read(&ctx.py_log),
+            r"^pytest-run .*/nouv/python3 first-path=.*/nouv$"
+        ),
         "{}",
         read(&ctx.py_log)
     );
@@ -967,10 +1025,10 @@ fn bats_takes_ci_flags_when_gnu_parallel_is_installed() {
 
     // Assert
     assert!(run.passed(), "{}", run.text);
-    // Exact, with the fake's final newline: a trimmed compare hides an extra empty argument.
+    // Exact, one argument per line: an extra empty argument shows as an empty line.
     assert_eq!(
         read(&args),
-        "--jobs 4 --no-parallelize-within-files platform/tests/\n"
+        "--jobs\n4\n--no-parallelize-within-files\nplatform/tests/\n"
     );
 }
 
@@ -994,7 +1052,7 @@ fn without_gnu_parallel_bats_runs_serially_with_a_note() {
 
     // Assert
     assert!(run.passed(), "{}", run.text);
-    // Exact, with the fake's final newline: a trimmed compare hides an extra empty argument.
+    // Exact, one argument per line: an extra empty argument shows as an empty line.
     assert_eq!(read(&args), "platform/tests/\n");
     assert!(
         run.text.contains("GNU parallel is not installed"),
@@ -1401,7 +1459,7 @@ fn the_push_lane_of_the_rust_suite_runs() {
 
     // Assert
     assert!(run.passed(), "{}", run.text);
-    // Exact, with the fake's final newline: a trimmed compare hides an extra empty argument.
+    // Exact, one argument per line: an extra empty argument shows as an empty line.
     assert_eq!(
         read(&args),
         "push\n",
@@ -1427,4 +1485,34 @@ fn a_failing_rust_lane_blocks_the_push_even_when_the_other_suites_pass() {
     );
     assert!(run.text.contains("Rust suite FAILED"), "{}", run.text);
     assert!(run.text.contains("PUSH BLOCKED"), "{}", run.text);
+}
+
+#[test]
+fn the_no_uv_path_links_every_system_tool_but_uv_uvx_and_parallel() {
+    // Arrange: a stand-in system directory holding uv, as /usr/bin does where a distribution
+    // packages it there.
+    let t = TempDir::new().expect("a temporary directory");
+    let sys = t.path().join("sys");
+    let linked = t.path().join("linked");
+    std::fs::create_dir_all(&sys).expect("the system directory");
+    std::fs::create_dir_all(&linked).expect("the link directory");
+    for name in ["cksum", "git", "parallel", "uv", "uvx"] {
+        write_executable(&sys.join(name), "#!/bin/sh\nexit 0\n");
+    }
+
+    // Act
+    link_system_tools(&linked, &[sys.as_path()]);
+
+    // Assert
+    let mut names: Vec<String> = std::fs::read_dir(&linked)
+        .expect("the link directory reads")
+        .map(|e| {
+            e.expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    assert_eq!(names, ["cksum", "git"]);
 }
