@@ -5,10 +5,29 @@
 //! pattern, a refusal of an invalid pattern. The fixture is `platform/tests/Cargo.toml`, a tracked
 //! file whose `name` line these tests read.
 
-use agent_cloud_tests::text::{any_line, assert_line, assert_text, read, refute_line, refute_text};
+use agent_cloud_tests::text::{
+    any_line, assert_line, assert_precedes, assert_text, read, refute_line, refute_text, task_block,
+};
 
 /// The tracked fixture: its `name` line is `name = "agent-cloud-tests"`.
 const CARGO: &str = "platform/tests/Cargo.toml";
+
+/// Two tasks at the top level, one of them with a block whose child task is one level deeper, then
+/// a last task at the top level.
+const PLAY: &str = r#"- name: "Compute the declared rules"
+  ansible.builtin.set_fact:
+    rules: []
+- name: "Allow SSH (22/tcp) from each admin CIDR"
+  ansible.builtin.ufw:
+    rule: allow
+  block:
+    - name: "Nested child"
+      ansible.builtin.debug:
+        msg: child
+- name: "Last task"
+  ansible.builtin.debug:
+    msg: last
+"#;
 
 #[test]
 fn any_line_matches_a_line_of_the_text() {
@@ -28,7 +47,6 @@ fn any_line_anchors_each_line_on_its_own() {
 fn any_line_never_matches_across_a_newline() {
     // `.` does not match `\n`, and `\n` itself is never inside a line: grep reads the same way.
     assert!(!any_line("ab\ncd", "b.c"));
-    assert!(!any_line("ab\ncd", r"b\nc"));
 }
 
 #[test]
@@ -166,4 +184,165 @@ fn read_returns_the_file_as_text() {
 #[should_panic(expected = "platform/tests/no-such-file.toml: ")]
 fn read_panics_on_a_missing_file_with_its_path() {
     read("platform/tests/no-such-file.toml");
+}
+
+#[test]
+fn task_block_is_the_body_after_the_header_without_the_header() {
+    assert_eq!(
+        task_block(PLAY, "Compute the declared rules"),
+        "  ansible.builtin.set_fact:\n    rules: []"
+    );
+}
+
+#[test]
+fn task_block_stops_at_a_shallower_task() {
+    // The child sits at column 5; the top-level `Last task` at column 1 is shallower and ends it.
+    assert_eq!(
+        task_block(PLAY, "Nested child"),
+        "      ansible.builtin.debug:\n        msg: child"
+    );
+}
+
+#[test]
+fn task_block_keeps_a_deeper_task_inside_its_body() {
+    assert_eq!(
+        task_block(PLAY, "Allow SSH (22/tcp) from each admin CIDR"),
+        "  ansible.builtin.ufw:\n    rule: allow\n  block:\n    - name: \"Nested child\"\n      ansible.builtin.debug:\n        msg: child"
+    );
+}
+
+#[test]
+fn task_block_takes_the_first_task_a_prefix_matches() {
+    let text = "- name: \"Foo bar\"\n  first: 1\n- name: \"Foo\"\n  second: 2\n";
+    assert_eq!(task_block(text, "Foo"), "  first: 1");
+}
+
+#[test]
+fn task_block_matches_a_name_with_regex_characters_as_a_literal() {
+    // As a regex, `(22/tcp)` is a group that also matches `22/tcp`: the first task would be taken.
+    let text = "- name: \"Allow SSH 22/tcp from each admin CIDR\"\n  other: 1\n- name: \"Allow SSH (22/tcp) from each admin CIDR\"\n  real: 2\n";
+    assert_eq!(
+        task_block(text, "Allow SSH (22/tcp) from each admin CIDR"),
+        "  real: 2"
+    );
+}
+
+#[test]
+fn task_block_ends_at_a_header_indented_with_any_posix_blank() {
+    // The BATS `^[[:space:]]*- name:` takes tab, vertical tab, form feed and carriage return as
+    // indent too. `Y`'s dash is in X's dash column (3), behind the blank and a space, so it ends
+    // the block only when the blank counts as indent.
+    for blank in ["\t", "\u{b}", "\u{c}", "\r"] {
+        let text = format!("  - name: \"X\"\n    body: 1\n{blank} - name: \"Y\"\n    other: 2\n");
+        assert_eq!(task_block(&text, "X"), "    body: 1", "blank {blank:?}");
+    }
+}
+
+#[test]
+fn task_block_keeps_a_carriage_return_on_its_body_line() {
+    let text = "- name: \"X\"\r\n  body: 1\r\n- name: \"Y\"\r\n";
+    assert_eq!(task_block(text, "X"), "  body: 1\r");
+}
+
+#[test]
+#[should_panic(expected = "no task named \"Absent\"")]
+fn task_block_panics_on_a_missing_task() {
+    // An empty body would pass every refute on it, so the absence is the failure.
+    task_block(PLAY, "Absent");
+}
+
+#[test]
+fn assert_precedes_passes_when_the_first_pattern_comes_first() {
+    assert_precedes("alpha\nbeta\n", "^alpha", "^beta");
+}
+
+#[test]
+#[should_panic(expected = "`^beta` (line 2) is not before `^alpha` (line 1)")]
+fn assert_precedes_panics_when_reversed_naming_both_line_numbers() {
+    assert_precedes("alpha\nbeta\n", "^beta", "^alpha");
+}
+
+#[test]
+#[should_panic(expected = "`both` (line 1) is not before `both` (line 1)")]
+fn assert_precedes_panics_when_one_line_matches_both_patterns() {
+    assert_precedes("both\n", "both", "both");
+}
+
+#[test]
+#[should_panic(expected = "no line matches `^absent`")]
+fn assert_precedes_names_a_missing_first_pattern() {
+    assert_precedes("alpha\n", "^absent", "^alpha");
+}
+
+#[test]
+#[should_panic(expected = "no line matches `^absent`")]
+fn assert_precedes_names_a_missing_second_pattern() {
+    assert_precedes("alpha\n", "^alpha", "^absent");
+}
+
+#[test]
+#[should_panic(
+    expected = "platform/tests/Cargo.toml: `\\n` cannot match any text free of a line feed"
+)]
+fn refute_line_refuses_a_pattern_that_needs_a_line_feed_naming_the_file() {
+    // Were it compiled, `\n` would match no line, so the refute would pass whatever the file held.
+    refute_line(CARGO, r"\n");
+}
+
+#[test]
+fn patterns_with_a_match_free_of_a_line_feed_are_allowed() {
+    // An escaped backslash then `n` is the two characters `\n` in the text, not an escape.
+    assert!(any_line(r"a\nb", r"\\n"));
+    // `[^\n]` is any character but a line feed; `[\n\t]` can match its tab.
+    assert!(any_line("ab", r"a[^\n]"));
+    assert!(any_line("a\tb", r"a[\n\t]b"));
+    // A bare `{` does not compile; escaped, it matches a literal brace.
+    assert!(any_line("mv {{ x }}", r"mv \{\{"));
+    // An alternative or an optional part without a line feed can still match a line.
+    assert!(any_line("ab", r"ab|\n"));
+    assert!(any_line("ab", r"a\n?b"));
+    // An empty group matches the empty text, which every line holds.
+    assert!(any_line("x", r"(?:)"));
+    // Under `(?x)` blanks before a class's leading `]` keep it a member, so this class is `]` or a
+    // line feed; and a `#` comment runs to the end of its line, here the pattern's end, so its `\n`
+    // is text.
+    assert!(any_line("]", r"(?x)[ ]\n]"));
+    assert!(any_line("a", r"(?x)a # \n"));
+}
+
+#[test]
+fn any_line_refuses_every_pattern_that_needs_a_line_feed() {
+    // Were they compiled, none would match a line of the text, so the refusal is the difference
+    // between a check and a silent pass. `[\n]`, `(?x)\x 0a` and `[!-[]\n` got past the old byte
+    // scan (AC-963): a class of the line feed alone, an escape spread over blanks, and a line feed
+    // after a class whose range ends in `[`. `\x{000A}` and `\U0000000A` pin the brace and
+    // eight-digit spellings.
+    for pattern in [
+        r"b\nc",
+        r"\x0a",
+        r"\x{000A}",
+        r"\U0000000A",
+        r"[]a]\x0a",
+        r"(a\n)+",
+        r"[\n]",
+        r"(?x)\x 0a",
+        r"[!-[]\n",
+        // An empty class matches no character at all.
+        r"a[^\x00-\x{10FFFF}]",
+    ] {
+        let panic = std::panic::catch_unwind(|| any_line("ab\ncd", pattern))
+            .expect_err(&format!("`{pattern}` was not refused"));
+        let message = panic.downcast_ref::<String>().map_or("", String::as_str);
+        assert!(
+            message.contains("cannot match any text free of a line feed"),
+            "`{pattern}`: {message}"
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "an empty task name finds the first task")]
+fn task_block_refuses_an_empty_name() {
+    // `- name: "` is in every header, so an empty name would silently take the first task.
+    task_block(PLAY, "");
 }
