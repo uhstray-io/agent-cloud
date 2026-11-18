@@ -1,0 +1,6 @@
+# The process helpers (src/lib.rs `process`: output_text, fake_bin) and their tests
+# (suite/support_process.rs). A change under platform/tests/ hits `full`, which is checked before
+# any area, so this area names no paths: it only lists the module, once.
+paths: []
+tiers:
+  cli: [support_process]
