@@ -36,9 +36,13 @@ fn exported() -> Vec<String> {
 
 /// The body of the dict literal `FilterModule.filters` returns, or `None` unless the method is
 /// that one `return {...}` and nothing follows it in the file. Python keeps the last definition,
-/// so this is the method Ansible calls; another statement first, a second `filters`, or a merge
-/// or conditional after the `}` would export names this does not read, and refuses instead.
+/// so this is the method Ansible calls; another statement first, a second `filters`, a merge or
+/// conditional after the `}`, or a decorator (which can replace the class) would export names
+/// this does not read, and refuses instead.
 fn filter_literal(source: &str) -> Option<&str> {
+    if source.starts_with('@') || source.contains("\n@") {
+        return None;
+    }
     let (_, method) = source.split_once("\nclass FilterModule:\n    def filters(self):\n")?;
     let (literal, rest) = method
         .trim_start()
@@ -48,18 +52,20 @@ fn filter_literal(source: &str) -> Option<&str> {
 }
 
 /// The quoted keys of a Python dict literal's body, in order, or `None` when the body holds
-/// anything but `"key": name` pairs. A key may be any text without a quote or backslash, so a key
-/// a playbook could not call still counts. A shape this cannot read (a `**` splat, a key held in
-/// a variable, a value with a brace, an escape) refuses rather than drops a key the pytest saw.
+/// anything but comma-separated `"key": name` pairs, each key in matching quotes. A key may be
+/// any text without a quote or backslash, so a key a playbook could not call still counts. A
+/// shape this cannot read (a `**` splat, a key held in a variable, a value with a brace, an
+/// escape, mismatched quotes) refuses rather than drops a key the pytest saw.
 fn dict_keys(literal: &str) -> Option<Vec<String>> {
-    let pairs = Regex::new(r#"^\s*(?:["'][^"'\\]+["']\s*:\s*[A-Za-z_]\w*\s*,?\s*)*$"#).unwrap();
-    if !pairs.is_match(literal) {
+    let pair = r#"(?:"([^"'\\]+)"|'([^"'\\]+)')\s*:\s*[A-Za-z_]\w*"#;
+    let whole = Regex::new(&format!(r"^\s*(?:{pair}(?:\s*,\s*{pair})*\s*,?)?\s*$")).unwrap();
+    if !whole.is_match(literal) {
         return None;
     }
-    let key = Regex::new(r#"["']([^"'\\]+)["']\s*:"#).unwrap();
+    let key = Regex::new(pair).unwrap();
     Some(
         key.captures_iter(literal)
-            .map(|c| c[1].to_string())
+            .map(|c| c.get(1).or(c.get(2)).unwrap().as_str().to_string())
             .collect(),
     )
 }
@@ -81,6 +87,8 @@ fn a_dict_shape_the_reader_cannot_read_refuses() {
         r#""ufw_a": f, KEYNAME: g"#,
         r#""ufw_a": lambda: {"#,
         r#""ufw\x61": f"#,
+        r#""ufw_a': f, 'ufw_b": g"#,
+        r#""ufw_a": f "ufw_b": g"#,
     ] {
         assert_eq!(dict_keys(literal), None, "{literal}");
     }
@@ -91,6 +99,8 @@ fn a_filters_method_the_reader_cannot_read_refuses() {
     let head = "import re\n\nclass FilterModule:\n    def filters(self):\n";
     let plain = format!("{head}        return {{\"a\": f}}\n");
     assert_eq!(filter_literal(&plain), Some(r#""a": f"#));
+    let decorated = plain.replace("\nclass", "\n@wrap\nclass");
+    assert_eq!(filter_literal(&decorated), None, "{decorated}");
     for body in [
         "        if X:\n            return {\"a\": f}\n        return {\"b\": g}\n",
         "        d = {\"a\": f}\n        return d\n",

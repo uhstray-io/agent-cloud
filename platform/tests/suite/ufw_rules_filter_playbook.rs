@@ -765,7 +765,6 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         let item = format!("test_a_probe_timeout_is_a_whole_number_of_seconds[{timeout}]");
         let probe_args = json!([{"host": "prime.plane.so", "port": 443, "timeout": timeout}]);
         let args = json!([[{"port": 53, "proto": "udp"}], "enforce", probe_args]);
-        // accepted is exactly []; refused is a non-empty list
         let want = if ok {
             Want::Exact(json!([]))
         } else {
