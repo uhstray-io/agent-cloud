@@ -42,10 +42,12 @@ use tempfile::TempDir;
 const HOOK: &str = ".githooks/pre-push";
 const URL: &str = "https://example.invalid/repo.git";
 
-/// Fake `bats`: records that the suite started, then, when FAKE_BATS_HOLD names a file, stays
+/// Fake `bats`: records that the suite started, and, when FAKE_BATS_LOCKS names a file, the
+/// entries of FAKE_BATS_LOCK_DIR while the suite runs, then, when FAKE_BATS_HOLD names a file, stays
 /// "running" until that file exists (bounded, so a broken test cannot hang).
 const FAKE_BATS: &str = r#"#!/usr/bin/env sh
 [ -n "${FAKE_BATS_STARTED:-}" ] && : > "$FAKE_BATS_STARTED"
+[ -n "${FAKE_BATS_LOCKS:-}" ] && ls -A "$FAKE_BATS_LOCK_DIR" > "$FAKE_BATS_LOCKS"
 if [ -n "${FAKE_BATS_HOLD:-}" ]; then
   i=0
   while [ ! -e "$FAKE_BATS_HOLD" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
@@ -176,14 +178,43 @@ impl Ctx {
             .to_owned()
     }
 
-    /// No lock file may remain once the hook has exited.
+    /// The entries of the lock directory while the suite of a push of `branch` runs, read by
+    /// the fake `bats`, and the push's output.
+    fn push_recording_locks(&self, envs: &[(&str, &str)], branch: &str) -> (Output, String) {
+        let seen = self.home.path().join("locks-seen");
+        let dir = self.lock_dir(&self.repo);
+        let mut all: Vec<(&str, &str)> = envs.to_vec();
+        let seen_s = seen.to_str().expect("a UTF-8 path").to_owned();
+        let dir_s = dir.to_str().expect("a UTF-8 path").to_owned();
+        all.push(("FAKE_BATS_LOCKS", &seen_s));
+        all.push(("FAKE_BATS_LOCK_DIR", &dir_s));
+        let out = self.push(&self.repo, &all, &[branch]);
+        let listing = std::fs::read_to_string(&seen).expect("the fake bats recorded the locks");
+        (out, listing)
+    }
+
+    /// The exact listing of the lock directory while `branch`'s push holds only its lock.
+    fn held_listing(&self, branch: &str) -> String {
+        format!(
+            "{}\n",
+            self.lockfile(&self.repo, branch)
+                .file_name()
+                .expect("a lock name")
+                .to_str()
+                .expect("a UTF-8 name")
+        )
+    }
+
+    /// No lock file may remain once the hook has exited. A missing directory holds none; any
+    /// other read error is a failure, never an empty listing.
     fn assert_no_locks(&self, repo: &Path) {
         let dir = self.lock_dir(repo);
         let left: Vec<String> = match std::fs::read_dir(&dir) {
             Ok(entries) => entries
                 .map(|e| e.expect("a lock entry").path().display().to_string())
                 .collect(),
-            Err(_) => Vec::new(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => panic!("the lock directory {} cannot be read: {e}", dir.display()),
         };
         assert!(left.is_empty(), "left behind: {left:?}");
     }
@@ -425,10 +456,15 @@ fn released_after_the_suites_pass() {
     let ctx = Ctx::new();
 
     // Act
-    let out = ctx.push_default(&[], "feat");
+    let (out, held) = ctx.push_recording_locks(&[], "feat");
 
-    // Assert
+    // Assert: the push held its lock while the suite ran, and released it after.
     assert_eq!(code(&out), 0, "{}", text(&out));
+    assert_eq!(
+        held,
+        ctx.held_listing("feat"),
+        "the push never held its lock"
+    );
     ctx.assert_no_locks(&ctx.repo);
 }
 
@@ -438,11 +474,16 @@ fn released_after_a_suite_fails() {
     let ctx = Ctx::new();
 
     // Act
-    let out = ctx.push_default(&[("FAKE_BATS_RC", "1")], "feat");
+    let (out, held) = ctx.push_recording_locks(&[("FAKE_BATS_RC", "1")], "feat");
 
-    // Assert
+    // Assert: the push held its lock while the suite ran, and released it after.
     assert_eq!(code(&out), 1, "expected a blocked push: {}", text(&out));
     assert!(text(&out).contains("PUSH BLOCKED"), "{}", text(&out));
+    assert_eq!(
+        held,
+        ctx.held_listing("feat"),
+        "the push never held its lock"
+    );
     ctx.assert_no_locks(&ctx.repo);
 }
 
@@ -582,5 +623,10 @@ fn a_link_failure_with_no_lock_present_warns_and_proceeds() {
         text(&out)
     );
     assert!(!text(&out).contains("PUSH REFUSED"), "{}", text(&out));
+    // The directory the link was tried in exists, so the empty listing below is a real read.
+    assert!(
+        ctx.lock_dir(&ctx.repo).is_dir(),
+        "the hook made no lock directory"
+    );
     ctx.assert_no_locks(&ctx.repo);
 }
