@@ -45,7 +45,7 @@ and why.
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
 | 1.15 | **x4** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars (x4: a plan generalised "the guard renders no value" from one name; the guard references three) | Unverified claim | 4 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries, or use `forgeries.by_name` with an assertion of the run-start guard's message; the guard's own test proves it never renders a forged value) |
-| 1.16 | **x4** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41) | Unverified claim | 4 | Convention; mechanical check proposed (count ≥ 3) |
+| 1.16 | **x5** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41; x5: a review reply said every failure message carried the read-back result; one did not) | Unverified claim | 5 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6; widened by 1.35, 1.37) | Unverified claim | 1 | Convention |
@@ -176,6 +176,7 @@ and why.
 | 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 1 | Convention (per-agent scratch directory in every brief) |
 | 5.31 | A peer session allowed `SKIP_TESTS=1` for docs-only pushes; two owners retried a denied compound command as a standalone push | Process | 1 | Convention (deny rule for the skipped push proposed; operator's decision) |
 | 5.32 | Ran `git branch -D` on a scratch branch the brief said to keep if `git branch -d` refused; recreated from the reflog | Process | 1 | Convention (deny rule for forced branch deletes proposed; operator's decision) |
+| 5.34 | Fixed a destructive block's failure paths one review finding at a time on #1206; returns 4 and 5 found four more paths in the same block | Process | 1 | Convention (failure table in briefs proposed; coordinator's decision) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -924,7 +925,7 @@ variable keep all three spellings.
 
 ### 1.16 A count written into a committed plan without running the count
 
-**Occurrences: 4** — 2026-09-25, 2026-10-03, 2026-11-02, 2026-11-10
+**Occurrences: 5** — 2026-09-25, 2026-10-03, 2026-11-02, 2026-11-10, 2026-11-18
 
 **What happened.** Recording the launch-permission gap for #264, I wrote into
 `plan/development/01-secrets-credentials.md` that "44 playbook and task files log in to
@@ -989,6 +990,16 @@ instead of extending the existing one. Corrected in PR #1023 (open when this was
 arrived from a subagent with `file:line` citations, so it read as measured (the 1.25 pattern), and
 the rule's own wording, "run at the time of writing", was not applied to a relayed count. The rule
 covers it: a relayed count is re-run before it is written. The proposed mechanical check above would not have caught it: it reads a pull request's Evidence section, and this count sat in a plan bullet that carried a `file:line` citation.
+
+**Occurrence 5 — 2026-11-18.** Answering CodeRabbit's thread on #1206 about a failed DELETE skipping
+the read-back (reply 4609907472, head `7ac3385f`), I wrote that the run fails on each kind of failure
+in turn and "Each message carries the read-back result". Three of the four failure messages did; the
+"did not end OK" message (`cleanup-proxmox-backup-archives.yml:415-418` at that head) carried only its
+count. The final-head review round and CodeRabbit's next comment both found it, and it was part of the
+pull request's fifth return. Why the rule did not fire: the claim was an "every" over the messages of
+a block I had just edited, so it read as known, and it was written into a review reply, not a plan or
+an Evidence section. The rule covers it: an "every" in written evidence, a review reply included, is
+checked against each member of the set when it is written; here, by reading each `fail_msg`.
 
 ### 1.17 Explained a 401 as the token's scope; the service's database had just gone down
 
@@ -5501,6 +5512,36 @@ delta reviews on.
 **The rule.** No forced or recursive delete. One plain delete per item, and a refusal is the answer: stop and report it.
 
 **Enforced by.** Convention. Proposed: permission deny rules for `git branch -D` and `git branch --delete --force` (the operator's decision).
+
+### 5.34 Fixed a destructive block's failure paths one review finding at a time; two more returns found the rest
+
+**Occurrences: 1** — 2026-11-18
+
+**What happened.** On #1206 (the backup-archive cleanup, AC-856), CodeRabbit's review of `ed8606d6`
+said a failed DELETE skipped the wait, the read-back and the verify for the deletes Proxmox had
+accepted. I fixed that one path (`3fed32e3`), within a scope the coordinator had cut to the review's
+two threads (batch decision 42), then a second path I reported myself, a delete task still running when
+the poll ran out (`336c8d00`, decision 45). The pull request's fourth return was that review; its fifth, at
+`7ac3385f`, found two more paths in the same block: a failed storage re-read still ended it before the
+verify, and one failure message carried no read-back result. The coordinator found a third (a
+verifier that prints no JSON failed a hidden task before every message), and a test written for the
+sweep found a fourth (an accepted DELETE whose reply body had no `data` made the selection of running
+deletes raise). Each was a task after the first DELETE that could end the block before the read-back,
+or hide the first failure. Nothing was deleted: the template has never run for real.
+
+**Root cause.** Each finding was repaired as one path, not read as a sample of a class. The delete
+block had no stated rule for what any failure after the first DELETE does, so each fix answered its
+thread and stopped at the thread's edge, and the scope set for the fix (per thread) made the same
+cut. The class was only listed after the fifth return, as a table of every task in the block.
+
+**The rule.** When a finding is about a failure path in a block that changes live state, list every
+task of the block and write, for each, what its failure does: whether the next step is reached and
+what the operator sees. Fix the class in one change, with a test per row fixed, and put the table in
+the pull request. A brief or decision that scopes such a fix names the class and asks for that table,
+not the one path.
+
+**Enforced by.** Convention. Proposed: the batch brief template asks for the failure table on any
+unit that edits a block deleting or changing live state (the coordinator's decision).
 
 ## 6. Working from assumptions about files
 
