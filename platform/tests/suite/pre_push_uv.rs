@@ -554,12 +554,21 @@ fn uv_project_environment_elsewhere_ignores_stale_venv_and_falls_back() {
     // The hook must not sync at all here: a sync would land outside the checkout.
     let uv = read_or_empty(&ctx.uv_log);
     assert!(uv.is_empty(), "uv was invoked: {uv}");
+    // Positive control: the same fake uv, without the variable, does log its call, so the
+    // empty log above means the hook did not call it.
+    let control = ctx.push(&ctx.fakebin, &[]);
+    assert!(control.passed(), "{}", control.text);
+    assert_eq!(read(&ctx.uv_log), "sync --locked --quiet\n");
 }
 
 #[test]
 fn failed_sync_falls_back_to_python3_with_warning() {
-    // Arrange
+    // Arrange: a stale .venv in the checkout, which a failed sync must not put on PATH.
     let ctx = Ctx::new();
+    let venv = ctx.repo.join(".venv/bin");
+    std::fs::create_dir_all(&venv).expect("the stale .venv");
+    std::fs::copy(&ctx.fakepython, venv.join("python")).expect("the stale python");
+    std::fs::copy(&ctx.fakepython, venv.join("python3")).expect("the stale python3");
 
     // Act
     let run = ctx.push(&ctx.fakebin, &[("FAKE_UV_RC", "1")]);
@@ -641,7 +650,13 @@ fn missing_module_on_python3_fallback_still_skips_and_names_module() {
     // Assert
     assert!(run.passed(), "{}", run.text);
     assert!(run.text.contains("not collectable here"), "{}", run.text);
-    assert!(run.text.contains("No module named 'nope'"), "{}", run.text);
+    // The hook's own indented line names the module; pytest's echoed output alone does not.
+    assert!(
+        run.text
+            .contains("\n          E   ModuleNotFoundError: No module named 'nope'\n"),
+        "{}",
+        run.text
+    );
 }
 
 #[test]
@@ -877,12 +892,11 @@ fn fast_lane_pytest_fast_and_exactly_the_changed_paths_reach_pytest() {
     );
     assert!(run.text.contains("FAST LANE"), "{}", run.text);
     assert!(run.text.contains("CI runs the full suite"), "{}", run.text);
-    // The list is exactly the two paths the push changed: not the base's file, and no extra line.
+    // The list is exactly the two paths the push changed: not the base's file, no extra line,
+    // and byte for byte (no carriage return, final newline present), so no `lines()` here.
     let list = read(&copy);
-    let entries: Vec<&str> = list.lines().collect();
     assert_eq!(
-        entries,
-        ["platform/lib/helper.sh", "platform/tests/test_new.py"],
+        list, "platform/lib/helper.sh\nplatform/tests/test_new.py\n",
         "changed list was {list:?}"
     );
 }
@@ -949,9 +963,10 @@ fn bats_takes_ci_flags_when_gnu_parallel_is_installed() {
 
     // Assert
     assert!(run.passed(), "{}", run.text);
+    // Exact, with the fake's final newline: a trimmed compare hides an extra empty argument.
     assert_eq!(
-        read(&args).trim_end(),
-        "--jobs 4 --no-parallelize-within-files platform/tests/"
+        read(&args),
+        "--jobs 4 --no-parallelize-within-files platform/tests/\n"
     );
 }
 
@@ -975,7 +990,8 @@ fn without_gnu_parallel_bats_runs_serially_with_a_note() {
 
     // Assert
     assert!(run.passed(), "{}", run.text);
-    assert_eq!(read(&args).trim_end(), "platform/tests/");
+    // Exact, with the fake's final newline: a trimmed compare hides an extra empty argument.
+    assert_eq!(read(&args), "platform/tests/\n");
     assert!(
         run.text.contains("GNU parallel is not installed"),
         "{}",
@@ -1176,6 +1192,23 @@ fn term_stops_the_bats_job_removes_temporary_files_and_frees_the_lock() {
         any_line(&during, r"^tmp\."),
         "the scratch directory did not exist while BATS ran: {during:?}"
     );
+    // The lock this push holds, proved present and owned by the hook before TERM, so its absence
+    // afterwards is the hook's release and not a lock that was never taken here.
+    let locks = ctx.repo.join(".git/pre-push-locks");
+    let lock_paths = |when: &str| -> Vec<PathBuf> {
+        std::fs::read_dir(&locks)
+            .unwrap_or_else(|e| panic!("the lock directory does not read {when}: {e}"))
+            .map(|e| e.expect("entry").path())
+            .collect()
+    };
+    let before = lock_paths("before TERM");
+    assert_eq!(before.len(), 1, "the push holds no single lock: {before:?}");
+    let owner = read(&before[0]);
+    assert_eq!(
+        owner.lines().next(),
+        Some(hook_pid.as_str()),
+        "the lock is not the hook's: {owner:?}"
+    );
 
     // Act
     let term = send_signal(ctx.t(), "TERM", &hook_pid);
@@ -1195,10 +1228,7 @@ fn term_stops_the_bats_job_removes_temporary_files_and_frees_the_lock() {
         .map(|e| e.expect("entry").path())
         .collect();
     assert!(left.is_empty(), "left behind: {left:?}");
-    let locks = ctx.repo.join(".git/pre-push-locks");
-    let held_locks: Vec<_> = std::fs::read_dir(&locks)
-        .map(|dir| dir.map(|e| e.expect("entry").path()).collect())
-        .unwrap_or_default();
+    let held_locks = lock_paths("after TERM");
     assert!(held_locks.is_empty(), "lock left behind: {held_locks:?}");
 }
 
@@ -1367,9 +1397,10 @@ fn the_push_lane_of_the_rust_suite_runs() {
 
     // Assert
     assert!(run.passed(), "{}", run.text);
+    // Exact, with the fake's final newline: a trimmed compare hides an extra empty argument.
     assert_eq!(
-        read(&args).trim_end(),
-        "push",
+        read(&args),
+        "push\n",
         "lane.sh was called with the wrong lane"
     );
 }
