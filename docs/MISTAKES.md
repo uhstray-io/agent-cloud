@@ -31,7 +31,7 @@ and why.
 | # | Mistake | Class | Count | Enforced by |
 |---|---------|-------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file — **x8** | Unverified claim | 8 | Convention + loader test; hook proposed (count ≥ 3) |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x9** (2026-11-18: called a port's weakened comparisons copied from deleted originals, unread) | Unverified claim | 9 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
 | 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
 | 1.5 | **x2** — Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 2 | Test (runner containerisation); Convention (occurrence 2, launch containment) |
@@ -108,7 +108,7 @@ and why.
 | 2.37 | A credential probe passed on the operator's own git login: the App token mint had failed, the stored password was empty, and a global helper answered; the probe tag was pushed under the operator's identity | Wrong-reason pass | 1 | Test (`platform/tests/test_release_version_playbook.py`) for the playbook; workstation probes Convention |
 | 2.38 | A mutation check swapped one character for another and restored the file within the same second; Python kept loading the mutant's cached bytecode, and the next test run tested the mutant (widens 2.28) | Wrong-reason result | 1 | Convention (a fresh `PYTHONPYCACHEPREFIX` per mutation run) |
 | 2.39 | A "no user is signed in after a refused callback" test asked with the pre-sign-in cookie, which could never show a user; a callback that stored the user and then refused stayed green | False-green test | 2 | Test (`callback_with_a_wrong_nonce_is_refused` and `callback_with_a_token_signed_by_another_key_is_refused` probe with the cookie the refusal sets; leak mutant red) |
-| 2.40 | A port PR (#1186) returned four times, three times for checks copied from their originals that could not fail (an emptiness check that, on macOS, read a directory the hook never used; an overlap check that passed on a sequential hook; trimmed comparisons and a lock check that read an unreadable directory as empty) | False-green test | 1 | Convention (this instance: one mutant per test of `pre_push_uv.rs`, each red) |
+| 2.40 | A port PR (#1186) returned five times: checks copied from their originals that could not fail (an emptiness check that, on macOS, read a directory the hook never used; an overlap check that passed on a sequential hook; lock checks that read an unreadable directory as empty), and comparisons weaker than the originals (`trim_end` and `lines()` where BATS compared `$(cat)`; a skip turned into a panic) | False-green test | 1 | Convention (this instance: one mutant per test of `pre_push_uv.rs`, each red) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -287,7 +287,7 @@ confirmed you searched the right artifact. When two files could plausibly be
 
 **Enforced by.** Convention.
 
-**Occurrences: 8** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03, 2026-11-07, 2026-11-12
+**Occurrences: 9** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03, 2026-11-07, 2026-11-12, 2026-11-18
 
 **Repeat (2026-09-05).** Stale Postiz agent notes said the container sourced its
 configuration. Without checking the actual compose command, a change added shell
@@ -383,6 +383,17 @@ not fire: no file was grepped. The behaviour was read from the tracker's present
 that made that state, and the history of the ticks, were never opened. A tracker's state is an
 output: its cause comes from the code that wrote it and from what that code read, on the branch
 and at the time it read it.
+
+**Occurrence 9 — 2026-11-18.** In #1186 I wrote into 2.40 (`c770400b`, pushed at `06cc71fd`) that
+return 4's four normalising assertions belonged with the checks copied from originals that could
+not fail. I did not open the deleted BATS originals. A round-1 review then wrote "BATS originals
+used `$(cat …)`, so the trimmed comparisons were copied", and I took that as confirmation. Both
+were wrong. `$(cat f)` strips trailing newlines only and keeps a trailing space and a `\r`, so
+the originals' `[ "$(cat f)" = x ]` rejected what the port's `trim_end()` and `lines()`
+accepted: three of the four were port regressions. Found when the originals were read line by
+line for a parity table after CodeRabbit's fifth return. Why the rule did not fire: the claim was
+about a deleted file, which no grep of the tree finds, and a reviewer's agreement stood in for
+reading it (1.28). A claim about a deleted file is checked with `git show <parent>:<path>`.
 
 ### 1.3 A masked exit code reported as success
 
@@ -3238,10 +3249,10 @@ first asserts that the scratch directory existed while BATS ran. The rule did no
 the check was carried over from the original rather than written: nobody chose the handle, so
 nobody asked whether the code under test hands back the same one.
 
-### 2.40 A port PR returned four times, three times for checks copied from originals that could not fail
+### 2.40 A port PR returned five times: checks copied from originals that could not fail, and comparisons weaker than the originals
 
 **What happened.** PR #1186 (AC-949) ported the git-hook and commit-gate tests from BATS and
-Python to Rust. It was returned four times. Returns 1 and 2 were correction dispatches from the
+Python to Rust. It was returned five times. Returns 1 and 2 were correction dispatches from the
 PR's owner session to its executor, not posted on the PR. Return 1 was on `0381e46f`,
 fixed in `89002167`, `9b3ac6b7` and `856e6f69`. Its fixes included two checks that could
 pass without the property they name: the scratch-directory emptiness checks, which on macOS
@@ -3256,24 +3267,38 @@ Return 3 was CodeRabbit's review 5951303435 of `31297a21` (2026-11-18 05:32Z). I
 pytest. The fake bats's mark file outlived it, and the fake pytest only checked that the file
 existed. The BATS original, which #1186 deletes, had the same gap: its fake bats creates the
 mark on start and never removes it. Joseph chose to fix it in place (2026-11-18 06:01Z).
-Return 4 was CodeRabbit's review 5957037051 of `ad345c9b` (2026-11-18 13:01Z): four more assertions that
-normalised what they compared (`trim_end`, `lines()`) or read an unreadable lock directory as
-empty. Joseph chose one sweep of the file (2026-11-18 13:10Z): one mutant per test of
+Return 4 was CodeRabbit's review 5957037051 of `ad345c9b` (2026-11-18 13:01Z): four more weak assertions.
+Three were weaker than the originals they replaced: the port compared with `trim_end()` and
+`lines()`, while the BATS originals compared `$(cat f)`, which strips trailing newlines only and
+keeps a trailing space and a `\r` (1.2, occurrence 9). The fourth, a lock check that read an
+unreadable directory as empty, was copied from its original. Joseph chose one sweep of the file (2026-11-18 13:10Z): one mutant per test of
 `pre_push_uv.rs` on the property its name states. Of 28 tests, 21 went red as written and 7
 stayed green and were strengthened. The batch coordinator added the same class outside that file: 2
 assertions in `pre_push_parallel_sigalrm.rs`, and 2 of the 7 tests in `pre_push_branch_lock.rs`
 that call its no-locks check, which passed on a hook that never took the lock.
+Return 5 was CodeRabbit's review 5958136298 of `06cc71fd` (2026-11-18 14:02Z): 13 threads in
+three files. Read line by line against the originals, 3 were weaker than them (a held hook that
+the test runner's 30 s bound can kill inside a 20 s readiness wait, a `perl` spawn that panics
+where the original skipped, a PATH dropped whole when one entry is not UTF-8) and 10 had the
+original's gap. Joseph chose to fix all 13, and their siblings in the same three files
+(2026-11-18 17:22Z).
 
 **Root cause.** The PR's mutation pass ran one mutant per guard the ledger cites. It did not run
 a mutant for the property each test's name states. A test ported faithfully keeps every gap of
 its original. The port's job is to reproduce the original, so nothing in the port's own process
 asked whether the original's assertion could fail. Return 2 had other causes, not this one.
+Returns 4 and 5 also had a second cause: the port changed how a value was compared or how a
+test ran (`trim_end`, `lines()`, a runner bound, a panic in place of a skip), and no step set
+each Rust assertion beside the original's.
 
 **The rule.** Before a port PR is opened, each ported test gets one mutant that removes the
 property its name states, and the test is seen to go red on it. The mutant is not only the guard
 the test cites. A sequential hook is the mutant for "runs while", an unused directory for "leaves
 nothing behind", an early exit for "cannot reach". A test that only passes because the original
 did is not yet a port. When the original has the gap, the port fixes it and the PR body says so.
+And a port compares exactly what the original compared: where a BATS test compared `$(cat f)`,
+the Rust test strips trailing newlines and nothing else, and a skip in the original stays a
+skip.
 
 **Enforced by.** Convention. This instance: the 2026-11-18 sweep (recorded at `c770400b`) put one
 mutant under each of the 28 tests of `pre_push_uv.rs`, and each went red; no check re-runs it. The
