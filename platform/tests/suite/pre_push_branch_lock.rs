@@ -38,21 +38,19 @@ use std::time::{Duration, Instant};
 
 use agent_cloud_tests::process;
 use agent_cloud_tests::repo;
+use assert_cmd::Command;
 use tempfile::TempDir;
 
 const HOOK: &str = ".githooks/pre-push";
 const URL: &str = "https://example.invalid/repo.git";
 
-/// Fake `bats`: waits FAKE_BATS_DELAY seconds when set (a slow suite start; no test sets it, it is
-/// the knob the held push's 60 s bound was checked with: an 18 s delay and a contender 13 s
-/// late fail under the old 30 s bound), records that the
-/// suite started, and, when FAKE_BATS_LOCKS names a file, the entries of FAKE_BATS_LOCK_DIR while
-/// the suite runs; when FAKE_BATS_OWNER names a file, it records its parent's pid (bats is a direct
-/// child of the hook, so that is the hook) and the owner line of the lock FAKE_BATS_OWNER_LOCK,
-/// one per line; then, when FAKE_BATS_HOLD names a file, it stays "running" until that file exists
-/// (bounded, so a broken test cannot hang).
+/// Fake `bats`: records that the suite started, and, when FAKE_BATS_LOCKS names a file, the
+/// entries of FAKE_BATS_LOCK_DIR while the suite runs; when FAKE_BATS_OWNER names a file, it
+/// records its parent's pid (bats is a direct child of the hook, so that is the hook) and the
+/// owner line of the lock FAKE_BATS_OWNER_LOCK, one per line; then, when FAKE_BATS_HOLD names a
+/// file, it stays "running" until that file exists (bounded, so a broken test cannot hang). It
+/// exits FAKE_BATS_RC (default 0).
 const FAKE_BATS: &str = r#"#!/usr/bin/env sh
-[ -n "${FAKE_BATS_DELAY:-}" ] && sleep "$FAKE_BATS_DELAY"
 [ -n "${FAKE_BATS_STARTED:-}" ] && : > "$FAKE_BATS_STARTED"
 [ -n "${FAKE_BATS_LOCKS:-}" ] && ls -A "$FAKE_BATS_LOCK_DIR" > "$FAKE_BATS_LOCKS"
 [ -n "${FAKE_BATS_OWNER:-}" ] && { printf '%s\n' "$PPID"; sed -n 1p "$FAKE_BATS_OWNER_LOCK"; } > "$FAKE_BATS_OWNER"
@@ -124,18 +122,23 @@ impl Ctx {
         repo.join(".git/pre-push-locks")
     }
 
-    /// Runs the hook in `repo` for each branch, one stdin line per branch, in the foreground.
-    fn push(&self, repo: &Path, envs: &[(&str, &str)], branches: &[&str]) -> Output {
+    /// The hook in `repo` for each branch, one stdin line per branch, with `envs`. Not yet run.
+    fn hook_command(&self, repo: &Path, envs: &[(&str, &str)], branches: &[&str]) -> Command {
         let hook = repo::path(HOOK);
         let mut cmd = process::scrubbed("sh", self.home.path());
-        cmd.current_dir(repo).env("PATH", self.path());
-        for (name, value) in envs {
-            cmd.env(name, value);
-        }
-        cmd.arg(hook.to_str().expect("a UTF-8 path"))
+        cmd.current_dir(repo)
+            .env("PATH", self.path())
+            .envs(envs.iter().copied())
+            .arg(hook.to_str().expect("a UTF-8 path"))
             .arg("origin")
             .arg(URL)
-            .write_stdin(branches.iter().map(|b| refline(b)).collect::<String>())
+            .write_stdin(branches.iter().map(|b| refline(b)).collect::<String>());
+        cmd
+    }
+
+    /// Runs the hook in `repo` for each branch, one stdin line per branch, in the foreground.
+    fn push(&self, repo: &Path, envs: &[(&str, &str)], branches: &[&str]) -> Output {
+        self.hook_command(repo, envs, branches)
             .output()
             .expect("the hook starts")
     }
@@ -151,20 +154,15 @@ impl Ctx {
         let release = self.home.path().join("release");
         let _ = std::fs::remove_file(&started);
         let _ = std::fs::remove_file(&release);
-        let hook = repo::path(HOOK);
-        let mut cmd = process::scrubbed("sh", self.home.path());
-        cmd.current_dir(repo)
-            .env("PATH", self.path())
-            .env("FAKE_BATS_STARTED", &started)
-            .env("FAKE_BATS_HOLD", &release)
-            .arg(hook.to_str().expect("a UTF-8 path"))
-            .arg("origin")
-            .arg(URL)
-            .write_stdin(refline(branch))
-            // Above the 20 s readiness wait plus the contender's own run: a holder killed at
-            // the scrubbed 30 s default runs no EXIT trap, so its lock stays with a dead owner
-            // and the contender reclaims it instead of being refused.
-            .timeout(Duration::from_secs(60));
+        let envs = [
+            ("FAKE_BATS_STARTED", started.to_str().expect("a UTF-8 path")),
+            ("FAKE_BATS_HOLD", release.to_str().expect("a UTF-8 path")),
+        ];
+        let mut cmd = self.hook_command(repo, &envs, &[branch]);
+        // Above the 20 s readiness wait plus the contender's own run: a holder killed at
+        // the scrubbed 30 s default runs no EXIT trap, so its lock stays with a dead owner
+        // and the contender reclaims it instead of being refused.
+        cmd.timeout(Duration::from_secs(60));
         let thread = thread::spawn(move || cmd.output().expect("the held push starts"));
         // Built before the wait, so a failed wait below still releases and joins the push.
         let holding = Holding {

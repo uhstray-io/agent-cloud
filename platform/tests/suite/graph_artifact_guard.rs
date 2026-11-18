@@ -36,7 +36,7 @@ const ARTIFACT: &str = ".codebase-memory/artifact.json";
 
 /// `git` in `dir`, with an identity given on the command line, so no repository config is
 /// written. Panics unless git succeeds.
-fn git(dir: &Path, args: &[&str]) -> Output {
+fn git(dir: &Path, args: &[&str]) {
     let out = process::scrubbed("git", dir)
         .current_dir(dir)
         .args([
@@ -55,7 +55,6 @@ fn git(dir: &Path, args: &[&str]) -> Output {
         "git {args:?} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    out
 }
 
 /// `artifact.json` as the graph tooling writes it: a project and the size of the graph it

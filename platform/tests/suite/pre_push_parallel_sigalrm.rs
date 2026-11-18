@@ -121,9 +121,7 @@ impl Fixture {
             .env("FAKE_BATS_ARGS", &self.args_file)
             .env("FAKE_BATS_SHELL", &self.shell_file)
             .env("FAKE_PYTEST_SHELL", &self.pytest_shell_file);
-        for (name, value) in extra {
-            cmd.env(name, value);
-        }
+        cmd.envs(extra.iter().copied());
         cmd.arg(hook.to_str().expect("a UTF-8 path"))
             .arg("origin")
             .arg("https://example.invalid/repo.git")

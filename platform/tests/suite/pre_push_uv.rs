@@ -268,9 +268,7 @@ impl Ctx {
             .env("FAKE_UV_LOG", &self.uv_log)
             .env("TMPDIR", &self.tmp)
             .env("PATH", self.path_for(bin));
-        for (name, value) in envs {
-            cmd.env(name, value);
-        }
+        cmd.envs(envs.iter().copied());
         let hook = repo::path(HOOK);
         cmd.arg(hook.to_str().expect("a UTF-8 path"))
             .arg(remote.0)
@@ -342,7 +340,7 @@ impl Ctx {
     fn commit_file(&self, rel: &str, message: &str) -> String {
         let path = self.repo.join(rel);
         std::fs::create_dir_all(path.parent().expect("a parent")).expect("the directory");
-        let mut body = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut body = read_or_empty(&path);
         body.push_str(message);
         body.push('\n');
         std::fs::write(&path, body).expect("the file is written");
@@ -407,6 +405,24 @@ fn write_executable(path: &Path, body: &str) {
 /// A file's text; a missing file is a failure, as `grep` on a missing file is.
 fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// The pytest run used the fakebin python3 with fakebin first on PATH, and no call saw a `.venv`.
+#[track_caller]
+fn assert_pytest_ran_on_fakebin(ctx: &Ctx) {
+    assert!(
+        any_line(
+            &read(&ctx.py_log),
+            r"^pytest-run .*/fakebin/python3 first-path=.*/fakebin$"
+        ),
+        "{}",
+        read(&ctx.py_log)
+    );
+    assert!(
+        !read(&ctx.py_log).contains(".venv/bin"),
+        "{}",
+        read(&ctx.py_log)
+    );
 }
 
 /// A file's text, empty when the file was never written.
@@ -555,19 +571,7 @@ fn sync_that_leaves_no_venv_falls_back_with_warning_not_blocked() {
 
     // Assert
     assert!(run.passed(), "{}", run.text);
-    assert!(
-        any_line(
-            &read(&ctx.py_log),
-            r"^pytest-run .*/fakebin/python3 first-path=.*/fakebin$"
-        ),
-        "{}",
-        read(&ctx.py_log)
-    );
-    assert!(
-        !read(&ctx.py_log).contains(".venv/bin"),
-        "{}",
-        read(&ctx.py_log)
-    );
+    assert_pytest_ran_on_fakebin(&ctx);
     assert!(run.text.contains("did not create .venv"), "{}", run.text);
 }
 
@@ -589,19 +593,7 @@ fn uv_project_environment_elsewhere_ignores_stale_venv_and_falls_back() {
 
     // Assert
     assert!(run.passed(), "{}", run.text);
-    assert!(
-        any_line(
-            &read(&ctx.py_log),
-            r"^pytest-run .*/fakebin/python3 first-path=.*/fakebin$"
-        ),
-        "{}",
-        read(&ctx.py_log)
-    );
-    assert!(
-        !read(&ctx.py_log).contains(".venv/bin"),
-        "{}",
-        read(&ctx.py_log)
-    );
+    assert_pytest_ran_on_fakebin(&ctx);
     assert!(
         run.text.contains("UV_PROJECT_ENVIRONMENT points outside"),
         "{}",
@@ -628,19 +620,7 @@ fn failed_sync_falls_back_to_python3_with_warning() {
 
     // Assert
     assert!(run.passed(), "{}", run.text);
-    assert!(
-        any_line(
-            &read(&ctx.py_log),
-            r"^pytest-run .*/fakebin/python3 first-path=.*/fakebin$"
-        ),
-        "{}",
-        read(&ctx.py_log)
-    );
-    assert!(
-        !read(&ctx.py_log).contains(".venv/bin"),
-        "{}",
-        read(&ctx.py_log)
-    );
+    assert_pytest_ran_on_fakebin(&ctx);
     assert!(
         run.text.contains("`uv sync --locked` failed"),
         "{}",
@@ -1163,7 +1143,7 @@ fn held_push(ctx: &Ctx, envs: &[(&str, &str)]) -> (String, String, HeldPush) {
     // hook.
     let deadline = Instant::now() + Duration::from_secs(20);
     let (hook, bats) = loop {
-        let text = std::fs::read_to_string(&pids).unwrap_or_default();
+        let text = read_or_empty(&pids);
         let mut parts = text.split_whitespace();
         if let (Some(hook), Some(bats)) = (parts.next(), parts.next()) {
             break (hook.to_owned(), bats.to_owned());
@@ -1198,7 +1178,7 @@ fn wait_for_pid(file: &Path) -> String {
     // a file still missing after it means the fake never reached that line.
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let text = std::fs::read_to_string(file).unwrap_or_default();
+        let text = read_or_empty(file);
         if let Some(pid) = text.split_whitespace().next() {
             return pid.to_owned();
         }

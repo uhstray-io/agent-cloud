@@ -1,5 +1,5 @@
 //! The pre-push hook runs its suites with a clean git environment (a cli-tier module in the
-//! security set). Its first case runs the hook; its two list checks are static assertions that
+//! security set). Its first case runs the hook; its other two checks are static assertions that
 //! read the hook and the helper and run neither.
 //!
 //! Git exports its repository variables (GIT_DIR and friends) to hooks. Left set, a test's
