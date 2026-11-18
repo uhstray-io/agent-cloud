@@ -20,7 +20,7 @@
 //! logs its arguments, one per line. The fake `parallel` logs
 //! nothing: it only answers the presence check. The fake `mktemp` honours TMPDIR, as GNU `mktemp`
 //! does and macOS `mktemp` does not, so the scratch directory is in the cases' sight. A held push
-//! runs on a thread through `process::scrubbed`, bounded by its 30 s timeout; `HeldPush` writes
+//! runs on a thread through `process::scrubbed`, its bound raised to 60 s; `HeldPush` writes
 //! the release file and joins the thread on drop, so a failing case never leaves a hook running.
 //!
 //! Replaces platform/tests/test_pre_push_uv.bats (plan 24, Phase 4).
@@ -58,6 +58,8 @@
 //! | pre-push rust: the push lane of the Rust suite runs | `the_push_lane_of_the_rust_suite_runs` |
 //! | pre-push rust: a failing Rust lane blocks the push even when the other suites pass | `a_failing_rust_lane_blocks_the_push_even_when_the_other_suites_pass` |
 
+use std::cell::OnceCell;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::thread::{self, JoinHandle};
@@ -66,6 +68,7 @@ use std::time::{Duration, Instant};
 use agent_cloud_tests::process;
 use agent_cloud_tests::repo;
 use agent_cloud_tests::text::any_line;
+use assert_cmd::Command;
 use tempfile::TempDir;
 
 const HOOK: &str = ".githooks/pre-push";
@@ -171,6 +174,8 @@ struct Ctx {
     uv_log: PathBuf,
     tmp: PathBuf,
     fakepython: PathBuf,
+    /// Set once the no-uv PATH's `system` directory is filled; only the cases that use it pay.
+    linked: OnceCell<()>,
 }
 
 /// A hook run: its exit status and its output, stdout and stderr together (as BATS `run` shows).
@@ -214,8 +219,6 @@ impl Ctx {
         );
         write_executable(&fakebin.join("parallel"), FAKE_PARALLEL);
         write_executable(&fakebin.join("mktemp"), FAKE_MKTEMP);
-        let dirs: Vec<&Path> = SYSTEM_DIRS.iter().map(Path::new).collect();
-        link_system_tools(&system, &dirs);
 
         Self {
             py_log: t.join("python.log"),
@@ -227,6 +230,7 @@ impl Ctx {
             nouv,
             tmp,
             fakepython,
+            linked: OnceCell::new(),
         }
     }
 
@@ -237,21 +241,31 @@ impl Ctx {
     /// The PATH a run gets: the bin directory first. The `nouv` directory is paired only with
     /// the scratch `system` directory: links to every tool of /usr/bin and /bin except uv, uvx
     /// and GNU parallel, so no real uv can be found on it, wherever the machine installs one.
-    fn path_for(&self, bin: &Path) -> String {
+    /// Joined as OsString: a non-UTF-8 entry in the inherited PATH must survive.
+    fn path_for(&self, bin: &Path) -> OsString {
+        let mut entries = vec![bin.to_path_buf()];
         if bin == self.nouv {
-            format!("{}:{}", bin.display(), self.t().join("system").display())
-        } else {
-            format!(
-                "{}:{}",
-                bin.display(),
-                std::env::var("PATH").unwrap_or_default()
-            )
+            let system = self.t().join("system");
+            self.linked.get_or_init(|| {
+                let dirs: Vec<&Path> = SYSTEM_DIRS.iter().map(Path::new).collect();
+                link_system_tools(&system, &dirs);
+            });
+            entries.push(system);
+        } else if let Some(inherited) = std::env::var_os("PATH") {
+            entries.extend(std::env::split_paths(&inherited));
         }
+        std::env::join_paths(entries).expect("PATH holds the bin directory")
     }
 
-    /// Runs the hook in the checkout for `sha`, with BIN first on PATH, the remote named `remote`
-    /// and `envs` in its environment.
-    fn run_hook(&self, sha: &str, bin: &Path, remote: (&str, &str), envs: &[(&str, &str)]) -> Run {
+    /// The hook in the checkout for `sha`, with BIN first on PATH, the remote named `remote` and
+    /// `envs` in its environment, its stdin the push line. Not yet run.
+    fn hook_command(
+        &self,
+        sha: &str,
+        bin: &Path,
+        remote: (&str, &str),
+        envs: &[(&str, &str)],
+    ) -> Command {
         let mut cmd = process::scrubbed("sh", self.t());
         cmd.current_dir(&self.repo)
             .env("FAKE_PY_LOG", &self.py_log)
@@ -263,13 +277,20 @@ impl Ctx {
             cmd.env(name, value);
         }
         let hook = repo::path(HOOK);
-        let out = cmd
-            .arg(hook.to_str().expect("a UTF-8 path"))
+        cmd.arg(hook.to_str().expect("a UTF-8 path"))
             .arg(remote.0)
             .arg(remote.1)
             .write_stdin(format!(
                 "refs/heads/feat {sha} refs/heads/feat 0000000000000000000000000000000000000000\n"
-            ))
+            ));
+        cmd
+    }
+
+    /// Runs the hook in the checkout for `sha`, with BIN first on PATH, the remote named `remote`
+    /// and `envs` in its environment.
+    fn run_hook(&self, sha: &str, bin: &Path, remote: (&str, &str), envs: &[(&str, &str)]) -> Run {
+        let out = self
+            .hook_command(sha, bin, remote, envs)
             .output()
             .expect("the hook starts");
         Run::of(out)
@@ -292,23 +313,10 @@ impl Ctx {
     /// The hook as a background job: the held push runs until `release` exists, and its pids are
     /// written to `pids` by the fake bats.
     fn spawn_held(&self, envs: &[(&str, &str)]) -> JoinHandle<Output> {
-        let mut cmd = process::scrubbed("sh", self.t());
-        cmd.current_dir(&self.repo)
-            .env("FAKE_PY_LOG", &self.py_log)
-            .env("FAKE_BATS_LOG", &self.bats_log)
-            .env("FAKE_UV_LOG", &self.uv_log)
-            .env("TMPDIR", &self.tmp)
-            .env("PATH", self.path_for(&self.fakebin));
-        for (name, value) in envs {
-            cmd.env(name, value);
-        }
-        let hook = repo::path(HOOK);
-        cmd.arg(hook.to_str().expect("a UTF-8 path"))
-            .arg("origin")
-            .arg(URL)
-            .write_stdin(format!(
-                "refs/heads/feat {SHA} refs/heads/feat 0000000000000000000000000000000000000000\n"
-            ));
+        let mut cmd = self.hook_command(SHA, &self.fakebin, ("origin", URL), envs);
+        // Above the 20 s readiness wait plus the fake bats's own 30 s hold: a held hook killed at
+        // the scrubbed 30 s default runs no EXIT trap, so its lock and scratch files stay behind.
+        cmd.timeout(Duration::from_secs(60));
         thread::spawn(move || cmd.output().expect("the held push starts"))
     }
 
@@ -351,14 +359,9 @@ impl Ctx {
 
 impl Run {
     fn of(out: Output) -> Self {
-        let text = format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
         Self {
             code: out.status.code().expect("the hook exits, it is not killed"),
-            text,
+            text: process::output_text(&out),
         }
     }
 
@@ -416,8 +419,8 @@ fn read_or_empty(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
-/// `lines` as printf '%s\n' prints them: each line terminated.
-fn lines(items: &[&str]) -> String {
+/// `items` as printf '%s\n' prints them: each line terminated.
+fn terminated(items: &[&str]) -> String {
     let mut text = items.join("\n");
     text.push('\n');
     text
@@ -428,7 +431,7 @@ fn lines(items: &[&str]) -> String {
 
 /// A test module that does not import: serial shape.
 fn out_missing_module() -> String {
-    lines(&[
+    terminated(&[
         "_______________________ ERROR collecting test_mod.py ________________________",
         "E   ModuleNotFoundError: No module named 'nope'",
         "=========================== short test summary info ============================",
@@ -440,7 +443,7 @@ fn out_missing_module() -> String {
 
 /// A test module with a syntax error: serial shape.
 fn out_syntax_error() -> String {
-    lines(&[
+    terminated(&[
         "_______________________ ERROR collecting test_mod.py ________________________",
         "E   SyntaxError: invalid syntax",
         "=========================== short test summary info ============================",
@@ -452,7 +455,7 @@ fn out_syntax_error() -> String {
 
 /// The same syntax error: parallel shape, the run goes on and names the file alone.
 fn out_syntax_error_parallel() -> String {
-    lines(&[
+    terminated(&[
         "_______________________ ERROR collecting test_mod.py ________________________",
         "E   SyntaxError: invalid syntax",
         "=========================== short test summary info ============================",
@@ -463,7 +466,7 @@ fn out_syntax_error_parallel() -> String {
 
 /// A module that does not import, in the parallel shape, next to a passing test.
 fn out_missing_module_parallel() -> String {
-    lines(&[
+    terminated(&[
         "_______________________ ERROR collecting test_mod.py ________________________",
         "E   ModuleNotFoundError: No module named 'nope'",
         "=========================== short test summary info ============================",
@@ -474,7 +477,7 @@ fn out_missing_module_parallel() -> String {
 
 /// A conftest that does not load (exit 4, no banner, in either shape).
 fn out_conftest_missing() -> String {
-    lines(&[
+    terminated(&[
         "ImportError while loading conftest '/repo/conftest.py'.",
         "conftest.py:1: in <module>",
         "E   ModuleNotFoundError: No module named 'nope'",
@@ -483,7 +486,7 @@ fn out_conftest_missing() -> String {
 
 /// A test that fails and whose own message says "No module named": no collection error.
 fn out_failing_test() -> String {
-    lines(&[
+    terminated(&[
         "_______________________ test_fail _______________________",
         "E       AssertionError: No module named widgets",
         "FAILED test_fail.py::test_fail - AssertionError: No module named widgets",
@@ -493,7 +496,7 @@ fn out_failing_test() -> String {
 
 /// A module that does not import AND a test that fails: both must block on the fallback.
 fn out_collection_and_failure() -> String {
-    lines(&[
+    terminated(&[
         "_______________________ ERROR collecting test_mod.py ________________________",
         "E   ModuleNotFoundError: No module named 'nope'",
         "=========================== short test summary info ============================",
@@ -955,7 +958,7 @@ fn fast_lane_pytest_fast_and_exactly_the_changed_paths_reach_pytest() {
     assert!(run.text.contains("FAST LANE"), "{}", run.text);
     assert!(run.text.contains("CI runs the full suite"), "{}", run.text);
     // The list is exactly the two paths the push changed: not the base's file, no extra line,
-    // and byte for byte (no carriage return, final newline present), so no `lines()` here.
+    // and byte for byte (no carriage return, final newline present), so no `terminated()` here.
     let list = read(&copy);
     assert_eq!(
         list, "platform/lib/helper.sh\nplatform/tests/test_new.py\n",
@@ -1034,8 +1037,10 @@ fn bats_takes_ci_flags_when_gnu_parallel_is_installed() {
 
 #[test]
 fn without_gnu_parallel_bats_runs_serially_with_a_note() {
-    // A system GNU parallel on the fallback PATH would be found, and this case cannot run there.
-    // The BATS file skipped in that case; this keeps the skip, and says so on stderr.
+    // The BATS file skipped when GNU parallel was installed system-wide, because its fallback PATH
+    // (`nouv:/usr/bin:/bin`) found it. This fallback PATH leaves parallel out (`NOUV_EXCLUDED`),
+    // so the case could run there; the skip stays because a port keeps its original's skips
+    // (docs/MISTAKES.md 2.40), and it says so on stderr.
     if Path::new("/usr/bin/parallel").exists() || Path::new("/bin/parallel").exists() {
         eprintln!("skipped: GNU parallel is installed system-wide, so the fallback PATH finds it");
         return;
@@ -1166,8 +1171,8 @@ fn held_push(ctx: &Ctx, envs: &[(&str, &str)]) -> (String, String, HeldPush) {
         handle: Some(handle),
     };
     // The bound is 20 s: a 10 s bound timed out in four of six full-module runs on this machine
-    // before the change, and the cause is not identified. The scrubbed runner's 30 s bound still
-    // caps the held hook.
+    // before the change, and the cause is not identified. `spawn_held`'s 60 s bound caps the held
+    // hook.
     let deadline = Instant::now() + Duration::from_secs(20);
     let (hook, bats) = loop {
         let text = std::fs::read_to_string(&pids).unwrap_or_default();
@@ -1181,7 +1186,7 @@ fn held_push(ctx: &Ctx, envs: &[(&str, &str)]) -> (String, String, HeldPush) {
             read_or_empty(&ctx.py_log),
             read_or_empty(&ctx.bats_log)
         );
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(10));
     };
     (hook, bats, held)
 }
@@ -1306,17 +1311,16 @@ fn a_push_to_a_url_with_credentials_never_prints_the_url() {
     let run = ctx.run_hook(SHA, &ctx.fakebin, (url, url), &[]);
 
     // Assert
+    // The messages never print the output: it would carry the URL when the hook leaks it.
     assert!(
         run.text.contains("full Python suite, not the fast lane"),
-        "{}",
-        run.text
+        "the full-suite message is missing"
     );
-    assert!(run.text.contains("refs/remotes/<url>/dev"), "{}", run.text);
     assert!(
-        !run.text.contains("SECRET-TOKEN"),
-        "the URL was printed: {}",
-        run.text
+        run.text.contains("refs/remotes/<url>/dev"),
+        "the remote is not named <url>"
     );
+    assert!(!run.text.contains("SECRET-TOKEN"), "the URL was printed");
 }
 
 #[test]
@@ -1358,7 +1362,7 @@ fn python3_without_pytest_skips_on_fallback_and_blocks_on_locked() {
 fn one_missing_module_does_not_forgive_a_syntax_error_in_another_file() {
     // Arrange
     let ctx = Ctx::new();
-    let out = lines(&[
+    let out = terminated(&[
         "_______________________ ERROR collecting test_a.py ________________________",
         "E   ModuleNotFoundError: No module named 'nope'",
         "_______________________ ERROR collecting test_b.py ________________________",

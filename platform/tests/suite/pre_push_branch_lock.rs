@@ -30,6 +30,7 @@
 //! | pre-push lock: the printed recovery command works for a path with spaces and quotes | `the_printed_recovery_command_works_for_a_path_with_spaces_and_quotes` |
 //! | pre-push lock: a link failure with no lock present warns and proceeds | `a_link_failure_with_no_lock_present_warns_and_proceeds` |
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::thread::{self, JoinHandle};
@@ -63,9 +64,11 @@ exit "${FAKE_BATS_RC:-0}"
 /// A `ln` that always fails, so the lock cannot be linked.
 const FAILING_LN: &str = "#!/usr/bin/env sh\nexit 1\n";
 
-/// Fake `ps`: the hook calls it only while printing a refusal, before any lock is released, so
-/// it records the entries of FAKE_PS_LOCK_DIR at that moment into FAKE_PS_LOCKS. It prints
-/// nothing, so the refusal carries no `Process:` line.
+/// Fake `ps`: the hook also calls `ps` in its cleanup once BATS has started; the test that installs
+/// this one is refused before BATS starts, so its only call is the refusal's, made before any lock
+/// is released. It records the entries of FAKE_PS_LOCK_DIR at that moment into FAKE_PS_LOCKS
+/// (truncating, so a second call would overwrite the first). It prints nothing, so the refusal
+/// carries no `Process:` line.
 const RECORDING_PS: &str = r#"#!/usr/bin/env sh
 [ -n "${FAKE_PS_LOCKS:-}" ] && ls -A "$FAKE_PS_LOCK_DIR" > "$FAKE_PS_LOCKS"
 exit 1
@@ -90,27 +93,29 @@ impl Ctx {
             repo,
             fakebin,
         };
-        ctx.init_repo();
+        ctx.init_repo(&ctx.repo);
         ctx
     }
 
-    /// A fresh repository at `self.repo`, with `platform/tests` so the hook reaches its BATS step.
-    fn init_repo(&self) {
-        std::fs::create_dir_all(self.repo.join("platform/tests")).expect("the repository");
+    /// A fresh repository at `repo`, with `platform/tests` so the hook reaches its BATS step.
+    fn init_repo(&self, repo: &Path) {
+        std::fs::create_dir_all(repo.join("platform/tests")).expect("the repository");
         let out = process::scrubbed("git", self.home.path())
             .args(["init", "-q"])
-            .arg(&self.repo)
+            .arg(repo)
             .output()
             .expect("git starts");
         assert!(out.status.success(), "git init failed");
     }
 
-    fn path(&self) -> String {
-        format!(
-            "{}:{}",
-            self.fakebin.display(),
-            std::env::var("PATH").unwrap_or_default()
-        )
+    /// The fake directory, then the inherited PATH, joined as OsString: a non-UTF-8 entry in
+    /// the inherited PATH must survive.
+    fn path(&self) -> OsString {
+        let mut entries = vec![self.fakebin.clone()];
+        if let Some(inherited) = std::env::var_os("PATH") {
+            entries.extend(std::env::split_paths(&inherited));
+        }
+        std::env::join_paths(entries).expect("PATH holds the fake directory")
     }
 
     fn lock_dir(&self, repo: &Path) -> PathBuf {
@@ -173,7 +178,7 @@ impl Ctx {
                 Instant::now() < deadline,
                 "the first push never reached its suite"
             );
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(10));
         }
         holding
     }
@@ -233,14 +238,7 @@ impl Ctx {
 
     /// The exact listing of the lock directory while `branch`'s push holds only its lock.
     fn held_listing(&self, branch: &str) -> String {
-        format!(
-            "{}\n",
-            self.lockfile(&self.repo, branch)
-                .file_name()
-                .expect("a lock name")
-                .to_str()
-                .expect("a UTF-8 name")
-        )
+        format!("{}\n", self.lock_name(branch))
     }
 
     /// No lock file may remain once the hook has exited. A missing directory holds none; any
@@ -325,14 +323,6 @@ fn cksum(home: &Path, text: &str) -> String {
         .to_owned()
 }
 
-fn text(out: &Output) -> String {
-    format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    )
-}
-
 fn code(out: &Output) -> i32 {
     out.status.code().expect("the hook exits, it is not killed")
 }
@@ -393,9 +383,9 @@ fn a_second_push_of_the_same_branch_is_refused_while_the_first_runs() {
         code(&second),
         0,
         "the second push was allowed: {}",
-        text(&second)
+        process::output_text(&second)
     );
-    let shown = text(&second);
+    let shown = process::output_text(&second);
     assert!(shown.contains("PUSH REFUSED"), "{shown}");
     assert!(shown.contains("refs/heads/feat"), "{shown}");
     assert!(
@@ -406,7 +396,7 @@ fn a_second_push_of_the_same_branch_is_refused_while_the_first_runs() {
         code(&first_out),
         0,
         "the first push failed: {}",
-        text(&first_out)
+        process::output_text(&first_out)
     );
     ctx.assert_no_locks(&ctx.repo);
 }
@@ -428,9 +418,9 @@ fn a_push_of_a_different_branch_is_not_blocked() {
         code(&other),
         0,
         "the other branch was blocked: {}",
-        text(&other)
+        process::output_text(&other)
     );
-    assert!(!text(&other).contains("PUSH REFUSED"));
+    assert!(!process::output_text(&other).contains("PUSH REFUSED"));
     assert!(still_held, "the first push's lock was touched");
     // The other push held its own lock beside feat's during its suite, so its absence after is
     // a release, not a lock never taken.
@@ -469,7 +459,7 @@ fn a_refused_multi_branch_push_releases_the_locks_it_took() {
         code(&refused),
         0,
         "the push holding feat was allowed: {}",
-        text(&refused)
+        process::output_text(&refused)
     );
     // The refused push held `aaa` when it was refused on `feat`, so the absence after is a release.
     let held = std::fs::read_to_string(&at_refusal).expect("the refusal recorded the locks");
@@ -502,12 +492,12 @@ fn a_stale_lock_whose_pid_is_gone_is_reclaimed() {
         code(&out),
         0,
         "the stale lock was not reclaimed: {}",
-        text(&out)
+        process::output_text(&out)
     );
     assert!(
-        text(&out).contains("reclaimed a stale lock"),
+        process::output_text(&out).contains("reclaimed a stale lock"),
         "{}",
-        text(&out)
+        process::output_text(&out)
     );
     // While the suite ran, the lock named the hook itself as owner, not the dead pid.
     let hook_pid = owner
@@ -532,7 +522,7 @@ fn released_after_the_suites_pass() {
     let (out, held) = ctx.push_recording_locks(&[], "feat");
 
     // Assert: the push held its lock while the suite ran, and released it after.
-    assert_eq!(code(&out), 0, "{}", text(&out));
+    assert_eq!(code(&out), 0, "{}", process::output_text(&out));
     assert_eq!(
         held,
         ctx.held_listing("feat"),
@@ -550,8 +540,17 @@ fn released_after_a_suite_fails() {
     let (out, held) = ctx.push_recording_locks(&[("FAKE_BATS_RC", "1")], "feat");
 
     // Assert: the push held its lock while the suite ran, and released it after.
-    assert_eq!(code(&out), 1, "expected a blocked push: {}", text(&out));
-    assert!(text(&out).contains("PUSH BLOCKED"), "{}", text(&out));
+    assert_eq!(
+        code(&out),
+        1,
+        "expected a blocked push: {}",
+        process::output_text(&out)
+    );
+    assert!(
+        process::output_text(&out).contains("PUSH BLOCKED"),
+        "{}",
+        process::output_text(&out)
+    );
     assert_eq!(
         held,
         ctx.held_listing("feat"),
@@ -569,11 +568,11 @@ fn skip_tests_still_takes_the_lock_and_releases_it() {
     let skipped = ctx.push_default(&[("SKIP_TESTS", "1")], "feat");
 
     // Assert
-    assert_eq!(code(&skipped), 0, "{}", text(&skipped));
+    assert_eq!(code(&skipped), 0, "{}", process::output_text(&skipped));
     assert!(
-        text(&skipped).contains("TESTS SKIPPED"),
+        process::output_text(&skipped).contains("TESTS SKIPPED"),
         "{}",
-        text(&skipped)
+        process::output_text(&skipped)
     );
     ctx.assert_no_locks(&ctx.repo);
 
@@ -585,12 +584,12 @@ fn skip_tests_still_takes_the_lock_and_releases_it() {
         code(&refused),
         0,
         "SKIP_TESTS bypassed the lock: {}",
-        text(&refused)
+        process::output_text(&refused)
     );
     assert!(
-        text(&refused).contains("PUSH REFUSED"),
+        process::output_text(&refused).contains("PUSH REFUSED"),
         "{}",
-        text(&refused)
+        process::output_text(&refused)
     );
 }
 
@@ -610,7 +609,7 @@ fn released_when_the_push_is_interrupted_by_term() {
         code(&out),
         143,
         "TERM did not interrupt the push: {}",
-        text(&out)
+        process::output_text(&out)
     );
     ctx.assert_no_locks(&ctx.repo);
 }
@@ -631,9 +630,9 @@ fn branches_whose_names_sanitize_alike_do_not_share_a_lock() {
         code(&other),
         0,
         "feature_a was blocked by feature/a: {}",
-        text(&other)
+        process::output_text(&other)
     );
-    assert!(!text(&other).contains("PUSH REFUSED"));
+    assert!(!process::output_text(&other).contains("PUSH REFUSED"));
     assert!(held, "the feature/a lock is gone");
 }
 
@@ -642,19 +641,12 @@ fn the_printed_recovery_command_works_for_a_path_with_spaces_and_quotes() {
     // Arrange: a repository whose path holds spaces and an apostrophe.
     let ctx = Ctx::new();
     let repo = ctx.home.path().join("it's my repo");
-    std::fs::create_dir(&repo).expect("the repository directory");
-    let init = process::scrubbed("git", ctx.home.path())
-        .args(["init", "-q"])
-        .arg(&repo)
-        .output()
-        .expect("git starts");
-    assert!(init.status.success(), "git init failed");
-    std::fs::create_dir_all(repo.join("platform/tests")).expect("the tests directory");
+    ctx.init_repo(&repo);
     let mut first = ctx.start_holding(&repo, "feat");
 
     // Act: the refusal prints a command; run exactly what the operator would paste.
     let refused = ctx.push(&repo, &[], &["feat"]);
-    let shown = text(&refused);
+    let shown = process::output_text(&refused);
     let command = shown.lines().find_map(|line| {
         line.split_once("remove the lock:  ")
             .map(|(_, rest)| rest.to_owned())
@@ -698,14 +690,18 @@ fn a_link_failure_with_no_lock_present_warns_and_proceeds() {
         code(&out),
         0,
         "an infrastructure failure refused the push: {}",
-        text(&out)
+        process::output_text(&out)
     );
     assert!(
-        text(&out).contains("Continuing WITHOUT it"),
+        process::output_text(&out).contains("Continuing WITHOUT it"),
         "{}",
-        text(&out)
+        process::output_text(&out)
     );
-    assert!(!text(&out).contains("PUSH REFUSED"), "{}", text(&out));
+    assert!(
+        !process::output_text(&out).contains("PUSH REFUSED"),
+        "{}",
+        process::output_text(&out)
+    );
     assert!(started.exists(), "the suite did not run after the warning");
     // The directory the link was tried in exists, so the empty listing below is a real read.
     assert!(

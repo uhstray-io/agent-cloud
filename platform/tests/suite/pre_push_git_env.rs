@@ -48,18 +48,15 @@ cd \"$TMPDIR\" && git init -q scratch && cd scratch \\
 exit 0
 ";
 
-/// `git -C <dir> config --local <key>` read with a clean environment: (stdout, succeeded).
-fn local_config(home: &Path, dir: &Path, key: &str) -> (String, bool) {
+/// `git -C <dir> config --local <key>` read with a clean environment: its stdout, trimmed.
+fn local_config(home: &Path, dir: &Path, key: &str) -> String {
     let out = process::scrubbed("git", home)
         .args(["-C"])
         .arg(dir)
         .args(["config", "--local", key])
         .output()
         .expect("git starts");
-    (
-        String::from_utf8_lossy(&out.stdout).trim().to_owned(),
-        out.status.success(),
-    )
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
 #[test]
@@ -84,11 +81,12 @@ fn a_suites_git_commands_cannot_reach_the_pushing_repository() {
     std::fs::write(&bats, FAKE_BATS).expect("the fake bats is written");
     std::fs::set_permissions(&bats, std::fs::Permissions::from_mode(0o755))
         .expect("the fake bats is executable");
-    let path = format!(
-        "{}:{}",
-        fakebin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    // Joined as OsString: a non-UTF-8 entry in the inherited PATH must survive.
+    let mut entries = vec![fakebin.clone()];
+    if let Some(inherited) = std::env::var_os("PATH") {
+        entries.extend(std::env::split_paths(&inherited));
+    }
+    let path = std::env::join_paths(entries).expect("PATH holds the fake directory");
     let hook = repo::path(HOOK);
     let marker = home.path().join("bats-ran");
 
@@ -111,9 +109,9 @@ fn a_suites_git_commands_cannot_reach_the_pushing_repository() {
         marker.exists(),
         "the hook stopped before its BATS step, so the victim checks prove nothing"
     );
-    let (email, _) = local_config(home.path(), &victim, "user.email");
+    let email = local_config(home.path(), &victim, "user.email");
     assert!(email.is_empty(), "the victim's user.email became {email:?}");
-    let (bare, _) = local_config(home.path(), &victim, "core.bare");
+    let bare = local_config(home.path(), &victim, "core.bare");
     assert_eq!(bare, "false", "the victim's core.bare became {bare:?}");
 }
 

@@ -154,14 +154,6 @@ fn executable() -> std::fs::Permissions {
     std::fs::Permissions::from_mode(0o755)
 }
 
-fn text(out: &Output) -> String {
-    format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    )
-}
-
 /// Whether an executable `perl` is on PATH.
 fn perl_on_path() -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -223,7 +215,7 @@ fn bats_gets_ci_flags_and_the_job_shell() {
     let out = fixture.push(&[]);
 
     // Assert
-    assert!(out.status.success(), "{}", text(&out));
+    assert!(out.status.success(), "{}", process::output_text(&out));
     assert_eq!(
         fixture.bats_args(),
         "--jobs\n4\n--no-parallelize-within-files\nplatform/tests/\n"
@@ -241,11 +233,15 @@ fn bats_gets_ci_flags_and_the_job_shell() {
     );
     // The hook's own output was captured: it announced the parallel run.
     assert!(
-        text(&out).contains("pre-push: running BATS suite in parallel...\n"),
+        process::output_text(&out).contains("pre-push: running BATS suite in parallel...\n"),
         "{}",
-        text(&out)
+        process::output_text(&out)
     );
-    assert!(!text(&out).contains("runs serially"), "{}", text(&out));
+    assert!(
+        !process::output_text(&out).contains("runs serially"),
+        "{}",
+        process::output_text(&out)
+    );
     // PARALLEL_SHELL reached bats only: the pytest run beside it got none.
     assert_eq!(fixture.pytest_shell(), "unset\n");
 }
@@ -259,13 +255,13 @@ fn a_checkout_without_the_job_shell_runs_bats_serially_saying_why() {
     let out = fixture.push(&[]);
 
     // Assert
-    assert!(out.status.success(), "{}", text(&out));
+    assert!(out.status.success(), "{}", process::output_text(&out));
     assert_eq!(fixture.bats_args(), "platform/tests/\n");
     assert_eq!(fixture.bats_shell(), "unset\n");
     assert!(
-        text(&out).contains("parallel-job-shell is missing from this checkout"),
+        process::output_text(&out).contains("parallel-job-shell is missing from this checkout"),
         "{}",
-        text(&out)
+        process::output_text(&out)
     );
 }
 
@@ -279,11 +275,11 @@ fn the_presence_check_reads_the_binary_name_bats_uses() {
     let out = fixture.push(&[("BATS_PARALLEL_BINARY_NAME", "no-such-parallel")]);
 
     // Assert
-    assert!(out.status.success(), "{}", text(&out));
+    assert!(out.status.success(), "{}", process::output_text(&out));
     assert_eq!(fixture.bats_args(), "platform/tests/\n");
     assert!(
-        text(&out).contains("GNU parallel is not installed"),
+        process::output_text(&out).contains("GNU parallel is not installed"),
         "{}",
-        text(&out)
+        process::output_text(&out)
     );
 }
