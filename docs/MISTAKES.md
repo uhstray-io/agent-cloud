@@ -107,7 +107,8 @@ and why.
 | 2.36 | A test stubbed the one OS read (`/proc/1/ns/net`) whose permission decided the outcome; the rootless prod helper got EACCES on every run and printed the generic refusal (widens 2.22) — **x2** (2026-11-10: the source command's catch-all reused `native_source_unavailable`) | Wrong-reason pass | 2 | Test (`test_o11y_availability_namespace_survey.py`: stub refuses pid 1, catch-all has its own category; `test_o11y_scrape_baseline.py`: `test_source_cli_prints_its_own_word_for_an_unexpected_exception`); class Convention |
 | 2.37 | A credential probe passed on the operator's own git login: the App token mint had failed, the stored password was empty, and a global helper answered; the probe tag was pushed under the operator's identity | Wrong-reason pass | 1 | Test (`platform/tests/test_release_version_playbook.py`) for the playbook; workstation probes Convention |
 | 2.38 | A mutation check swapped one character for another and restored the file within the same second; Python kept loading the mutant's cached bytecode, and the next test run tested the mutant (widens 2.28) | Wrong-reason result | 1 | Convention (a fresh `PYTHONPYCACHEPREFIX` per mutation run) |
-| 2.39 | A "no user is signed in after a refused callback" test asked with the pre-sign-in cookie, which could never show a user; a callback that stored the user and then refused stayed green | False-green test | 1 | Test (`callback_with_a_wrong_nonce_is_refused` and `callback_with_a_token_signed_by_another_key_is_refused` probe with the cookie the refusal sets; leak mutant red) |
+| 2.39 | A "no user is signed in after a refused callback" test asked with the pre-sign-in cookie, which could never show a user; a callback that stored the user and then refused stayed green | False-green test | 2 | Test (`callback_with_a_wrong_nonce_is_refused` and `callback_with_a_token_signed_by_another_key_is_refused` probe with the cookie the refusal sets; leak mutant red) |
+| 2.40 | A port PR (#1186) returned three times, twice for checks copied from their originals that could not fail (an emptiness check on a directory the hook never used; an overlap check that passed on a sequential hook) | False-green test (process) | 1 | Convention (this instance: overlap handshake, sequential-hook mutant red) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -3198,6 +3199,8 @@ widens 2.28 ("disable bytecode writes") from clean-copy tests to mutation checks
 
 ### 2.39 An absence check asked with a handle that could never show the thing
 
+**Occurrences: 2** — 2026-11-12, 2026-11-17
+
 **What happened.** PR #1099 added `callback_with_a_wrong_nonce_is_refused` for the
 Dispatch Console's sign-in gate (add-dispatch-console task 2.6). After the refused
 callback it asserted that `/v1/me` answers 401, but it sent the cookie the browser
@@ -3219,6 +3222,51 @@ held beforehand. Then write the mutant that does the forbidden thing and watch i
 `callback_with_a_token_signed_by_another_key_is_refused` probe with
 `callback.session.unwrap_or(login_session)`; the store-then-refuse mutant turns both
 red. The general rule is `Convention`.
+
+**Occurrence 2 — 2026-11-17.** PR #1186 ported the pre-push uv BATS file to
+`platform/tests/suite/pre_push_uv.rs`. Two tests,
+`a_finished_run_leaves_no_temporary_file_behind` and
+`term_stops_the_bats_job_removes_temporary_files_and_frees_the_lock`, asserted that the
+scratch directory under the TMPDIR the test set was empty after the hook ran. The hook makes
+its scratch directory with `mktemp -d`, which ignores TMPDIR on macOS (`docs/LESSONS.md`
+L-007), so the checks read a directory the hook never used and could not fail. The BATS
+original, which #1186 deletes, has the same shape: it sets TMPDIR and puts no stand-in
+`mktemp` on the PATH. Caught by a review
+pass before merge and fixed in `89002167`: a stand-in `mktemp` honours TMPDIR, and each test
+first asserts that the scratch directory existed while BATS ran. The rule did not fire because
+the check was carried over from the original rather than written: nobody chose the handle, so
+nobody asked whether the code under test hands back the same one.
+
+### 2.40 A port PR returned three times, twice for checks copied from originals that could not fail
+
+**What happened.** PR #1186 (AC-949) ported the git-hook and commit-gate tests from BATS and
+Python to Rust. It was returned three times. Return 1 was a correction dispatch on `0381e46f`,
+fixed in `89002167`. Among its findings were two checks that could pass without the property
+they name: the scratch-directory emptiness checks (2.39, occurrence 2) and a git-environment
+case that passed when the hook stopped before its BATS step. Return 2 was a correction dispatch
+on `784f8889`. Its findings were a readiness wait too short under load (`9b3ac6b7`), a
+trufflehog exclusion for a deleted file (`856e6f69`) and the shared text helpers (`c1a451c7`).
+Return 3 was CodeRabbit's review of `31297a21` on 2026-11-18. It found that
+`bats_is_already_running_while_pytest_runs` passed when the hook ran BATS to the end before
+pytest. The fake bats's mark file outlived it, and the fake pytest only checked that the file
+existed. The BATS original, which #1186 deletes, had the same
+gap: its fake bats creates the mark on start and never removes it. Joseph chose to fix it in place (batch index decision 46).
+
+**Root cause.** The PR's mutation pass ran one mutant per guard the ledger cites. It did not run
+a mutant for the property each test's name states. A test ported faithfully keeps every gap of
+its original. The port's job is to reproduce the original, so nothing in the port's own process
+asked whether the original's assertion could fail. Return 2 had other causes, not this one.
+
+**The rule.** Before a port PR is opened, each ported test gets one mutant that removes the
+property its name states, and the test is seen to go red on it. The mutant is not only the guard
+the test cites. A sequential hook is the mutant for "runs while", an unused directory for "leaves
+nothing behind", an early exit for "cannot reach". A test that only passes because the original
+did is not yet a port. When the original has the gap, the port fixes it and the PR body says so.
+
+**Enforced by.** Convention. This instance: `bats_is_already_running_while_pytest_runs` holds the
+fake bats until the fake pytest releases it (`FAKE_BATS_RELEASE`, `7fa584cc`), and a scratch
+copy of the hook made sequential turns it red. The test from before the fix passes against that
+copy.
 
 ## 3. Acting on live state
 
