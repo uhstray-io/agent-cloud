@@ -55,25 +55,12 @@ def _is_backup(volume):
     return volume.get("content") == "backup" or ":backup/" in str(volume.get("volid"))
 
 
-def _read_data(read, storage):
-    if read.get("status") == 403:
-        raise Refusal(f"The Proxmox token may not list the content of storage {storage} (needs Datastore.Audit there).")
-    if read.get("status") != 200:
-        raise Refusal(f"Proxmox answered {read.get('status')} listing the content of storage {storage}.")
-    # A 200 without a list is refused, never read as an empty storage: in the read-back that would report
-    # every listed archive gone.
-    data = (read.get("json") or {}).get("data")
-    if not isinstance(data, list):
-        raise Refusal(f"Proxmox returned no content list for storage {storage}.")
-    return data
-
-
 def _backups(content_reads):
     """(node, storage, volume) for every backup volume in raw content reads."""
     out = []
     for read in content_reads:
         node, storage = read["item"]["node"], read["item"]["storage"]
-        out.extend((node, storage, v) for v in _read_data(read, storage) if _is_backup(v))
+        out.extend((node, storage, v) for v in survey._ok(read, "content", storage, "Datastore.Audit") if _is_backup(v))
     return out
 
 

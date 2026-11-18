@@ -529,7 +529,7 @@ fn a_failed_storage_re_read_still_reaches_the_verifier_and_the_one_check() {
         &out,
         &[
             "0 DELETE request(s) not accepted",
-            "Proxmox answered -1 listing the content of storage backups",
+            "Proxmox answered -1 reading content on storage backups",
         ],
     );
 }
