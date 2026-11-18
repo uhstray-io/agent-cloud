@@ -7,7 +7,7 @@
 //! repository, with a fake `bats` that is held open on demand, so "the first push is still
 //! running" is a fact the test controls rather than a timing guess.
 //!
-//! A held push runs on a thread through `process::scrubbed`, bounded by its 30 s timeout. The
+//! A held push runs on a thread through `process::scrubbed`, its bound raised to 60 s. The
 //! fake `bats` releases on a file the test writes. `Holding` is built before the wait for the
 //! suite to start, so it writes that file and joins the thread on drop even when the wait fails;
 //! a failing case never leaves a hook running.
@@ -42,12 +42,17 @@ use tempfile::TempDir;
 const HOOK: &str = ".githooks/pre-push";
 const URL: &str = "https://example.invalid/repo.git";
 
-/// Fake `bats`: records that the suite started, and, when FAKE_BATS_LOCKS names a file, the
-/// entries of FAKE_BATS_LOCK_DIR while the suite runs, then, when FAKE_BATS_HOLD names a file, stays
-/// "running" until that file exists (bounded, so a broken test cannot hang).
+/// Fake `bats`: waits FAKE_BATS_DELAY seconds when set (a slow suite start), records that the
+/// suite started, and, when FAKE_BATS_LOCKS names a file, the entries of FAKE_BATS_LOCK_DIR while
+/// the suite runs; when FAKE_BATS_OWNER names a file, it records its parent's pid (bats is a direct
+/// child of the hook, so that is the hook) and the owner line of the lock FAKE_BATS_OWNER_LOCK,
+/// one per line; then, when FAKE_BATS_HOLD names a file, it stays "running" until that file exists
+/// (bounded, so a broken test cannot hang).
 const FAKE_BATS: &str = r#"#!/usr/bin/env sh
+[ -n "${FAKE_BATS_DELAY:-}" ] && sleep "$FAKE_BATS_DELAY"
 [ -n "${FAKE_BATS_STARTED:-}" ] && : > "$FAKE_BATS_STARTED"
 [ -n "${FAKE_BATS_LOCKS:-}" ] && ls -A "$FAKE_BATS_LOCK_DIR" > "$FAKE_BATS_LOCKS"
+[ -n "${FAKE_BATS_OWNER:-}" ] && { printf '%s\n' "$PPID"; sed -n 1p "$FAKE_BATS_OWNER_LOCK"; } > "$FAKE_BATS_OWNER"
 if [ -n "${FAKE_BATS_HOLD:-}" ]; then
   i=0
   while [ ! -e "$FAKE_BATS_HOLD" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
@@ -57,6 +62,14 @@ exit "${FAKE_BATS_RC:-0}"
 
 /// A `ln` that always fails, so the lock cannot be linked.
 const FAILING_LN: &str = "#!/usr/bin/env sh\nexit 1\n";
+
+/// Fake `ps`: the hook calls it only while printing a refusal, before any lock is released, so
+/// it records the entries of FAKE_PS_LOCK_DIR at that moment into FAKE_PS_LOCKS. It prints
+/// nothing, so the refusal carries no `Process:` line.
+const RECORDING_PS: &str = r#"#!/usr/bin/env sh
+[ -n "${FAKE_PS_LOCKS:-}" ] && ls -A "$FAKE_PS_LOCK_DIR" > "$FAKE_PS_LOCKS"
+exit 1
+"#;
 
 /// A scratch repository, the hook's PATH with a fake `bats`, and the temporary home.
 struct Ctx {
@@ -140,7 +153,11 @@ impl Ctx {
             .arg(hook.to_str().expect("a UTF-8 path"))
             .arg("origin")
             .arg(URL)
-            .write_stdin(refline(branch));
+            .write_stdin(refline(branch))
+            // Above the 20 s readiness wait plus a slow contender's budget: a holder killed at
+            // the scrubbed 30 s default runs no EXIT trap, so its lock stays with a dead owner
+            // and the contender reclaims it instead of being refused.
+            .timeout(Duration::from_secs(60));
         let thread = thread::spawn(move || cmd.output().expect("the held push starts"));
         // Built before the wait, so a failed wait below still releases and joins the push.
         let holding = Holding {
@@ -148,8 +165,8 @@ impl Ctx {
             thread: Some(thread),
         };
         // The bound is 20 s, as in pre_push_uv.rs's held_push, where a 10 s bound timed out in four
-        // of six full-module runs on this machine (cause not identified). The scrubbed runner's
-        // 30 s bound still caps the held hook.
+        // of six full-module runs on this machine (cause not identified). The held hook's own
+        // 60 s bound leaves at least 40 s after the marker for the contender.
         let deadline = Instant::now() + Duration::from_secs(20);
         while !started.exists() {
             assert!(
@@ -189,6 +206,29 @@ impl Ctx {
         let out = self.push(&self.repo, &all, &[branch]);
         let listing = std::fs::read_to_string(&seen).expect("the fake bats recorded the locks");
         (out, listing)
+    }
+
+    /// A push of `branch` whose fake `bats` records the hook's pid and the owner line of the
+    /// branch's lock while the suite runs; the push's output and those two lines.
+    fn push_recording_owner(&self, envs: &[(&str, &str)], branch: &str) -> (Output, String) {
+        let seen = self.home.path().join("owner-seen");
+        let lock = self.lockfile(&self.repo, branch);
+        let mut all: Vec<(&str, &str)> = envs.to_vec();
+        all.push(("FAKE_BATS_OWNER", seen.to_str().expect("a UTF-8 path")));
+        all.push(("FAKE_BATS_OWNER_LOCK", lock.to_str().expect("a UTF-8 path")));
+        let out = self.push(&self.repo, &all, &[branch]);
+        let owner = std::fs::read_to_string(&seen).expect("the fake bats recorded the owner");
+        (out, owner)
+    }
+
+    /// The name of `branch`'s lock file in the scratch repository.
+    fn lock_name(&self, branch: &str) -> String {
+        self.lockfile(&self.repo, branch)
+            .file_name()
+            .expect("a lock name")
+            .to_str()
+            .expect("a UTF-8 name")
+            .to_owned()
     }
 
     /// The exact listing of the lock directory while `branch`'s push holds only its lock.
@@ -377,8 +417,8 @@ fn a_push_of_a_different_branch_is_not_blocked() {
     let ctx = Ctx::new();
     let mut first = ctx.start_holding(&ctx.repo, "feat");
 
-    // Act
-    let other = ctx.push_default(&[], "other");
+    // Act: the other push records the lock directory while its suite runs.
+    let (other, during) = ctx.push_recording_locks(&[], "other");
     let still_held = ctx.lockfile(&ctx.repo, "feat").is_file();
     let other_lock = ctx.lockfile(&ctx.repo, "other").exists();
     first.finish();
@@ -392,6 +432,13 @@ fn a_push_of_a_different_branch_is_not_blocked() {
     );
     assert!(!text(&other).contains("PUSH REFUSED"));
     assert!(still_held, "the first push's lock was touched");
+    // The other push held its own lock beside feat's during its suite, so its absence after is
+    // a release, not a lock never taken.
+    assert_eq!(
+        during,
+        format!("{}\n{}\n", ctx.lock_name("feat"), ctx.lock_name("other")),
+        "the other push did not hold its own lock beside feat's"
+    );
     assert!(!other_lock, "the second push left a lock of its own");
 }
 
@@ -399,10 +446,20 @@ fn a_push_of_a_different_branch_is_not_blocked() {
 fn a_refused_multi_branch_push_releases_the_locks_it_took() {
     // Arrange
     let ctx = Ctx::new();
+    write_executable(&ctx.fakebin.join("ps"), RECORDING_PS);
     let mut first = ctx.start_holding(&ctx.repo, "feat");
+    let at_refusal = ctx.home.path().join("locks-at-refusal");
+    let dir = ctx.lock_dir(&ctx.repo);
 
     // Act: `aaa` is taken first, then `feat` is refused, and the refusal must release `aaa`.
-    let refused = ctx.push(&ctx.repo, &[], &["aaa", "feat"]);
+    let refused = ctx.push(
+        &ctx.repo,
+        &[
+            ("FAKE_PS_LOCKS", at_refusal.to_str().expect("a UTF-8 path")),
+            ("FAKE_PS_LOCK_DIR", dir.to_str().expect("a UTF-8 path")),
+        ],
+        &["aaa", "feat"],
+    );
     let aaa_lock = ctx.lockfile(&ctx.repo, "aaa").exists();
     let feat_lock = ctx.lockfile(&ctx.repo, "feat").is_file();
     first.finish();
@@ -413,6 +470,13 @@ fn a_refused_multi_branch_push_releases_the_locks_it_took() {
         0,
         "the push holding feat was allowed: {}",
         text(&refused)
+    );
+    // The refused push held `aaa` when it was refused on `feat`, so the absence after is a release.
+    let held = std::fs::read_to_string(&at_refusal).expect("the refusal recorded the locks");
+    assert_eq!(
+        held,
+        format!("{}\n{}\n", ctx.lock_name("aaa"), ctx.lock_name("feat")),
+        "the refused push did not hold aaa when feat was refused"
     );
     assert!(!aaa_lock, "the aaa lock leaked from a refused push");
     assert!(feat_lock, "the first push's lock is gone");
@@ -431,7 +495,7 @@ fn a_stale_lock_whose_pid_is_gone_is_reclaimed() {
     .expect("the stale lock is written");
 
     // Act
-    let out = ctx.push_default(&[], "feat");
+    let (out, owner) = ctx.push_recording_owner(&[], "feat");
 
     // Assert
     assert_eq!(
@@ -444,6 +508,17 @@ fn a_stale_lock_whose_pid_is_gone_is_reclaimed() {
         text(&out).contains("reclaimed a stale lock"),
         "{}",
         text(&out)
+    );
+    // While the suite ran, the lock named the hook itself as owner, not the dead pid.
+    let hook_pid = owner
+        .lines()
+        .next()
+        .expect("the fake bats recorded the hook pid");
+    assert_ne!(hook_pid, dead, "the recorded hook pid is the dead owner");
+    assert_eq!(
+        owner,
+        format!("{hook_pid}\n{hook_pid}\n"),
+        "the reclaimed lock was not owned by the running hook"
     );
     ctx.assert_no_locks(&ctx.repo);
 }
@@ -528,9 +603,15 @@ fn released_when_the_push_is_interrupted_by_term() {
 
     // Act: TERM to the hook, then the release lets the suite end so the shell runs its trap.
     signal_term(ctx.home.path(), &hook_pid);
-    first.finish();
+    let out = first.finish();
 
-    // Assert
+    // Assert: the hook's TERM handler ended the push, not a normal exit after the suite.
+    assert_eq!(
+        code(&out),
+        143,
+        "TERM did not interrupt the push: {}",
+        text(&out)
+    );
     ctx.assert_no_locks(&ctx.repo);
 }
 
@@ -604,9 +685,13 @@ fn a_link_failure_with_no_lock_present_warns_and_proceeds() {
     // Arrange: no hard links on this filesystem, as far as the hook can tell.
     let ctx = Ctx::new();
     write_executable(&ctx.fakebin.join("ln"), FAILING_LN);
+    let started = ctx.home.path().join("started");
 
     // Act
-    let out = ctx.push_default(&[], "feat");
+    let out = ctx.push_default(
+        &[("FAKE_BATS_STARTED", started.to_str().expect("a UTF-8 path"))],
+        "feat",
+    );
 
     // Assert
     assert_eq!(
@@ -621,6 +706,7 @@ fn a_link_failure_with_no_lock_present_warns_and_proceeds() {
         text(&out)
     );
     assert!(!text(&out).contains("PUSH REFUSED"), "{}", text(&out));
+    assert!(started.exists(), "the suite did not run after the warning");
     // The directory the link was tried in exists, so the empty listing below is a real read.
     assert!(
         ctx.lock_dir(&ctx.repo).is_dir(),
