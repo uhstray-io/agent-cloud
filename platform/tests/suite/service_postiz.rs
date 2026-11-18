@@ -1003,8 +1003,9 @@ fn api_key_capture_is_read_only_with_fixed_path_and_no_log() {
     text::assert_line(STORE_KEY_PB, r#"^    _bao_path: "services/postiz"$"#);
     text::assert_line(STORE_KEY_PB, r#"^    _bao_key: "postiz_api_key"$"#);
     text::refute_line(STORE_KEY_PB, r#"^    _bao_(path|key): "\{\{"#);
-    // Every step that touches the key value is no_log'd: the read and parse here, and the
-    // fetch/patch/verify chain in the shared write task this playbook includes.
+    // The steps that read, parse and write the key are no_log'd: the read and parse here, and the
+    // fetch/patch/verify chain in the shared write task this playbook includes. The include task
+    // that passes the key down as vars is not checked here.
     text::assert_line(STORE_KEY_PB, "include_tasks: tasks/bao-merge-keys.yml");
     for name in ["Read the API key", "Parse what the database"] {
         let block = task_block(STORE_KEY_PB, name);
