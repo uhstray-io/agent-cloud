@@ -3241,17 +3241,17 @@ nobody asked whether the code under test hands back the same one.
 ### 2.40 A port PR returned three times, twice for checks copied from originals that could not fail
 
 **What happened.** PR #1186 (AC-949) ported the git-hook and commit-gate tests from BATS and
-Python to Rust. It was returned three times. Return 1 was a correction dispatch on `0381e46f`,
-fixed in `89002167`, `9b3ac6b7` and `856e6f69`. Among its findings were two checks that could
+Python to Rust. It was returned three times. Returns 1 and 2 were correction dispatches from the
+PR's owner session to its executor, not posted on the PR. Return 1 was on `0381e46f`,
+fixed in `89002167`, `9b3ac6b7` and `856e6f69`. Its fixes included two checks that could
 pass without the property they name: the scratch-directory emptiness checks, which on macOS
 read a directory the hook never used (2.39, occurrence 2), and a git-environment case that
-passed when the hook stopped before its BATS step. Its findings also included a readiness wait
+passed when the hook stopped before its BATS step. They also raised a readiness wait
 too short under load and a trufflehog exclusion for a deleted file. Return 2 was a correction
-dispatch on `784f8889`, fixed in `c1a451c7`. Its findings included the shared text helpers, and
-the git-env fake bats, which on macOS left a scratch repository in the system temp directory on
-every run. A fallback review round then approved `c1a451c7` (PR comment, 2026-11-17 13:19Z). It
-compared each ported test with its original, so a gap the original shared passed it. Return 3 was
-CodeRabbit's review of `31297a21` on 2026-11-18. It found that
+dispatch on `784f8889`, fixed in `c1a451c7`. Among its fixes was the git-env fake bats, which on
+macOS left a scratch repository in the system temp directory on every run. A fallback review
+round then approved `c1a451c7` (PR comment, 2026-11-17 13:19Z) without finding the gap below.
+Return 3 was CodeRabbit's review of `31297a21` on 2026-11-18. It found that
 `bats_is_already_running_while_pytest_runs` passed when the hook ran BATS to the end before
 pytest. The fake bats's mark file outlived it, and the fake pytest only checked that the file
 existed. The BATS original, which #1186 deletes, had the same gap: its fake bats creates the
