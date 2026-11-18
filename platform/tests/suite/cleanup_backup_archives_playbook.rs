@@ -8,7 +8,8 @@
 //!   the run is not in check mode.
 //! - Before the first DELETE the jobs and guests are read again and the list rebuilt; a changed list
 //!   (a covering job, a guest back, a new pool job) is refused.
-//! - A refused DELETE still reaches the read-back and verify, and the run ends red.
+//! - A refused DELETE, or a delete task still running when the wait ends, still reaches the read-back
+//!   and verify, and the run ends red.
 //!
 //! Each behavioural test lifts the play's own task, with its `when` and assertion untouched, and
 //! runs it through ansible-playbook on localhost. The helper's logic is covered by the cli tier
@@ -404,6 +405,53 @@ fn a_refused_delete_still_reaches_the_read_back_and_the_run_ends_red() {
     assert!(!out.ok, "{}", out.out);
     assert!(
         out.out.contains("request(s) were not accepted"),
+        "{}",
+        out.out
+    );
+    assert!(
+        out.out.contains("Listed archives are still present"),
+        "{}",
+        out.out
+    );
+}
+
+#[test]
+fn a_delete_task_still_running_when_the_wait_ends_still_reaches_the_read_back() {
+    // Arrange: the block from its wait on, after one accepted DELETE whose task never reports stopped (its
+    // status is read from a closed local port), the retries cut to two, and the re-read replaced by a read
+    // that still holds the archive.
+    let play = cleanup_play();
+    let tasks: Vec<Value> = block_tasks(&play)
+        .into_iter()
+        .skip_while(|t| t["name"] != "Wait for each running delete task")
+        .map(|mut t| {
+            if t["name"] == "Wait for each running delete task" {
+                t["retries"] = json!(2);
+                t["delay"] = json!(0);
+                t
+            } else if t["name"] == "Re-read the backup volumes on each backup storage" {
+                json!({"name": t["name"], "ansible.builtin.set_fact": {"_content_rereads": {"results": "{{ _content_reads.results }}"}}})
+            } else {
+                t
+            }
+        })
+        .collect();
+    let (input, list) = confirmed(vec![backup(900)], json!([]));
+    let accepted = json!({"results": [{"status": 200, "json": {"data": "UPID:n1:0:0:0:imgdel:900:t:"},
+                                       "item": list["volumes"][0]}]});
+    let vars = json!({
+        "_cleanup": helper(), "_list": list, "_delete_runs": accepted, "_pve_host": "http://127.0.0.1:9",
+        "_pve_token_id": "t", "_pve_secret": "s", "_content_reads": {"results": input["content_reads"]}
+    });
+
+    // Act
+    let out = run(tasks, vars, None, false);
+
+    // Assert: the run is red naming the task that had not stopped, and the read-back and verify ran before.
+    assert!(!out.ok, "{}", out.out);
+    assert!(
+        out.out
+            .contains("1 delete task(s) had not stopped when the wait ended"),
         "{}",
         out.out
     );

@@ -7,7 +7,8 @@ Three modes, JSON on stdin, JSON on stdout:
              -> the archives the cleanup deletes, their sha256, what it keeps, and `delete`.
              Refused whole while any node is not online. Two sources only, backup volumes only:
                gone      an archive whose vmid is not a guest of this cluster, on a storage no other
-                         cluster can write to (node-local, or CephFS on this cluster's own Ceph);
+                         cluster can write to (node-local, or CephFS on this cluster's own Ceph,
+                         taken on the operator's word);
                declared  an archive matching a declared (vmid, storage) pair, refused when an enabled
                          vzdump job on that storage still backs up that guest.
              A protected archive, an archive with no vmid, and every other archive are never listed,
@@ -140,8 +141,7 @@ def list_archives(data):
     # A guest missing from this cluster is gone only on a storage no other cluster can write to:
     # a node-local one, or CephFS on this cluster's own Ceph. On any other shared storage (NFS, CIFS,
     # PBS, an external CephFS) the vmid may be another cluster's guest, so it is kept unless declared.
-    # That an own CephFS has no other writer is the operator's statement (operator, 2026-11-18): no read
-    # here shows who else mounts the filesystem.
+    # An own CephFS having no outside writer is the operator's word (the playbook header says so).
     config = {c.get("storage"): c for c in data.get("storage_config") or []}
     # Unknown counts as shared: a status with no `shared` field is not taken as node-local.
     own = {r["storage"] for r in data["plan"]["reads"]

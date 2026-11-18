@@ -7,12 +7,12 @@
 #
 # What it deletes: backup archives only, from exactly two sources:
 #   - gone:     an archive whose guest (vmid) no longer exists in the cluster, on a storage no other
-#               cluster can write to: a node-local one, or CephFS on this cluster's own Ceph. On any
-#               other shared storage (NFS, CIFS, PBS, an external CephFS) the vmid may belong to another
-#               cluster's guest, so those archives are counted (gone_on_shared) and kept unless declared.
-#               That CephFS on this cluster's own Ceph has no other writer is the operator's statement
-#               (operator, 2026-11-18), not a read: nothing this run reads shows who else mounts the
-#               filesystem. Confirm it before the first real run;
+#               cluster can write to: a node-local one, or CephFS on this cluster's own Ceph (taken on the
+#               operator's word, below). On any other shared storage (NFS, CIFS, PBS, an external CephFS)
+#               the vmid may belong to another cluster's guest, so those archives are counted
+#               (gone_on_shared) and kept unless declared. That no client outside this cluster's storage
+#               configuration mounts its own CephFS is the operator's statement (operator, 2026-11-18),
+#               not a read: no read this run makes shows such a mount. Confirm it before the first real run;
 #   - declared: an archive matching a (vmid, storage) pair in the inventory variable
 #               proxmox_backup_cleanup_pairs (site-config; never an extra var). A pair that an enabled
 #               vzdump job still backs up to that storage is refused, naming the job.
@@ -344,15 +344,19 @@
               Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
           loop: "{{ _delete_runs.results | selectattr('status', 'equalto', 200) | selectattr('json.data') | list }}"
           register: _task_polls
-          until: _task_polls.json.data.status == 'stopped'
+          until: _task_polls.json is defined and _task_polls.json.data.status == 'stopped'
           retries: 60
           delay: 5
+          # A task still running when the retries run out fails the poll whatever failed_when says (ansible-core
+          # marks it failed after failed_when). It must not skip the read-back: the count is checked below.
+          ignore_errors: true
           no_log: true
 
-        - name: Collect the delete tasks' exit statuses
+        - name: Collect the delete tasks' end states
           ansible.builtin.set_fact:
-            _delete_exits: "{{ _task_polls.results | default([]) | map(attribute='json') | map(attribute='data')
-              | map(attribute='exitstatus') | list }}"
+            _delete_stopped: "{{ _task_polls.results | default([]) | selectattr('json', 'defined')
+              | map(attribute='json.data') | selectattr('status', 'equalto', 'stopped') | list }}"
+            _delete_polled: "{{ _task_polls.results | default([]) | length }}"
           no_log: true
 
         - name: Re-read the backup volumes on each backup storage
@@ -379,8 +383,9 @@
           check_mode: false
           no_log: true
 
-        # Checked only now, after the read-back, so a refused DELETE, or a delete task that ended not OK, still
-        # leaves the accepted deletes read back. The refused DELETE comes first: it is the original failure.
+        # Checked only now, after the read-back, so a refused DELETE, a delete task still running when the wait
+        # ended, or one that ended not OK, still leaves the accepted deletes read back. The refused DELETE comes
+        # first: it is the original failure.
         - name: Require every DELETE to be accepted
           ansible.builtin.assert:
             that: _delete_runs.results | rejectattr('status', 'equalto', 200) | list | length == 0
@@ -388,10 +393,17 @@
               request(s) were not accepted. Read-back: {{ (_verify_run.stdout | from_json).refusal
               | default('every other listed archive is gone') }}"
 
+        - name: Require every delete task to have stopped
+          ansible.builtin.assert:
+            that: _delete_stopped | length == _delete_polled | int
+            fail_msg: "{{ _delete_polled | int - _delete_stopped | length }} delete task(s) had not stopped when the
+              wait ended. Read-back: {{ (_verify_run.stdout | from_json).refusal
+              | default('every other listed archive is gone') }}"
+
         - name: Require every delete task to end OK
           ansible.builtin.assert:
-            that: _delete_exits | reject('equalto', 'OK') | list | length == 0
-            fail_msg: "{{ _delete_exits | reject('equalto', 'OK') | list | length }} delete task(s) did not end OK."
+            that: _delete_stopped | rejectattr('exitstatus', 'equalto', 'OK') | list | length == 0
+            fail_msg: "{{ _delete_stopped | rejectattr('exitstatus', 'equalto', 'OK') | list | length }} delete task(s) did not end OK."
 
         - name: Require the verified result
           ansible.builtin.assert:
