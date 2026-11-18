@@ -44,12 +44,12 @@ use tempfile::TempDir;
 const HOOK: &str = ".githooks/pre-push";
 const URL: &str = "https://example.invalid/repo.git";
 
-/// Fake `bats`: records that the suite started, and, when FAKE_BATS_LOCKS names a file, the
-/// entries of FAKE_BATS_LOCK_DIR while the suite runs; when FAKE_BATS_OWNER names a file, it
-/// records its parent's pid (bats is a direct child of the hook, so that is the hook) and the
-/// owner line of the lock FAKE_BATS_OWNER_LOCK, one per line; then, when FAKE_BATS_HOLD names a
-/// file, it stays "running" until that file exists (bounded, so a broken test cannot hang). It
-/// exits FAKE_BATS_RC (default 0).
+/// Fake `bats`: when FAKE_BATS_STARTED names a file, records that the suite started; when
+/// FAKE_BATS_LOCKS names a file, the entries of FAKE_BATS_LOCK_DIR while the suite runs; when
+/// FAKE_BATS_OWNER names a file, its parent's pid (bats is a direct child of the hook, so that is
+/// the hook) and the owner line of the lock FAKE_BATS_OWNER_LOCK, one per line; then, when
+/// FAKE_BATS_HOLD names a file, it stays "running" until that file exists (bounded, so a broken
+/// test cannot hang). It exits FAKE_BATS_RC (default 0).
 const FAKE_BATS: &str = r#"#!/usr/bin/env sh
 [ -n "${FAKE_BATS_STARTED:-}" ] && : > "$FAKE_BATS_STARTED"
 [ -n "${FAKE_BATS_LOCKS:-}" ] && ls -A "$FAKE_BATS_LOCK_DIR" > "$FAKE_BATS_LOCKS"

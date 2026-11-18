@@ -76,10 +76,9 @@ const URL: &str = "https://example.invalid/repo.git";
 const SHA: &str = "1111111111111111111111111111111111111111";
 
 /// Fake `bats`: logs the first PATH entry it ran under and, on request, its arguments (one per
-/// line), a start mark (FAKE_BATS_MARK, present only while it runs), its pids, the scratch
-/// directory it saw and a child process. Then it waits for FAKE_BATS_HOLD
-/// and, with FAKE_BATS_RELEASE, for the fake pytest's release (15 s at most), and exits
-/// FAKE_BATS_RC.
+/// line), a start mark (FAKE_BATS_MARK, removed before exit when FAKE_BATS_RELEASE is set), its
+/// pids, the scratch directory it saw and a child process. Then it waits for FAKE_BATS_HOLD and,
+/// with FAKE_BATS_RELEASE, for the fake pytest's release (15 s at most), and exits FAKE_BATS_RC.
 const FAKE_BATS: &str = r#"#!/usr/bin/env sh
 echo "${PATH%%:*}" >> "$FAKE_BATS_LOG"
 [ -n "${FAKE_BATS_ARGS:-}" ] && printf '%s\n' "$@" > "$FAKE_BATS_ARGS"
@@ -111,7 +110,8 @@ exit "${FAKE_BATS_RC:-0}"
 /// Fake python: logs its own path and the first PATH entry for every call. The one pytest run
 /// logs them again as `pytest-run`, and also logs the fast lane's environment, copies the changed-path list it was given, waits for
 /// FAKE_WAIT (and, finding it, creates FAKE_BATS_RELEASE), then prints FAKE_COLLECT_OUT and exits
-/// FAKE_COLLECT_RC. Every other call succeeds.
+/// FAKE_COLLECT_RC. Every other call succeeds, except the `import pytest` probe under
+/// FAKE_NO_PYTEST=1.
 const FAKE_PYTHON: &str = r#"#!/usr/bin/env sh
 echo "$0 first-path=${PATH%%:*}" >> "$FAKE_PY_LOG"
 case "$*" in
@@ -422,10 +422,14 @@ fn assert_pytest_ran_on_fakebin(ctx: &Ctx) {
     assert!(!log.contains(".venv/bin"), "{log}");
 }
 
-/// A file's text, empty when it cannot be read: a log never written reads as no calls. A check
-/// that needs the file to exist uses `read`, which panics.
+/// A file's text, empty when the file does not exist: a log never written reads as no calls. Any
+/// other read error panics, so an unreadable log is never read as an empty one.
 fn read_or_empty(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap_or_default()
+    match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => panic!("{}: {e}", path.display()),
+    }
 }
 
 /// `items` as printf '%s\n' prints them: each line terminated.
