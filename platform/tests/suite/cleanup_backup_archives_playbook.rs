@@ -382,6 +382,7 @@ const UPID: &str = "UPID:n1:0:0:0:imgdel:900:t:";
 /// The delete block from task `start` on, as one localhost run can take it: the poll cut to two quick
 /// retries, and each task named in `stubs` replaced by a `set_fact` of the variable and value given.
 fn block_from(play: &Value, start: &str, stubs: &[(&str, &str, Value)]) -> Vec<Value> {
+    block_task(play, start);
     block_tasks(play)
         .into_iter()
         .skip_while(|t| t["name"] != start)
@@ -558,13 +559,30 @@ fn a_verifier_that_gives_no_result_is_a_refusal_in_the_one_check() {
         let out = run(tasks.clone(), vars, None, false);
         red_with(&out, &["Read-back: the verifier gave no result"]);
     }
+
+    // A verifier task that failed before running leaves no output and no exit code; the one check still runs.
+    let crashed = (
+        "Verify exactly the listed archives are gone",
+        "_verify_run",
+        json!({"failed": true, "msg": "crashed"}),
+    );
+    let tasks = block_from(
+        &play,
+        "Keep the accepted DELETE answers",
+        &[reread(), crashed],
+    );
+    let vars = block_vars(json!({"_delete_runs": accepted(json!({"json": {"data": null}}))}));
+    red_with(
+        &run(tasks, vars, None, false),
+        &["Read-back: the verifier gave no result"],
+    );
 }
 
 #[test]
 fn a_delete_task_that_ended_not_ok_carries_the_read_back_and_a_poll_body_without_data_counts() {
     // Arrange: the block from the end-state collection on, after one running task whose poll answered
     // `stopped` with an error exit or with no exit status, or answered a body without `data` or with `data`
-    // null.
+    // null; and the same task stopped `OK`, which passes.
     let play = cleanup_play();
     let tasks = block_from(&play, "Collect the delete tasks' end states", &[reread()]);
     let running = accepted(json!({"json": {"data": UPID}}))["results"].clone();
@@ -589,7 +607,18 @@ fn a_delete_task_that_ended_not_ok_carries_the_read_back_and_a_poll_body_without
         false,
     );
     let no_data = run(tasks.clone(), with(json!({"json": {}})), None, false);
-    let null_data = run(tasks, with(json!({"json": {"data": null}})), None, false);
+    let null_data = run(
+        tasks.clone(),
+        with(json!({"json": {"data": null}})),
+        None,
+        false,
+    );
+    let ok = run(
+        tasks,
+        with(json!({"json": {"data": {"status": "stopped", "exitstatus": "OK"}}})),
+        None,
+        false,
+    );
 
     // Assert: each is red, counted in its own column, with the read-back's result beside it.
     for out in [&not_ok, &no_exit] {
@@ -611,6 +640,7 @@ fn a_delete_task_that_ended_not_ok_carries_the_read_back_and_a_poll_body_without
             ],
         );
     }
+    assert!(ok.ok, "{}", ok.out);
 }
 
 #[test]
