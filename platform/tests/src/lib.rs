@@ -820,8 +820,8 @@ pub mod process {
     /// A child's stdout, then its stderr, as one string with no separator between them, like the
     /// Python tests' `out.stdout + out.stderr`. Two differences from those: Python's `text=True`
     /// (`harness_sandbox.py`'s `run`) turns `\r\n` and a lone `\r` into `\n`, while this keeps
-    /// every `\r`; and Python raises on bytes that are not UTF-8, while this replaces them, as
-    /// `String::from_utf8_lossy` does.
+    /// every `\r`; and Python raises on bytes its locale's encoding cannot decode, while this
+    /// replaces bytes that are not UTF-8, as `String::from_utf8_lossy` does.
     pub fn output_text(out: &Output) -> String {
         format!(
             "{}{}",

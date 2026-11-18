@@ -25,6 +25,19 @@ fn output_text_joins_stdout_then_stderr_with_nothing_between_them() {
 }
 
 #[test]
+fn output_text_keeps_carriage_returns_and_replaces_bytes_that_are_not_utf8() {
+    // The two differences from Python's `text=True` that `output_text` documents.
+    assert_eq!(
+        output_text(&output(b"a\r\nb\rc", b"d\r\n")),
+        "a\r\nb\rcd\r\n"
+    );
+    assert_eq!(
+        output_text(&output(b"x\xffy", b"\xfez")),
+        "x\u{fffd}y\u{fffd}z"
+    );
+}
+
+#[test]
 fn fake_bin_runs_each_script_as_a_program_on_the_returned_path() {
     let dir = TempDir::new().unwrap();
     let path = fake_bin(dir.path(), &[("ac-fake-hello", "echo from-the-double\n")]);
