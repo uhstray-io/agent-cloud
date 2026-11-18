@@ -74,7 +74,7 @@ const SHA: &str = "1111111111111111111111111111111111111111";
 
 /// Fake `bats`: logs the first PATH entry it ran under and, on request, its arguments, its start,
 /// its pids, the scratch directory it saw and a child process. Then it waits for FAKE_BATS_HOLD
-/// and, with FAKE_BATS_RELEASE, for the fake pytest's release (5 s at most), and exits
+/// and, with FAKE_BATS_RELEASE, for the fake pytest's release (15 s at most), and exits
 /// FAKE_BATS_RC.
 const FAKE_BATS: &str = r#"#!/usr/bin/env sh
 echo "${PATH%%:*}" >> "$FAKE_BATS_LOG"
@@ -93,11 +93,13 @@ if [ -n "${FAKE_BATS_HOLD:-}" ]; then
   while [ ! -e "$FAKE_BATS_HOLD" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
 fi
 # FAKE_BATS_RELEASE: the overlap handshake. Wait for the fake pytest to create it, then remove
-# FAKE_BATS_MARK, so the mark exists only while this fake runs. Bounded well inside the runner's
-# 30 s, so a hook that runs the suites one after the other leaves nothing running.
+# FAKE_BATS_MARK, so the mark exists only while this fake runs. 15 s leaves room for the hook's
+# work between starting BATS and starting pytest under load; with the fake pytest's 5 s it stays
+# inside the runner's 30 s, so a hook that runs the suites one after the other leaves nothing
+# running.
 if [ -n "${FAKE_BATS_RELEASE:-}" ]; then
   i=0
-  while [ ! -e "$FAKE_BATS_RELEASE" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  while [ ! -e "$FAKE_BATS_RELEASE" ] && [ "$i" -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
   rm -f "$FAKE_BATS_MARK"
 fi
 exit "${FAKE_BATS_RC:-0}"
