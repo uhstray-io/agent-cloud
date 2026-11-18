@@ -93,8 +93,7 @@ fn mgmt() -> Value {
 enum Want {
     /// Exactly this value.
     Exact(Value),
-    /// A non-empty list of problems; with `Some(why)`, one of them contains `why` (pytest
-    /// `any(why in p for p in problems)`), with `None`, any problem (pytest `assert problems`).
+    /// A refusal, as [`refuses`] reads one.
     Refused(Option<&'static str>),
 }
 
@@ -166,25 +165,22 @@ fn run(calls: &Calls) -> Vec<Value> {
     let output = process::run(&mut cmd);
     assert!(
         output.status.success(),
-        "the filter play failed:\n{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        "the filter play failed:\n{}",
+        process::output_text(&output)
     );
     let text = std::fs::read_to_string(&out).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
     let rows: Vec<Value> = serde_json::from_str(&text).expect("the results file is JSON");
-    let mut results = vec![Value::Null; calls.calls.len()];
-    let mut seen = BTreeSet::new();
+    let mut results: Vec<Option<Value>> = vec![None; calls.calls.len()];
     for row in rows {
         let id = row["id"].as_u64().expect("a result carries its id") as usize;
-        assert!(seen.insert(id), "result {id} written twice");
-        results[id] = row["r"].clone();
+        let earlier = results[id].replace(row["r"].clone());
+        assert!(earlier.is_none(), "result {id} written twice");
     }
-    assert_eq!(
-        seen.len(),
-        calls.calls.len(),
-        "every call returns one result"
-    );
     results
+        .into_iter()
+        .enumerate()
+        .map(|(id, r)| r.unwrap_or_else(|| panic!("call {id} returned no result")))
+        .collect()
 }
 
 /// The assertions of the run, collected so one failure does not hide the next.
@@ -215,34 +211,28 @@ impl Check {
     }
 }
 
+/// The rules of a result; empty when it is not a list, so a wrong result fails a check, never panics.
+fn rows(rules: &Value) -> &[Value] {
+    rules.as_array().map_or(&[], Vec::as_slice)
+}
+
 /// The listed fields of each rule, as one array per rule.
 fn fields(rules: &Value, keys: &[&str]) -> Value {
-    Value::Array(
-        rules
-            .as_array()
-            .unwrap_or(&Vec::new())
-            .iter()
-            .map(|r| Value::Array(keys.iter().map(|k| r[*k].clone()).collect()))
-            .collect(),
-    )
+    rows(rules)
+        .iter()
+        .map(|r| Value::Array(keys.iter().map(|k| r[*k].clone()).collect()))
+        .collect()
 }
 
 /// One field of each rule.
 fn column(rules: &Value, key: &str) -> Value {
-    Value::Array(
-        rules
-            .as_array()
-            .unwrap_or(&Vec::new())
-            .iter()
-            .map(|r| r[key].clone())
-            .collect(),
-    )
+    rows(rules).iter().map(|r| r[key].clone()).collect()
 }
 
 /// `{spec: dual_family}` for each rule.
 fn dual_by_spec(rules: &Value) -> Value {
     let mut map = serde_json::Map::new();
-    for r in rules.as_array().unwrap_or(&Vec::new()) {
+    for r in rows(rules) {
         map.insert(
             r["spec"].as_str().unwrap_or("").to_string(),
             r["dual_family"].clone(),
@@ -1031,7 +1021,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     let read = &r[two_ways_read];
     k.that(
         item,
-        read.as_array().is_some_and(|a| a.len() == 2)
+        rows(read).len() == 2
             && read[0]["peer"] == json!("192.0.2.7")
             && read[1]["peer"] == json!("192.0.2.7")
             && read[0]["tag"] != read[1]["tag"],
@@ -1053,11 +1043,9 @@ fn ufw_filters_give_the_results_their_tests_expect() {
 
     let item = "test_a_rule_is_held_only_by_its_tag_and_its_spec_together";
     let desired = &r[held_rules];
-    k.that(
-        item,
-        desired.as_array().is_some_and(|a| a.len() == 2),
-        || format!("two declared rules (SSH, web): {desired}"),
-    );
+    k.that(item, rows(desired).len() == 2, || {
+        format!("two declared rules (SSH, web): {desired}")
+    });
     // the same tag over another rule does not stand in for the declared one (SSH included)
     k.eq(item, &r[absent_masked], &json!([desired[0]]));
     // the declared spec without its tag (untagged, or an old tag) is absent too: it is retagged
@@ -1096,21 +1084,17 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     // proto must not become tcp: both render as written, which ufw refuses (the playbook's
     // egress validation refuses them first).
     let item = "test_an_explicit_null_is_never_read_as_a_default";
-    k.that(
-        item,
-        r[null_port].as_array().is_some_and(|a| a.len() == 2),
-        || format!("SSH and the denial: {}", r[null_port]),
-    );
+    k.that(item, rows(&r[null_port]).len() == 2, || {
+        format!("SSH and the denial: {}", r[null_port])
+    });
     k.eq(
         item,
         &r[null_port][1]["cmd"],
         &json!("deny out to 198.51.100.1 port None proto tcp"),
     );
-    k.that(
-        item,
-        r[null_proto].as_array().is_some_and(|a| a.len() == 2),
-        || format!("SSH and the allow: {}", r[null_proto]),
-    );
+    k.that(item, rows(&r[null_proto]).len() == 2, || {
+        format!("SSH and the allow: {}", r[null_proto])
+    });
     k.eq(
         item,
         &r[null_proto][1]["cmd"],
@@ -1119,7 +1103,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
 
     k.that(
         "test_an_ssh_cidr_that_is_not_an_address_cannot_prove_a_denial_safe",
-        r[mgmt_one].as_array().is_some_and(|a| a.len() == 1)
+        rows(&r[mgmt_one]).len() == 1
             && r[mgmt_one][0]
                 .as_str()
                 .is_some_and(|p| p.contains("SSH CIDR 'mgmt-net' is not an address")),
@@ -1129,18 +1113,19 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     // not broad, contains the SSH CIDR, port, proto
     k.that(
         "test_every_problem_of_an_entry_is_reported_not_only_the_first",
-        r[every_problem].as_array().is_some_and(|a| a.len() == 4),
+        rows(&r[every_problem]).len() == 4,
         || format!("four problems: {}", r[every_problem]),
     );
 
     // Stored forms measured on ufw 0.36.2 (Ubuntu 24.04, 2026-11-09): `allow out to any port 443
     // proto tcp` is stored as `allow out 443/tcp`, a scoped one keeps `to ... port ... proto`, and
     // the audit rule is `allow out log to any`.
-    // the SSH allow comes first; empty output is a failure, never a panic
-    let after_ssh: Vec<Value> = fields(&r[allowed_order], &cts)
-        .as_array()
-        .map(|a| a.iter().skip(1).cloned().collect())
-        .unwrap_or_default();
+    // the SSH allow comes first
+    let after_ssh: Vec<Value> = rows(&fields(&r[allowed_order], &cts))
+        .iter()
+        .skip(1)
+        .cloned()
+        .collect();
     k.eq(
         "test_allowed_egress_comes_after_the_denials_and_the_audit_rule_last",
         &Value::Array(after_ssh),
