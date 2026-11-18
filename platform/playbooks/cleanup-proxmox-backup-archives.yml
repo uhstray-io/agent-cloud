@@ -274,33 +274,34 @@
     - name: Delete the listed archives
       when: _list.delete and not ansible_check_mode
       block:
-        # The jobs and guests were read before the storages, the privilege reads and the confirm. Both are
-        # read again and the list rebuilt by the same code: a job enabled since that covers a declared pair
-        # refuses the run naming the job, and a guest that came back changes the sha256. Proxmox holds no
-        # lock on its job list, so this narrows the window to the seconds before the first DELETE; it does
-        # not close it.
-        - name: Read the backup jobs and guests again before deleting
+        # The jobs, guests and nodes were read before the storages, the privilege reads and the confirm. All
+        # three are read again and the list rebuilt by the same code: a job enabled since that covers a
+        # declared pair refuses the run naming the job, a guest that came back changes the sha256, and a node
+        # no longer online refuses the run. Proxmox holds no lock on these, so this narrows the window to the
+        # seconds before the first DELETE; it does not close it.
+        - name: Read the backup jobs, guests and nodes again before deleting
           ansible.builtin.uri:
             url: "{{ _pve_host }}/api2/json/{{ item }}"
             headers:
               Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
-          loop: [cluster/backup, "cluster/resources?type=vm"]
+          loop: [cluster/backup, "cluster/resources?type=vm", nodes]
           register: _rereads
           failed_when: false
           no_log: true
 
-        - name: Require the second job and guest reads
+        - name: Require the second job, guest and node reads
           ansible.builtin.assert:
-            that: _rereads.results | map(attribute='status') | list == [200, 200]
-            fail_msg: "Cleanup refused before deleting: the second read of the backup jobs and guests answered
-              {{ _rereads.results | map(attribute='status') | list }}, not [200, 200]."
+            that: _rereads.results | map(attribute='status') | list == [200, 200, 200]
+            fail_msg: "Cleanup refused before deleting: the second read of the backup jobs, guests and nodes
+              answered {{ _rereads.results | map(attribute='status') | list }}, not [200, 200, 200]."
 
         - name: Rebuild the list from the second reads
           ansible.builtin.command:
             argv: [python3, "{{ _cleanup }}", list]
             stdin: >-
               {{ _list_input | combine({'jobs': _rereads.results[0].json.data,
-                                        'vms': _rereads.results[1].json.data}) | to_json }}
+                                        'vms': _rereads.results[1].json.data,
+                                        'nodes': _rereads.results[2].json.data}) | to_json }}
           register: _relist_run
           failed_when: false
           changed_when: false
@@ -366,7 +367,10 @@
               Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
           loop: "{{ _delete_running }}"
           register: _task_polls
-          until: _task_polls.json is defined and _task_polls.json.data.status == 'stopped'
+          # Total for every reply: a non-200 answer, or one without `data` or `status`, is one more retry
+          # (a raise here would end the item's retries at once).
+          until: (_task_polls.status | default(0)) == 200 and (_task_polls.json.data | default(none)) is mapping
+            and (_task_polls.json.data.status | default('')) == 'stopped'
           retries: 60
           delay: 5
           # A task still running when the retries run out fails the poll whatever failed_when says (ansible-core
@@ -377,7 +381,8 @@
 
         - name: Collect the delete tasks' end states
           ansible.builtin.set_fact:
-            _delete_stopped: "{{ _task_polls.results | default([]) | selectattr('json', 'defined')
+            _delete_stopped: "{{ _task_polls.results | default([]) | selectattr('status', 'defined')
+              | selectattr('status', 'equalto', 200) | selectattr('json', 'defined')
               | selectattr('json.data', 'defined') | map(attribute='json.data') | select('mapping')
               | selectattr('status', 'defined') | selectattr('status', 'equalto', 'stopped') | list }}"
           no_log: true

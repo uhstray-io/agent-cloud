@@ -45,7 +45,7 @@ and why.
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
 | 1.15 | **x4** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars (x4: a plan generalised "the guard renders no value" from one name; the guard references three) | Unverified claim | 4 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries, or use `forgeries.by_name` with an assertion of the run-start guard's message; the guard's own test proves it never renders a forged value) |
-| 1.16 | **x5** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41; x5: a review reply said every failure message carried the read-back result; one did not) | Unverified claim | 5 | Convention; mechanical check proposed (count ≥ 3) |
+| 1.16 | **x6** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41; x5: a review reply said every failure message carried the read-back result; one did not; x6: the correction of that reply said only the last one did; three did) | Unverified claim | 6 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6; widened by 1.35, 1.37) | Unverified claim | 1 | Convention |
@@ -926,7 +926,7 @@ variable keep all three spellings.
 
 ### 1.16 A count written into a committed plan without running the count
 
-**Occurrences: 5** — 2026-09-25, 2026-10-03, 2026-11-02, 2026-11-10, 2026-11-18
+**Occurrences: 6** — 2026-09-25, 2026-10-03, 2026-11-02, 2026-11-10, 2026-11-18, 2026-11-18
 
 **What happened.** Recording the launch-permission gap for #264, I wrote into
 `plan/development/01-secrets-credentials.md` that "44 playbook and task files log in to
@@ -1001,6 +1001,16 @@ pull request's fifth return. Why the rule did not fire: the claim was an "every"
 a block I had just edited, so it read as known, and it was written into a review reply, not a plan or
 an Evidence section. The rule covers it: an "every" in written evidence, a review reply included, is
 checked against each member of the set when it is written; here, by reading each `fail_msg`.
+
+**Occurrence 6 — 2026-11-18.** Correcting that reply on the same thread (reply 4615480262, head
+`750f7000`), I wrote that at `7ac3385f` "only the last message carried the read-back". Three of the four
+did: the not-accepted and not-seen-stopped messages and the verify refusal (`git show
+7ac3385f:platform/playbooks/cleanup-proxmox-backup-archives.yml`, lines 407, 413 and 423); only "did not
+end OK" (line 418) did not. This ledger's own occurrence 5, already on the branch, said "Three of the four
+failure messages did". The final-head review round found it, and reply 4615598461 corrected it. Why the
+rule did not fire: the correction was written from memory of the earlier mistake, not from the file at
+the old head, and a correction reads as already checked. The rule covers it: a claim about an earlier
+head is read from that head (`git show <sha>:<path>`) when it is written, a correction included.
 
 ### 1.17 Explained a 401 as the token's scope; the service's database had just gone down
 

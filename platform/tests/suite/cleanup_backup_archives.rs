@@ -27,6 +27,18 @@ fn run(mode: &str, payload: &Value) -> (bool, Value) {
     (out.status.success(), stdout)
 }
 
+/// Writes a cached bytecode file for the survey helper in the directory given as its argument, whose
+/// recorded mtime and size match the source but whose code only exits: what an import would run.
+const STALE_PYC: &str = r#"
+import importlib._bootstrap_external as be, importlib.util, pathlib, sys
+src = pathlib.Path(sys.argv[1]) / "survey_backup_storage.py"
+st = src.stat()
+code = compile("raise SystemExit('stale bytecode ran')", str(src), "exec")
+pyc = pathlib.Path(importlib.util.cache_from_source(str(src)))
+pyc.parent.mkdir(exist_ok=True)
+pyc.write_bytes(be._code_to_timestamp_pyc(code, int(st.st_mtime), st.st_size))
+"#;
+
 fn ok(mode: &str, payload: &Value) -> Value {
     let (success, out) = run(mode, payload);
     assert!(success, "{out}");
@@ -74,6 +86,44 @@ fn volids(out: &Value) -> Vec<String> {
         .iter()
         .map(|v| v["volid"].as_str().unwrap().to_string())
         .collect()
+}
+
+#[test]
+fn the_survey_helper_runs_from_its_source_never_a_cached_bytecode_file() {
+    // Arrange: both helpers in a scratch directory, beside a matching cached bytecode file for the survey
+    // helper that only exits.
+    let dir = TempDir::new().expect("a scratch directory");
+    for f in ["cleanup_backup_archives.py", "survey_backup_storage.py"] {
+        std::fs::copy(
+            repo::path(&format!("platform/playbooks/files/{f}")),
+            dir.path().join(f),
+        )
+        .expect("copy a helper");
+    }
+    let home = TempDir::new().expect("a temporary home");
+    let dir_arg = dir.path().to_str().expect("utf-8 path");
+    scrubbed("python3", home.path())
+        .args(["-I", "-c", STALE_PYC, dir_arg])
+        .assert()
+        .success();
+
+    // Act
+    let script = dir.path().join("cleanup_backup_archives.py");
+    let out = scrubbed("python3", home.path())
+        .args(["-I", script.to_str().expect("utf-8 path"), "list"])
+        .write_stdin(base(vec![]).to_string())
+        .assert()
+        .get_output()
+        .clone();
+
+    // Assert: the list ran; the cached file did not.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && !stderr.contains("stale bytecode ran"),
+        "{stderr}"
+    );
+    let stdout: Value = serde_json::from_slice(&out.stdout).expect("JSON stdout");
+    assert_eq!(stdout["count"], json!(0), "{stdout}");
 }
 
 #[test]
@@ -310,15 +360,39 @@ fn the_sha_changes_when_a_size_changes() {
 
 #[test]
 fn the_sha_differs_for_one_filename_on_two_storages() {
-    // Arrange: the same file name, once on `backups` and once on `local`.
-    let a = base(vec![read(
+    // Arrange: the same file name on `backups` and on `backups2`, both shared CephFS on this cluster's own
+    // Ceph, read through the same node, so only the storage ID differs between the two lists.
+    let with_second = |content: Vec<Value>| {
+        let mut p = base(content);
+        p["storage_config"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"storage": "backups2", "type": "cephfs"}));
+        p["plan"]["reads"].as_array_mut().unwrap().push(
+            json!({"node": "n1", "storage": "backups2", "status": {"type": "cephfs", "shared": 1}}),
+        );
+        p
+    };
+    let a = with_second(vec![read(
         "n1",
         "backups",
         vec![archive("backups", 900, 1)],
     )]);
-    let b = base(vec![read("n1", "local", vec![archive("local", 900, 1)])]);
-    // Act / Assert
-    assert_ne!(ok("list", &a)["sha256"], ok("list", &b)["sha256"]);
+    let b = with_second(vec![read(
+        "n1",
+        "backups2",
+        vec![archive("backups2", 900, 1)],
+    )]);
+
+    // Act
+    let (a, b) = (ok("list", &a), ok("list", &b));
+
+    // Assert: each lists its one archive, and the two digests differ.
+    assert_eq!(
+        (a["count"].clone(), b["count"].clone()),
+        (json!(1), json!(1))
+    );
+    assert_ne!(a["sha256"], b["sha256"]);
 }
 
 #[test]

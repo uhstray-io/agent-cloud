@@ -37,16 +37,18 @@ A refusal exits 1 with {"refusal": "..."} so the play can print why without the 
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import sys
+import types
 from pathlib import Path
 
-# Load the survey helper from its file: `python3 -I` does not put this directory on sys.path.
-_spec = importlib.util.spec_from_file_location("survey_backup_storage",
-                                               Path(__file__).with_name("survey_backup_storage.py"))
-survey = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(survey)
+# Load the survey helper from its file (`python3 -I` does not put this directory on sys.path), compiled from
+# its source bytes: an import would run a cached `__pycache__` file whose recorded mtime and size match, and
+# the reviewed-checkout gate verifies the tracked source, not an ignored cache.
+_survey_path = Path(__file__).with_name("survey_backup_storage.py")
+survey = types.ModuleType("survey_backup_storage")
+survey.__file__ = str(_survey_path)
+exec(compile(_survey_path.read_bytes(), str(_survey_path), "exec"), survey.__dict__)
 
 Refusal = survey.Refusal
 

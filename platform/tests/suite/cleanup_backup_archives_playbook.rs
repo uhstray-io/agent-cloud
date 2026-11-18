@@ -299,13 +299,19 @@ fn confirmed(content: Vec<Value>, pairs: Value) -> (Value, Value) {
     (input, list)
 }
 
+/// The block's three second reads, in its loop order: jobs, guests, nodes (`n1` online).
 fn rereads(jobs: Value, vms: Value) -> Value {
-    json!({"results": [{"status": 200, "json": {"data": jobs}}, {"status": 200, "json": {"data": vms}}]})
+    rereads_with_nodes(jobs, vms, json!([{"node": "n1", "status": "online"}]))
+}
+
+fn rereads_with_nodes(jobs: Value, vms: Value, nodes: Value) -> Value {
+    json!({"results": [{"status": 200, "json": {"data": jobs}}, {"status": 200, "json": {"data": vms}},
+                       {"status": 200, "json": {"data": nodes}}]})
 }
 
 #[test]
-fn the_list_is_rebuilt_from_fresh_job_and_guest_reads_before_any_delete() {
-    // Arrange: the block's rebuild and its check, after two second reads, for a confirmed list.
+fn the_list_is_rebuilt_from_fresh_job_guest_and_node_reads_before_any_delete() {
+    // Arrange: the block's rebuild and its check, after the three second reads, for a confirmed list.
     let play = cleanup_play();
     let tasks = |reread: Value| {
         vec![
@@ -346,8 +352,18 @@ fn the_list_is_rebuilt_from_fresh_job_and_guest_reads_before_any_delete() {
     let pool_job =
         json!([{"id": "backup-9", "type": "vzdump", "storage": "backups", "pool": "p1"}]);
     let pool_added = run(
-        tasks(rereads(pool_job, web)),
+        tasks(rereads(pool_job, web.clone())),
         vars(&declared, &declared_list),
+        None,
+        false,
+    );
+    let node_offline = run(
+        tasks(rereads_with_nodes(
+            json!([]),
+            web,
+            json!([{"node": "n1", "status": "offline"}]),
+        )),
+        vars(&gone, &gone_list),
         None,
         false,
     );
@@ -373,6 +389,13 @@ fn the_list_is_rebuilt_from_fresh_job_and_guest_reads_before_any_delete() {
             .contains("changed since the list was confirmed"),
         "{}",
         pool_added.out
+    );
+    // A node that went offline after the first read refuses the run before any delete, naming it.
+    assert!(!node_offline.ok, "{}", node_offline.out);
+    assert!(
+        node_offline.out.contains("n1 is offline"),
+        "{}",
+        node_offline.out
     );
 }
 
@@ -582,7 +605,7 @@ fn a_verifier_that_gives_no_result_is_a_refusal_in_the_one_check() {
 fn a_delete_task_that_ended_not_ok_carries_the_read_back_and_a_poll_body_without_data_counts() {
     // Arrange: the block from the end-state collection on, after one running task whose poll answered
     // `stopped` with an error exit or with no exit status, or answered a body without `data` or with `data`
-    // null; and the same task stopped `OK`, which passes.
+    // null, or answered 500 with a `stopped`/`OK` body; and the same task stopped `OK` with 200, which passes.
     let play = cleanup_play();
     let tasks = block_from(&play, "Collect the delete tasks' end states", &[reread()]);
     let running = accepted(json!({"json": {"data": UPID}}))["results"].clone();
@@ -596,26 +619,39 @@ fn a_delete_task_that_ended_not_ok_carries_the_read_back_and_a_poll_body_without
     // Act
     let not_ok = run(
         tasks.clone(),
-        with(json!({"json": {"data": {"status": "stopped", "exitstatus": "unable to delete"}}})),
+        with(
+            json!({"status": 200, "json": {"data": {"status": "stopped", "exitstatus": "unable to delete"}}}),
+        ),
         None,
         false,
     );
     let no_exit = run(
         tasks.clone(),
-        with(json!({"json": {"data": {"status": "stopped"}}})),
+        with(json!({"status": 200, "json": {"data": {"status": "stopped"}}})),
         None,
         false,
     );
-    let no_data = run(tasks.clone(), with(json!({"json": {}})), None, false);
+    let no_data = run(
+        tasks.clone(),
+        with(json!({"status": 200, "json": {}})),
+        None,
+        false,
+    );
     let null_data = run(
         tasks.clone(),
-        with(json!({"json": {"data": null}})),
+        with(json!({"status": 200, "json": {"data": null}})),
+        None,
+        false,
+    );
+    let server_error = run(
+        tasks.clone(),
+        with(json!({"status": 500, "json": {"data": {"status": "stopped", "exitstatus": "OK"}}})),
         None,
         false,
     );
     let ok = run(
         tasks,
-        with(json!({"json": {"data": {"status": "stopped", "exitstatus": "OK"}}})),
+        with(json!({"status": 200, "json": {"data": {"status": "stopped", "exitstatus": "OK"}}})),
         None,
         false,
     );
@@ -631,7 +667,7 @@ fn a_delete_task_that_ended_not_ok_carries_the_read_back_and_a_poll_body_without
             ],
         );
     }
-    for out in [&no_data, &null_data] {
+    for out in [&no_data, &null_data, &server_error] {
         red_with(
             out,
             &[
@@ -650,14 +686,57 @@ fn a_second_job_or_guest_read_that_fails_is_refused_naming_its_status() {
     let tasks = vec![
         block_task(
             &play,
-            "Read the backup jobs and guests again before deleting",
+            "Read the backup jobs, guests and nodes again before deleting",
         ),
-        block_task(&play, "Require the second job and guest reads"),
+        block_task(&play, "Require the second job, guest and node reads"),
     ];
 
     // Act
     let out = run(tasks, block_vars(json!({})), None, false);
 
     // Assert: refused before any delete, naming the statuses the reads answered.
-    red_with(&out, &["Cleanup refused before deleting", "[-1, -1]"]);
+    red_with(&out, &["Cleanup refused before deleting", "[-1, -1, -1]"]);
+}
+
+#[test]
+fn the_poll_retries_on_any_reply_that_is_not_a_200_stopped_task_and_never_raises() {
+    // Arrange: the poll's own `until` expression, evaluated against one reply of each shape.
+    let play = cleanup_play();
+    let until = block_task(&play, "Wait for each running delete task")["until"]
+        .as_str()
+        .expect("the poll's until expression")
+        .to_string();
+    let shapes = [
+        (
+            json!({"status": 200, "json": {"data": {"status": "stopped", "exitstatus": "OK"}}}),
+            true,
+        ),
+        (
+            json!({"status": 200, "json": {"data": {"status": "running"}}}),
+            false,
+        ),
+        (json!({"status": 200, "json": {"data": null}}), false),
+        (json!({"status": 200, "json": {"data": {}}}), false),
+        (json!({"status": 200, "json": {}}), false),
+        (
+            json!({"status": 500, "json": {"data": {"status": "stopped", "exitstatus": "OK"}}}),
+            false,
+        ),
+        (json!({"status": -1}), false),
+    ];
+    let mut tasks = Vec::new();
+    for (i, (reply, done)) in shapes.iter().enumerate() {
+        tasks.push(json!({"name": format!("reply {i}"), "ansible.builtin.set_fact": {"_task_polls": reply}}));
+        tasks.push(
+            json!({"name": format!("until {i}"), "ansible.builtin.assert": {
+            "that": format!("({until}) == {}", if *done { "true" } else { "false" }),
+            "fail_msg": format!("reply {i} decided the wrong way")}}),
+        );
+    }
+
+    // Act
+    let out = run(tasks, json!({}), None, false);
+
+    // Assert: every shape evaluates, and only a 200 `stopped` reply ends the retries.
+    assert!(out.ok, "{}", out.out);
 }
