@@ -16,8 +16,7 @@
 //!
 //! An empty pattern or literal is found in every line and every text, so it checks nothing; grep
 //! reads one that holds a newline as several needles. Each assertion refuses both; the file
-//! assertions name the file. Of the patterns that match every line, only the empty one is refused:
-//! `(?:)` and `a*` are kept.
+//! assertions name the file. `(?:)` and `a*` also match every line, but are kept.
 //!
 //! `task_block` and `assert_precedes` are the `assert_helpers.bash` forms (`task_block`,
 //! `assert_precedes`) over this text: one Ansible task's body, and the order of two first matches.
