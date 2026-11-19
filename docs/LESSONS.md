@@ -55,5 +55,5 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 ### L-009 · 2026-11-18 · tests
 
 - **ACCEPTED:** #1204 (AC-972).
-- **DERIVED:** A guard that recognises a whole template expression by regex anchors both ends and refuses, in any free-form tail, every character that could open another expression or call: `{`, `}`, `(` and `)`. Refusing only the braces lets `lookup(..., x) | default('literal', true)` pass as the lookup alone, because the filter's call sits inside the tail. Each refused character has a fixture that must fail.
+- **DERIVED:** A guard that recognises a whole template expression by regex anchors both ends and refuses, in any free-form tail, every character that could open another expression or call: `{`, `}`, `(` and `)`. Each refused character has a fixture that must fail.
 - **APPLIES TO:** regex-based checks in `platform/tests/suite/` that accept a templated value only when it is exactly one expression (store lookups, guard bindings).

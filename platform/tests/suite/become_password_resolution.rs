@@ -655,6 +655,20 @@ const FIRST_EXECUTED_CASES: &str = r#"
   tasks:
     - ansible.builtin.set_fact:
         ansible_become_password: "{{ lookup('hashi_vault', 'secret/data/services/ssh:become_password', url=u) | default('x', true) }}"
+- name: bad store lookup whose trailing argument holds a template brace
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.set_fact:
+        ansible_become_password: "{{ lookup('hashi_vault', 'secret/data/services/ssh:become_password', url='}}{{ u') }}"
+- name: bad store lookup whose trailing argument opens a call
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.set_fact:
+        ansible_become_password: "{{ lookup('hashi_vault', 'secret/data/services/ssh:become_password', x='(') }}"
 - name: bad templated resolver path
   hosts: h
   become: true
