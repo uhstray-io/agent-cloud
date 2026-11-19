@@ -153,8 +153,6 @@ impl Ctx {
     fn start_holding(&self, repo: &Path, branch: &str) -> Holding {
         let started = self.home.path().join("started");
         let release = self.home.path().join("release");
-        let _ = std::fs::remove_file(&started);
-        let _ = std::fs::remove_file(&release);
         let envs = [
             ("FAKE_BATS_STARTED", started.to_str().expect("a UTF-8 path")),
             ("FAKE_BATS_HOLD", release.to_str().expect("a UTF-8 path")),

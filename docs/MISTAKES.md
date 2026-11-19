@@ -3340,7 +3340,11 @@ pass on the whole PR found it, and `342be0e5` fixed all three. Round 7 of that p
 more, outside the hook fixtures: the port of the settings-registration test read
 `.claude/settings.json` with the suite's YAML reader where the original used `json.loads`, so a
 trailing comma the original refused passed. The commit that adds this note parses it as JSON; a
-scratch copy with the comma left the old test green and turned the new one red.
+scratch copy with the comma left the old test green and turned the new one red. Round 8 found
+another in the git-env port: it trimmed `git config` output on both ends where bats's `run`
+drops only trailing newlines, so a leaked whitespace-only `user.email` read as empty, and its
+`bats` line pattern used `[ \t]` for the original's `[[:space:]]`. With the hook's `unset`
+removed and the fake writing three spaces, the old test stayed green and the fixed one went red.
 
 **Root cause.** The PR's mutation pass ran one mutant per guard the ledger cites. It did not run
 a mutant for the property each test's name states. A test ported faithfully keeps every gap of

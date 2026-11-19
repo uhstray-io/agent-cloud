@@ -47,7 +47,8 @@ cd "$TMPDIR" && git init -q scratch && cd scratch \
 exit 0
 "#;
 
-/// `git -C <dir> config --local <key>` read with a clean environment: its stdout, trimmed.
+/// `git -C <dir> config --local <key>` read with a clean environment: its stdout without trailing
+/// newlines, as bats's `run` captures it (`$(...)`), so surrounding spaces still count.
 fn local_config(home: &Path, dir: &Path, key: &str) -> String {
     let out = process::scrubbed("git", home)
         .args(["-C"])
@@ -55,7 +56,9 @@ fn local_config(home: &Path, dir: &Path, key: &str) -> String {
         .args(["config", "--local", key])
         .output()
         .expect("git starts");
-    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    String::from_utf8_lossy(&out.stdout)
+        .trim_end_matches('\n')
+        .to_owned()
 }
 
 #[test]
@@ -66,7 +69,6 @@ fn a_suites_git_commands_cannot_reach_the_pushing_repository() {
     let pushing = home.path().join("pushing");
     let fakebin = home.path().join("fakebin");
     for dir in [&victim, &pushing] {
-        std::fs::create_dir(dir).expect("a repository directory");
         let out = process::scrubbed("git", home.path())
             .args(["init", "-q"])
             .arg(dir)
@@ -120,7 +122,11 @@ fn the_git_environment_is_cleared_before_any_suite_runs() {
     let hook = text::read(HOOK);
 
     // Act + Assert: the first unset strictly before the first bats line; a missing one panics.
-    text::assert_precedes(&hook, r"^unset GIT_DIR GIT_WORK_TREE", r"^[ \t]*bats ");
+    text::assert_precedes(
+        &hook,
+        r"^unset GIT_DIR GIT_WORK_TREE",
+        r"^[[:space:]]*bats ",
+    );
 }
 
 /// The git variables a bash file clears in its `unset GIT_DIR ...` statement, sorted. The
