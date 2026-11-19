@@ -1154,7 +1154,6 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     );
 
     // not broad, contains the SSH CIDR, port, proto: one problem each
-    let problems = rows(&r[every_problem]);
     let each = [
         "names more than one address",
         "contains or equals the SSH CIDR",
@@ -1163,12 +1162,8 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     ];
     k.that(
         "test_every_problem_of_an_entry_is_reported_not_only_the_first",
-        problems.len() == 4
-            && each.iter().all(|want| {
-                problems
-                    .iter()
-                    .any(|p| p.as_str().is_some_and(|p| p.contains(want)))
-            }),
+        rows(&r[every_problem]).len() == 4
+            && each.iter().all(|w| refuses(&r[every_problem], Some(w))),
         || format!("one problem each for {each:?}: {}", r[every_problem]),
     );
 
