@@ -6,7 +6,9 @@
 # full lane, and on every promotion into main.
 paths:
   - "platform/playbooks/apply-firewall.yml"
-  - "platform/playbooks/filter_plugins/ufw_rules.py"
+  # ansible.cfg loads every filter plugin into every playbook run (lanes test
+  # every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes).
+  - "platform/playbooks/filter_plugins/**"
 tiers:
   cli: [apply_firewall_convergence]
   playbook: [apply_firewall_playbook, firewall_allow_groups_playbook, apply_firewall_convergence_playbook, ufw_rules_filter_playbook]

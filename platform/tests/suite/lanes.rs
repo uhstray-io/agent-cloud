@@ -1105,3 +1105,279 @@ fn every_repo_wide_scan_runs_when_a_file_it_reads_changes() {
     );
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
+
+/// Every call in the code of `src` (comments and literals skipped) that has a whole argument
+/// made of string literals, inline or through constants, as its line and those literals. A call
+/// is a name followed by `(`; a method (`.name(`) is a needle, not a read, and a macro
+/// (`name!(`) is not a call. A call's arguments are walked too, so a nested call is visited.
+fn path_reads(src: &str) -> Vec<(usize, Vec<String>)> {
+    let mut reads = vec![];
+    let mut i = 0;
+    while i < src.len() {
+        if let Some(end) = skip_at(src, i) {
+            i = end;
+            continue;
+        }
+        if src[i..].starts_with(is_ident) && !src[..i].ends_with(is_ident) {
+            let name_end = i + src[i..]
+                .find(|c: char| !is_ident(c))
+                .unwrap_or(src.len() - i);
+            let before = src[..i].trim_end();
+            let method = before.ends_with('.') && !before.ends_with("..");
+            let open = skip_trivia(src, name_end);
+            if !method && src[open..].starts_with('(') {
+                let literals: Vec<String> = call_args(src, open)
+                    .into_iter()
+                    .filter_map(|arg| literals_of(arg, src).ok())
+                    .flatten()
+                    .collect();
+                if !literals.is_empty() {
+                    reads.push((src[..i].matches('\n').count() + 1, literals));
+                }
+            }
+            i = name_end;
+            continue;
+        }
+        i += src[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    reads
+}
+
+/// The literals in `src` (module `module`, file `rel`) that name a file in `tracked`, counted,
+/// and one line per such file whose change does not select the module in the push lane.
+fn unselected_reads(
+    config: &Config,
+    module: &str,
+    rel: &str,
+    src: &str,
+    tracked: &BTreeSet<String>,
+) -> (usize, Vec<String>) {
+    let mut count = 0;
+    let mut problems = vec![];
+    for (line, literals) in path_reads(src) {
+        for file in literals.iter().filter(|l| tracked.contains(*l)) {
+            count += 1;
+            let selected = match select(config, Lane::Push, std::slice::from_ref(file)) {
+                Selection::All => true,
+                Selection::Modules(selected) => selected.contains(module),
+            };
+            if !selected {
+                problems.push(format!(
+                    "{rel}:{line} reads {file}, whose change does not select {module}"
+                ));
+            }
+        }
+    }
+    (count, problems)
+}
+
+#[test]
+fn path_reads_reads_call_arguments_and_skips_needles() {
+    // Arrange: reads by inline literal, constant, borrowed constant, array constant, a nested
+    // path call, a type's constructor and a call after a range; needles in a method (spaced
+    // dot too), a macro, a comment, a string and a for loop's array.
+    let src = r#"const X: &str = "c/x.yml";
+const ARR: [&str; 2] = ["d/1", "d/2"];
+const N2: &str = "n2";
+const Y: &str = "e/y";
+fn t() {
+    text::read("a/x.yml");
+    f(X);
+    f(&X);
+    g(&ARR);
+    text::read(&repo::path(Y));
+    Path::new("b");
+    s.contains("n1");
+    s . starts_with(N2);
+    format!("{}", "n3");
+    assert!(x == "n8");
+    // f("n4")
+    let q = "f(\"n5\")";
+    for f in ["n6"] {}
+    let r = 0..g("n7");
+}
+"#;
+
+    // Act
+    let reads = path_reads(src);
+
+    // Assert
+    let s = |v: &[&str]| v.iter().map(|x| (*x).to_owned()).collect::<Vec<_>>();
+    assert_eq!(
+        reads,
+        [
+            (6, s(&["a/x.yml"])),
+            (7, s(&["c/x.yml"])),
+            (8, s(&["c/x.yml"])),
+            (9, s(&["d/1", "d/2"])),
+            (10, s(&["e/y"])),
+            (11, s(&["b"])),
+            (19, s(&["n7"])),
+        ]
+    );
+}
+
+#[test]
+fn a_read_beyond_its_area_is_reported_and_one_within_it_is_not() {
+    // Arrange: BASE's common_sh claims platform/lib/common.sh; a compose file is
+    // restart_policy's; "untracked.txt" is not in the tracked set.
+    let config = config(BASE);
+    let compose = "platform/services/x/compose.yml";
+    let tracked: BTreeSet<String> = ["platform/lib/common.sh", compose]
+        .map(str::to_owned)
+        .into();
+    let within = r#"fn t() { text::read("platform/lib/common.sh"); f("untracked.txt"); }"#;
+    let beyond = format!(r#"fn t() {{ text::read("{compose}"); }}"#);
+
+    // Act
+    let (read, ok) = unselected_reads(&config, "common_sh", "inline.rs", within, &tracked);
+    let (_, bad) = unselected_reads(&config, "common_sh", "inline.rs", &beyond, &tracked);
+
+    // Assert
+    assert_eq!(read, 1);
+    assert!(ok.is_empty(), "{ok:?}");
+    assert_eq!(
+        bad,
+        [format!(
+            "inline.rs:1 reads {compose}, whose change does not select common_sh"
+        )]
+    );
+}
+
+/// A literal that names a tracked file and is a whole argument of a call is a read of that file,
+/// so a change to the file must select the module that reads it, as for a repo-wide scan.
+#[test]
+fn every_fixed_path_read_runs_when_its_file_changes() {
+    // Arrange
+    let config = repo_config();
+    let Selection::Modules(always) = select(&config, Lane::Push, &[]) else {
+        panic!("an empty change selects the security set, not everything");
+    };
+    let tracked: BTreeSet<String> = repo::ls_files(&[]).into_iter().collect();
+
+    // Act
+    let mut reads = 0;
+    let mut problems = vec![];
+    for module in crate::SUITE_MODULES {
+        if always.contains(*module) {
+            continue;
+        }
+        let rel = format!("platform/tests/suite/{module}.rs");
+        let src = text::read(&rel);
+        let (read, found) = unselected_reads(&config, module, &rel, &src, &tracked);
+        reads += read;
+        problems.extend(found);
+    }
+
+    // Assert
+    assert!(
+        reads > 0,
+        "no fixed-path read outside the security set; the reader is broken"
+    );
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// The modules of every `playbook` tier: those of `areas.yml`'s areas and of each area file.
+fn playbook_modules(main: &Node, area_files: &[Node]) -> BTreeSet<String> {
+    let areas = main.get("areas").and_then(Node::as_map).unwrap_or_default();
+    areas
+        .iter()
+        .map(|(_, area)| area)
+        .chain(area_files)
+        .filter_map(|area| area.get("tiers")?.get("playbook")?.as_seq())
+        .flatten()
+        .filter_map(Node::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// One line per module and loaded file whose change does not select the module in the push lane.
+fn unloaded_playbook_modules(
+    config: &Config,
+    modules: &BTreeSet<String>,
+    loaded: &[String],
+) -> Vec<String> {
+    let mut problems = vec![];
+    for module in modules {
+        for path in loaded {
+            if let Selection::Modules(selected) =
+                select(config, Lane::Push, std::slice::from_ref(path))
+                && !selected.contains(module)
+            {
+                problems.push(format!("{path} does not select {module}"));
+            }
+        }
+    }
+    problems
+}
+
+#[test]
+fn playbook_modules_reads_areas_yml_and_area_files() {
+    // Arrange: a playbook tier in areas.yml, one in an area file, and other tiers that are not.
+    let main = yaml::parse(
+        "areas:\n  a:\n    tiers: {static: [a_static], playbook: [a_play]}\n  b:\n    tiers: {cli: [b_cli]}\n",
+        "inline",
+    )
+    .remove(0);
+    let file = yaml::parse(
+        "paths: [x]\ntiers: {playbook: [f_play], unit: [f_unit]}\n",
+        "inline",
+    )
+    .remove(0);
+
+    // Act
+    let modules = playbook_modules(&main, &[file]);
+
+    // Assert
+    assert_eq!(modules, ["a_play", "f_play"].map(str::to_owned).into());
+}
+
+#[test]
+fn a_playbook_module_unselected_by_a_loaded_file_is_reported() {
+    // Arrange: two areas claim the loaded files; multi, owning multi_playbook, claims neither.
+    let extra = "\n  cfg:\n    paths: [\"ansible.cfg\"]\n    tiers: {static: [cfg_static]}\n  plugins:\n    paths: [\"platform/playbooks/filter_plugins/x.py\"]\n    tiers: {static: [plugin_static]}\n";
+    let without = config(&format!("{BASE}{extra}"));
+    let with = config(&format!("{BASE}{extra}").replace(
+        "paths: [\"platform/services/multi/**\"]",
+        "paths: [\"platform/services/multi/**\", \"ansible.cfg\", \"platform/playbooks/filter_plugins/x.py\"]",
+    ));
+    let modules: BTreeSet<String> = ["multi_playbook".to_owned()].into();
+    let loaded = ["ansible.cfg", "platform/playbooks/filter_plugins/x.py"].map(str::to_owned);
+
+    // Act
+    let missing = unloaded_playbook_modules(&without, &modules, &loaded);
+    let none = unloaded_playbook_modules(&with, &modules, &loaded);
+
+    // Assert
+    assert_eq!(missing.len(), 2, "{missing:?}");
+    assert!(none.is_empty(), "{none:?}");
+}
+
+/// ansible.cfg loads every filter plugin into every playbook run, so a change to it or to any
+/// plugin must select every playbook-tier module.
+#[test]
+fn every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes() {
+    // Arrange
+    let config = repo_config();
+    let main = yaml::load_one(&repo::path("platform/tests/areas.yml")).expect("areas.yml loads");
+    let area_files: Vec<Node> = repo::ls_files(&[":(glob)platform/tests/areas.d/*.yml"])
+        .iter()
+        .map(|f| yaml::load_one(&repo::path(f)).unwrap_or_else(|| panic!("{f} loads")))
+        .collect();
+    let plugins = repo::ls_files(&["platform/playbooks/filter_plugins/"]);
+    assert!(!plugins.is_empty(), "no tracked filter plugin");
+    let loaded: Vec<String> = std::iter::once("ansible.cfg".to_owned())
+        .chain(plugins)
+        .collect();
+
+    // Act
+    let modules = playbook_modules(&main, &area_files);
+    let problems = unloaded_playbook_modules(&config, &modules, &loaded);
+
+    // Assert
+    assert!(
+        !modules.is_empty(),
+        "no playbook-tier module; the reader is broken"
+    );
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}

@@ -7,6 +7,9 @@ paths:
   - "platform/playbooks/cleanup-proxmox-backup-archives.yml"
   - "platform/playbooks/files/cleanup_backup_archives.py"
   - "platform/playbooks/files/survey_backup_storage.py"
+  # ansible.cfg loads every filter plugin into every playbook run (lanes test
+  # every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes).
+  - "platform/playbooks/filter_plugins/**"
 tiers:
   cli: [cleanup_backup_archives]
   playbook: [cleanup_backup_archives_playbook]
