@@ -952,7 +952,7 @@ const SSH_SPELLINGS: [&str; 5] = [
 #[test]
 fn a_stale_rule_that_admits_ssh_in_any_spelling_is_refused() {
     // One host per spelling, one run: every host must refuse on its own. The spellings
-    // themselves are unit-tested in test_ufw_rules_filter.py; this proves the wiring.
+    // themselves are unit-tested in ufw_rules_filter_playbook.rs; this proves the wiring.
     let dir = TempDir::new().unwrap();
     let names: Vec<String> = (0..SSH_SPELLINGS.len()).map(|i| format!("h{i}")).collect();
     let hosts: Vec<(&str, Host)> = names
@@ -1248,7 +1248,7 @@ fn a_declared_tag_over_another_rule_does_not_stand_in_for_the_declared_rule() {
 
 #[test]
 fn an_egress_denial_that_is_not_scoped_is_refused_before_any_rule_is_added() {
-    // ufw_egress_problems' cases are unit-tested in test_ufw_rules_filter.py; this proves the
+    // ufw_egress_problems' cases are unit-tested in ufw_rules_filter_playbook.rs; this proves the
     // playbook refuses on it before a single rule is added, one host per shape.
     let dir = TempDir::new().unwrap();
     let bad = [

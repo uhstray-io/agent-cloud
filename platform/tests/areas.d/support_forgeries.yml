@@ -1,0 +1,7 @@
+# The forged extra-var helpers (src/forgeries.rs, AC-951), the Rust mirror of forgeries.py. A
+# change under platform/tests/ hits `full`, so this area names no paths: it only gives the
+# modules their one listing.
+paths: []
+tiers:
+  static: [support_forgeries]
+  playbook: [support_forgeries_playbook]
