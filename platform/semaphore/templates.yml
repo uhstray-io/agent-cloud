@@ -2346,7 +2346,7 @@ templates:
     # each enabled job's own retention would remove, unexplained bytes, storages that share a
     # filesystem, and every backup job's schedule and retention. It also reports the newest archive per
     # guest on each storage, each CephFS storage's filesystem and pools (which storages share one is decided
-    # by filesystem name; pool usage is Ceph's own figure, not comparable with a storage's), and each online node's disks and whether Proxmox marks each one in use. It reads the whole cluster,
+    # by filesystem name; pool usage is Ceph's own figure, not comparable with a storage's), and each online node's disks and whether Proxmox marks each one in use, and each Ceph OSD's fill per host and the cluster's health check codes. It reads the whole cluster,
     # so the only input is the reviewed commit. Proxmox requests are GET only; a dry run reports the same.
 
   # DESTRUCTIVE: deletes Proxmox backup archives of guests that no longer exist, and of the
