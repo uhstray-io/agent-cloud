@@ -54,6 +54,12 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 
 ### L-009 · 2026-11-18 · tests
 
+- **ACCEPTED:** #1186 (AC-949).
+- **DERIVED:** On macOS (Darwin 25.5, 2026-11-18), `mktemp -d` ignores TMPDIR, both with no template and with `-t`: the directory is made under the per-user temporary directory. A test that points a script's temporary files at a scratch directory through TMPDIR puts a stand-in `mktemp` first on the script's PATH, one that passes an explicit template under `$TMPDIR` (`FAKE_MKTEMP` in `suite/pre_push_uv.rs`). Without it, a check that the script cleaned up reads a directory the script never used, and passes.
+- **APPLIES TO:** port and hook tests that run a shell script under a scratch TMPDIR, such as `.githooks/pre-push` and the scripts it calls.
+
+### L-010 · 2026-11-18 · tests
+
 - **ACCEPTED:** #1204 (AC-972).
 - **DERIVED:** A guard that recognises a whole template expression by regex anchors both ends and refuses, in any free-form tail, every character that could open another expression or call: `{`, `}`, `(` and `)`. Each refused character has a fixture that must fail.
 - **APPLIES TO:** regex-based checks in `platform/tests/suite/` that accept a templated value only when it is exactly one expression (store lookups, guard bindings).

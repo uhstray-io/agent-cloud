@@ -31,7 +31,7 @@ and why.
 | # | Mistake | Class | Count | Enforced by |
 |---|---------|-------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file — **x8** | Unverified claim | 8 | Convention + loader test; hook proposed (count ≥ 3) |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x9** (2026-11-18: called a port's weakened comparisons copied from deleted originals, unread) | Unverified claim | 9 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
 | 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
 | 1.5 | **x2** — Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 2 | Test (runner containerisation); Convention (occurrence 2, launch containment) |
@@ -107,7 +107,8 @@ and why.
 | 2.36 | A test stubbed the one OS read (`/proc/1/ns/net`) whose permission decided the outcome; the rootless prod helper got EACCES on every run and printed the generic refusal (widens 2.22) — **x2** (2026-11-10: the source command's catch-all reused `native_source_unavailable`) | Wrong-reason pass | 2 | Test (`test_o11y_availability_namespace_survey.py`: stub refuses pid 1, catch-all has its own category; `test_o11y_scrape_baseline.py`: `test_source_cli_prints_its_own_word_for_an_unexpected_exception`); class Convention |
 | 2.37 | A credential probe passed on the operator's own git login: the App token mint had failed, the stored password was empty, and a global helper answered; the probe tag was pushed under the operator's identity | Wrong-reason pass | 1 | Test (`platform/tests/test_release_version_playbook.py`) for the playbook; workstation probes Convention |
 | 2.38 | A mutation check swapped one character for another and restored the file within the same second; Python kept loading the mutant's cached bytecode, and the next test run tested the mutant (widens 2.28) | Wrong-reason result | 1 | Convention (a fresh `PYTHONPYCACHEPREFIX` per mutation run) |
-| 2.39 | A "no user is signed in after a refused callback" test asked with the pre-sign-in cookie, which could never show a user; a callback that stored the user and then refused stayed green | False-green test | 1 | Test (`callback_with_a_wrong_nonce_is_refused` and `callback_with_a_token_signed_by_another_key_is_refused` probe with the cookie the refusal sets; leak mutant red) |
+| 2.39 | A "no user is signed in after a refused callback" test asked with the pre-sign-in cookie, which could never show a user; a callback that stored the user and then refused stayed green | False-green test | 2 | Test (`callback_with_a_wrong_nonce_is_refused` and `callback_with_a_token_signed_by_another_key_is_refused` probe with the cookie the refusal sets; leak mutant red) |
+| 2.40 | A port PR (#1186) returned five times: checks copied from their originals that could not fail (an emptiness check that, on macOS, read a directory the hook never used; an overlap check that passed on a sequential hook; lock checks that read an unreadable directory as empty), and comparisons weaker than the originals (`trim_end` and `lines()` where BATS compared `$(cat)`; a skip turned into a panic) | False-green test | 1 | Convention (this instance: one mutant per ported test of `pre_push_uv.rs`, each red after strengthening) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -168,12 +169,12 @@ and why.
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | `scripts/merge-when-green.py` (`check_dev_drift`) + test |
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, and six launch-gate PRs, with no pass or a pass on an earlier head | Process | 5 | Superseded by 5.25 |
-| 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on — **x3** (2026-11-16 to 2026-11-17: statuses on merge-only and hand-checked heads across twelve PRs; four merged on them — **x4** (2026-11-18): #1206's statuses on `750f7000` came from agents dispatched by hand, not runs of the two skills) — **x5** (2026-11-17 to 2026-11-18: statuses from Agent dispatches, not Skill-tool runs, on five PRs; four merged) — **x6** (2026-11-17: #1204, #1205, #1207, the re-cut of #1185, statuses from Agent dispatches after a compaction; caught before merge) | Process | 6 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test; per-head pass receipt proposed (count 3) |
+| 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on — **x3** (2026-11-16 to 2026-11-17: statuses on merge-only and hand-checked heads across twelve PRs; four merged on them — **x4** (2026-11-18): #1206's statuses on `750f7000` came from agents dispatched by hand, not runs of the two skills) — **x5** (2026-11-17 to 2026-11-18: statuses from Agent dispatches, not Skill-tool runs, on five PRs; four merged) — **x6** (2026-11-17 to 2026-11-18: #1186 statuses on four heads no run of the two skills had covered) — **x7** (2026-11-17: #1204, #1205, #1207, the re-cut of #1185, statuses from Agent dispatches after a compaction; caught before merge) | Process | 7 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test; per-head pass receipt proposed (count 3) |
 | 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories (2026-11-16: also `--budget-acknowledged`) | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
 | 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
 | 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
 | 5.29 | Briefed six port workers never to edit the ledger, which forbade the "Enforcement moved" note a deleted cited test needs; the ratchet kept every gate green (widens 5.28) — **x2** (2026-11-16: brief 11 repeated the ledger prohibition; caught before any port) | Process | 2 | Convention (a ledger test requiring the note proposed) |
-| 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 1 | Convention (per-agent scratch directory in every brief) |
+| 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 2 | Convention (per-agent scratch directory in every brief) |
 | 5.31 | A peer session allowed `SKIP_TESTS=1` for docs-only pushes; two owners retried a denied compound command as a standalone push | Process | 1 | Convention (deny rule for the skipped push proposed; operator's decision) |
 | 5.32 | Ran `git branch -D` on a scratch branch the brief said to keep if `git branch -d` refused; recreated from the reflog | Process | 1 | Convention (deny rule for forced branch deletes proposed; operator's decision) |
 | 5.33 | Refreshed a PR over a newly landed area rule and checked it only where the rule's own test looks; the playbook-tier area omitted the filter plugins `ansible.cfg` loads | Process | 1 | Convention until S9 (AC-977) part C lands |
@@ -289,7 +290,7 @@ confirmed you searched the right artifact. When two files could plausibly be
 
 **Enforced by.** Convention.
 
-**Occurrences: 8** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03, 2026-11-07, 2026-11-12
+**Occurrences: 9** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03, 2026-11-07, 2026-11-12, 2026-11-18
 
 **Repeat (2026-09-05).** Stale Postiz agent notes said the container sourced its
 configuration. Without checking the actual compose command, a change added shell
@@ -385,6 +386,17 @@ not fire: no file was grepped. The behaviour was read from the tracker's present
 that made that state, and the history of the ticks, were never opened. A tracker's state is an
 output: its cause comes from the code that wrote it and from what that code read, on the branch
 and at the time it read it.
+
+**Occurrence 9 — 2026-11-18.** In #1186 I wrote into 2.40 (`c770400b`, pushed at `06cc71fd`) that
+return 4's four normalising assertions belonged with the checks copied from originals that could
+not fail. I did not open the deleted BATS originals. A round-1 review then wrote "BATS originals
+used `$(cat …)`, so the trimmed comparisons were copied", and I took that as confirmation. Both
+were wrong. `$(cat f)` strips trailing newlines only and keeps a trailing space and a `\r`, so
+the originals' `[ "$(cat f)" = x ]` rejected what the port's `trim_end()` and `lines()`
+accepted: three of the four were port regressions. Found when the originals were read line by
+line for a parity table after CodeRabbit's fifth return. Why the rule did not fire: the claim was
+about a deleted file, which no grep of the tree finds, and a reviewer's agreement stood in for
+reading it (1.28). A claim about a deleted file is checked with `git show <parent>:<path>`.
 
 ### 1.3 A masked exit code reported as success
 
@@ -3253,6 +3265,8 @@ widens 2.28 ("disable bytecode writes") from clean-copy tests to mutation checks
 
 ### 2.39 An absence check asked with a handle that could never show the thing
 
+**Occurrences: 2** — 2026-11-12, 2026-11-17
+
 **What happened.** PR #1099 added `callback_with_a_wrong_nonce_is_refused` for the
 Dispatch Console's sign-in gate (add-dispatch-console task 2.6). After the refused
 callback it asserted that `/v1/me` answers 401, but it sent the cookie the browser
@@ -3274,6 +3288,99 @@ held beforehand. Then write the mutant that does the forbidden thing and watch i
 `callback_with_a_token_signed_by_another_key_is_refused` probe with
 `callback.session.unwrap_or(login_session)`; the store-then-refuse mutant turns both
 red. The general rule is `Convention`.
+
+**Occurrence 2 — 2026-11-17.** PR #1186 ported the pre-push uv BATS file to
+`platform/tests/suite/pre_push_uv.rs`. Two tests,
+`a_finished_run_leaves_no_temporary_file_behind` and
+`term_stops_the_bats_job_removes_temporary_files_and_frees_the_lock`, asserted that the
+scratch directory under the TMPDIR the test set was empty after the hook ran. The hook makes
+its scratch directory with `mktemp -d`, which ignores TMPDIR on macOS (`docs/LESSONS.md`
+L-009), so the checks read a directory the hook never used and could not fail. The BATS
+original, which #1186 deletes, has the same shape: it sets TMPDIR and puts no stand-in
+`mktemp` on the PATH. Caught by a review
+pass before merge and fixed in `89002167`: a stand-in `mktemp` honours TMPDIR, and each test
+first asserts that the scratch directory existed while BATS ran. The rule did not fire because
+the check was carried over from the original rather than written: nobody chose the handle, so
+nobody asked whether the code under test hands back the same one.
+
+### 2.40 A port PR returned five times: checks copied from originals that could not fail, and comparisons weaker than the originals
+
+**What happened.** PR #1186 (AC-949) ported the git-hook and commit-gate tests from BATS and
+Python to Rust. It was returned five times. Returns 1 and 2 were correction dispatches from the
+PR's owner session to its executor, not posted on the PR. Return 1 was on `0381e46f`,
+fixed in `89002167`, `9b3ac6b7` and `856e6f69`. Its fixes included two checks that could
+pass without the property they name: the scratch-directory emptiness checks, which on macOS
+read a directory the hook never used (2.39, occurrence 2), and a git-environment case that
+passed when the hook stopped before its BATS step. They also raised a readiness wait
+that timed out for a cause not identified, and a trufflehog exclusion for a deleted file. Return 2 was a correction
+dispatch on `784f8889`, fixed in `c1a451c7`. Among its fixes was the git-env fake bats, which on
+macOS left a scratch repository in the system temp directory on every run. A fallback review
+round then approved `c1a451c7` (PR comment, 2026-11-17 13:19Z) without finding the gap below.
+Return 3 was CodeRabbit's review 5951303435 of `31297a21` (2026-11-18 05:32Z). It found that
+`bats_is_already_running_while_pytest_runs` passed when the hook ran BATS to the end before
+pytest. The fake bats's mark file outlived it, and the fake pytest only checked that the file
+existed. The BATS original, which #1186 deletes, had the same gap: its fake bats creates the
+mark on start and never removes it. Joseph chose to fix it in place (2026-11-18 06:01Z).
+Return 4 was CodeRabbit's review 5957037051 of `ad345c9b` (2026-11-18 13:01Z): four more weak assertions.
+Three were weaker than the originals they replaced: the port compared with `trim_end()` and
+`lines()`, while the BATS originals compared `$(cat f)`, which strips trailing newlines only and
+keeps a trailing space and a `\r` (1.2, occurrence 9). The fourth, a lock check that read an
+unreadable directory as empty, was copied from its original. Joseph chose one sweep of the file (2026-11-18 13:10Z): one mutant per test of
+`pre_push_uv.rs` on the property its name states. Of 28 tests, 21 went red as written and 7
+stayed green and were strengthened. The batch coordinator added the same class outside that file: 2
+assertions in `pre_push_parallel_sigalrm.rs`, and 2 of the 7 tests in `pre_push_branch_lock.rs`
+that call its no-locks check, which passed on a hook that never took the lock.
+Return 5 was CodeRabbit's review 5958136298 of `06cc71fd` (2026-11-18 14:02Z): 13 threads in
+three files. Read line by line against the originals, 3 were weaker than them (a held hook that
+the test runner's 30 s bound can kill inside a 20 s readiness wait, a `perl` spawn that panics
+where the original skipped, a PATH dropped whole when one entry is not UTF-8) and 10 had the
+original's gap. Joseph chose to fix all 13, and their siblings in the same three files
+(2026-11-18 17:22Z): `1df57765`, `72c67e21`, `8193cad9`. Those three commits left the same
+PATH fault in three fixtures: the uv and branch-lock fixtures (two of the three files) and the
+git-env fixture (outside them) still dropped a PATH holding one non-UTF-8 entry. The simplify
+pass on the whole PR found it, and `342be0e5` fixed all three. Round 7 of that pass found one
+more, outside the hook fixtures: the port of the settings-registration test read
+`.claude/settings.json` with the suite's YAML reader where the original used `json.loads`, so a
+trailing comma the original refused passed. The commit that adds this note parses it as JSON; a
+scratch copy with the comma left the old test green and turned the new one red. Round 8 found
+another in the git-env port: it trimmed `git config` output on both ends where bats's `run`
+drops only trailing newlines, so a leaked whitespace-only `user.email` read as empty, and its
+`bats` line pattern used `[ \t]` for the original's `[[:space:]]`. With the hook's `unset`
+removed and the fake writing three spaces, the old test stayed green and the fixed one went red.
+Round 9, told to set every comparison in the nine modules beside its original, found two
+more, both in the same port: its unset-list reader split words on any Unicode whitespace where
+the original's `tr -s ' \t' '\n'` splits on space and tab, so a no-break space, a carriage return
+or a bare backslash between two names (each leaves both variables set in `sh`) still read as
+two names; and its config read took stdout alone where `run` merges stderr into `$output`. Each
+of the three hook mutants left the old test green and turned the fixed one red.
+Round 10 found one more, in the branch-lock port: it took the text after the first recovery
+marker on the first line holding one, where the original's `sed -n 's/.*remove the lock:  //p'` keeps the
+text after the last marker on every line; on a repository path holding the marker the old test
+passed and the original's reading, now the port's, fails.
+
+**Root cause.** The PR's mutation pass ran one mutant per guard the ledger cites. It did not run
+a mutant for the property each test's name states. A test ported faithfully keeps every gap of
+its original. The port's job is to reproduce the original, so nothing in the port's own process
+asked whether the original's assertion could fail. Return 2 had other causes, not this one.
+Returns 4 and 5 also had a second cause: the port changed how a value was compared or how a
+test ran (`trim_end`, `lines()`, a runner bound, a panic in place of a skip), and no step set
+each Rust assertion beside the original's.
+
+**The rule.** Before a port PR is opened, each ported test gets one mutant that removes the
+property its name states, and the test is seen to go red on it. The mutant is not only the guard
+the test cites. A sequential hook is the mutant for "runs while", an unused directory for "leaves
+nothing behind", an early exit for "cannot reach". A test that only passes because the original
+did is not yet a port. When the original has the gap, the port fixes it and the PR body says so.
+And a port compares exactly what the original compared: where a BATS test compared `$(cat f)`,
+the Rust test strips trailing newlines and nothing else, and a skip in the original stays a
+skip.
+
+**Enforced by.** Convention. This instance: the 2026-11-18 sweep (recorded at `c770400b`) put one
+mutant under each of the 28 tests of `pre_push_uv.rs`: 21 went red as written, and all 28 after the
+other 7 were strengthened; no check re-runs it. The
+return-3 fix, `bats_is_already_running_while_pytest_runs`, holds the fake bats until the fake
+pytest releases it (`FAKE_BATS_RELEASE`, `7fa584cc`). In that sweep a copy of the hook made
+sequential turned it red.
 
 ## 3. Acting on live state
 
@@ -5305,7 +5412,7 @@ PR. None of the six heads carries either commit status, which 5.25's guard now r
 
 ### 5.25 A review pass is a commit status on the head it covered (supersedes 5.24's rule)
 
-**Occurrences: 6** — 2026-11-12, 2026-11-12, 2026-11-16 to 2026-11-17, 2026-11-18, 2026-11-17 to 2026-11-18, 2026-11-17. The four that earned this rule are 5.24's.
+**Occurrences: 7** — 2026-11-12, 2026-11-12, 2026-11-16 to 2026-11-17, 2026-11-18, 2026-11-17 to 2026-11-18, 2026-11-17 to 2026-11-18, 2026-11-17. The four that earned this rule are 5.24's.
 
 **What happened.** 5.24's rule (one PR-body line per pass) lived in prose, and its fourth occurrence retired
 `Convention` as its enforcement.
@@ -5363,7 +5470,17 @@ hand-made copy of its steps is not one.
 
 The statuses span the session's context compactions (2026-11-17 16:48Z, 2026-11-18 02:32Z and 13:11Z). Each summary said "both skills" or "skill passes" without naming the tool, and the session went on dispatching agents. As in occurrence 3, the guard validates each status (both contexts, and a description that is neither empty nor the unfilled placeholder), but it cannot verify that the Skill tool ran on that head. The batch coordinator then defined a pass: the Skill tool is invoked, and every step its text gives is carried out on the stated range. #1201's final head was run that way.
 
-**Occurrence 6 — 2026-11-17.** The owner of the three pull requests cut from #1185 (#1204, AC-972; #1205, AC-973; #1207, AC-974) posted `simplify` and `security-review` statuses that did not come from complete Skill-tool runs on the heads they named:
+**Occurrence 6 — 2026-11-17 to 2026-11-18.** On #1186 the `simplify` and `security-review` statuses
+on `c1a451c7`, `31297a21`, `ad345c9b` and `06cc71fd` were posted with no Skill-tool run of either
+skill on any of those heads (the owner session's transcript records none). On `ad345c9b` and
+`06cc71fd` a read-only review agent had been given the two skills' angles; the descriptions said
+what it found, so they read as passes. Found when the batch
+coordinator asked what "skills round" meant (2026-11-18). Corrected by a PR comment naming the four
+heads, then both skills run on the whole PR range before the next statuses. Why the rule did not
+fire: the rule names the status and the head, not what produced the pass, so an agent that reviews
+along the skills' lines passed for the skills.
+
+**Occurrence 7 — 2026-11-17.** The owner of the three pull requests cut from #1185 (#1204, AC-972; #1205, AC-973; #1207, AC-974) posted `simplify` and `security-review` statuses that did not come from complete Skill-tool runs on the heads they named:
 
 - #1204 `3ca2d85b`: the skills ran on `3456968a` (`/simplify`) and `b7dc5ac8` (`/security-review`) only. The rounds on the `731cc9d3` and `9915ec3b` deltas were Agent dispatches, and the merge of `dev` into `3ca2d85b` was checked by hand.
 - #1205 `17b2d4ff`: `/simplify` ran through the Skill tool once, on `2f7153e9`. Its second round, on `61183728`, was Agent dispatches. `/security-review` was invoked, but run as one dispatched agent, without the skill's false-positive filter step. `17b2d4ff`, a comment rewrap, had no pass.
@@ -5509,7 +5626,7 @@ entry naming at least one `#[test]` fn. Entry 6.9 gains its missing note in this
 
 ### 5.30 Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14)
 
-**Occurrences: 1** — 2026-11-13
+**Occurrences: 2** — 2026-11-13, 2026-11-18
 
 **What happened.** During wave 1 of the BATS port, five `pr-reviewer` agents ran at once, each told
 only to use "scratch" under the session's scratchpad. Two reviewers (AC-874, AC-875) both created
@@ -5528,6 +5645,8 @@ elsewhere in the scratchpad and recursive deletes.
 
 **Enforced by.** Convention (the brief template). Applied to every brief from the AC-874 and AC-875
 delta reviews on.
+
+**Occurrence 2 — 2026-11-18.** On #1186 (AC-949) the owner dispatched four parallel `/simplify` review agents over the whole PR range. The briefs said read-only and named no scratch directory and no ban on recursive deletes. The efficiency agent measured symlink cost with a script that ran `rm -rf` in a loop on temporary directories it had made in the scratchpad, and reported it. Nothing in the worktree or another agent's files was touched. Why the rule did not fire: the briefs were written as short review prompts, not from the brief template, so the template's scratch and delete lines were never added.
 
 ### 5.31 A peer session allowed a guard skip, and two denied compound commands were retried as a standalone push
 

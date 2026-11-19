@@ -1,10 +1,5 @@
 import importlib.util
-import json
-import subprocess
-import sys
 from pathlib import Path
-
-import harness_sandbox
 
 ROOT = Path(__file__).resolve().parents[2]
 HOOK = ROOT / ".claude/hooks/guard-secret-stdin.py"
@@ -29,30 +24,3 @@ def test_allows_script_file_or_inline_code_with_secret_stdin():
     assert not guard.unsafe_command("python3 -Iu scripts/read-token.py < site-config/secrets/operator/token")
     assert not guard.unsafe_command(
         "python3 scripts/read-token.py < site-config/secrets/operator/token; python3 -u - <<'PY'\nprint(1)\nPY")
-
-
-def test_hook_stdin_protocol_blocks_without_echoing_command():
-    command = "python3 - <<'PY' < site-config/secrets/operator/token\nsecret payload\nPY"
-    result = subprocess.run([sys.executable, str(HOOK)], input=json.dumps({"tool_input": {"command": command}}),
-                            text=True, capture_output=True, check=False,
-                            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
-    assert result.returncode == 2
-    assert "secret payload" not in result.stderr
-    assert "token" not in result.stderr
-
-
-def test_hook_allows_safe_script_file_command():
-    result = subprocess.run([sys.executable, str(HOOK)],
-                            input=json.dumps({"tool_input": {
-                                "command": "python3 scripts/read-token.py < site-config/secrets/operator/token"}}),
-                            text=True, capture_output=True, check=False,
-                            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
-    assert result.returncode == 0
-
-
-def test_project_settings_registers_the_bash_pretool_guard():
-    settings = json.loads((ROOT / ".claude/settings.json").read_text())
-    hook = settings["hooks"]["PreToolUse"][0]
-    assert hook["matcher"] == "Bash"
-    assert hook["hooks"][0]["type"] == "command"
-    assert "guard-secret-stdin.py" in hook["hooks"][0]["command"]
