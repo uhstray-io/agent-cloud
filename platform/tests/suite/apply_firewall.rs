@@ -7,7 +7,7 @@
 //! root so detection sees the containers. These tests also pin the anti-lockout invariant (SSH
 //! and every other add before enable) and the egress containment wiring that docs/MISTAKES.md
 //! 2.5 is about. The exact ufw command forms are built by filter_plugins/ufw_rules.py and
-//! asserted in test_ufw_rules_filter.py; runs against a stub ufw live in
+//! asserted in ufw_rules_filter_playbook.rs; runs against a stub ufw live in
 //! apply_firewall_convergence_playbook.rs.
 //!
 //! Ports the static tests of the deleted platform/tests/test_apply_firewall.bats (plan 24). The checks read
@@ -120,7 +120,7 @@ fn route_rules_feed_the_declared_rule_set() {
 #[test]
 fn no_ufw_rule_command_or_tag_is_hand_built() {
     // The command forms and the `agent-cloud:` tag are built in ONE place, ufw_rules.py
-    // ufw_desired_rules (exact text: test_ufw_rules_filter.py). A copy here could disagree
+    // ufw_desired_rules (exact text: ufw_rules_filter_playbook.rs). A copy here could disagree
     // with the declared set the prune step compares against.
     let pb = text::read(PLAYBOOK);
     let comment = Regex::new(r"^\s*#").unwrap();
@@ -232,7 +232,7 @@ fn bridge_dns_detection_is_gated_on_rootful_podman() {
 // Egress containment (firewall_deny_egress): the self-hosted CI runner hosts run
 // repository-authored code and are denied the platform's interior at the network boundary.
 // docs/MISTAKES.md 2.5 records a guard on this feature that was never evaluated against the
-// declarations it judges; the predicate is a filter executed in test_ufw_rules_filter.py.
+// declarations it judges; the predicate is a filter executed in ufw_rules_filter_playbook.rs.
 
 #[test]
 fn deny_egress_defaults_to_empty() {
@@ -255,7 +255,7 @@ fn egress_denials_feed_the_declared_rule_set() {
 #[test]
 fn every_egress_denial_is_judged_by_ufw_egress_problems() {
     // The guard is ufw_egress_problems, run against real declaration shapes in
-    // test_ufw_rules_filter.py (docs/MISTAKES.md 2.5). Here: the playbook asserts on it, fed
+    // ufw_rules_filter_playbook.rs (docs/MISTAKES.md 2.5). Here: the playbook asserts on it, fed
     // the declared denials and SSH CIDRs, and the refusal names the recorded why.
     let task = "Validate each egress denial";
     let blk = task_block(&text::read(PLAYBOOK), task);
