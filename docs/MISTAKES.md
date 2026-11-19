@@ -3345,12 +3345,16 @@ another in the git-env port: it trimmed `git config` output on both ends where b
 drops only trailing newlines, so a leaked whitespace-only `user.email` read as empty, and its
 `bats` line pattern used `[ \t]` for the original's `[[:space:]]`. With the hook's `unset`
 removed and the fake writing three spaces, the old test stayed green and the fixed one went red.
-Round 9, told to set every comparison in the nine modules beside its original, found the last
-two, both in the same port: its unset-list reader split words on any Unicode whitespace where
+Round 9, told to set every comparison in the nine modules beside its original, found two
+more, both in the same port: its unset-list reader split words on any Unicode whitespace where
 the original's `tr -s ' \t' '\n'` splits on space and tab, so a no-break space, a carriage return
 or a bare backslash between two names (each leaves both variables set in `sh`) still read as
 two names; and its config read took stdout alone where `run` merges stderr into `$output`. Each
 of the three hook mutants left the old test green and turned the fixed one red.
+Round 10 found one more, in the branch-lock port: it took the text after the first recovery
+marker on the first line, where the original's `sed -n 's/.*remove the lock:  //p'` keeps the
+text after the last marker on every line; on a repository path holding the marker the old test
+passed and the original's reading, now the port's, fails.
 
 **Root cause.** The PR's mutation pass ran one mutant per guard the ledger cites. It did not run
 a mutant for the property each test's name states. A test ported faithfully keeps every gap of

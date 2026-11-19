@@ -646,11 +646,17 @@ fn the_printed_recovery_command_works_for_a_path_with_spaces_and_quotes() {
     // Act: the refusal prints a command; run exactly what the operator would paste.
     let refused = ctx.push(&repo, &[], &["feat"]);
     let shown = process::output_text(&refused);
-    let command = shown.lines().find_map(|line| {
-        line.split_once("remove the lock:  ")
-            .map(|(_, rest)| rest.to_owned())
-    });
-    let command = command.expect("no recovery command was printed");
+    // As the original's `sed -n 's/.*remove the lock:  //p'` read it: on every line (split on
+    // `\n` alone) holding the marker, the text after its last occurrence.
+    let command = shown
+        .split('\n')
+        .filter_map(|line| line.rsplit_once("remove the lock:  ").map(|(_, rest)| rest))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !command.is_empty(),
+        "no recovery command was printed: {shown}"
+    );
     let recovered = process::scrubbed("sh", ctx.home.path())
         .arg("-c")
         .arg(&command)
