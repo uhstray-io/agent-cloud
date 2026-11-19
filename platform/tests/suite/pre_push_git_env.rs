@@ -47,8 +47,8 @@ cd "$TMPDIR" && git init -q scratch && cd scratch \
 exit 0
 "#;
 
-/// `git -C <dir> config --local <key>` read with a clean environment: its stdout without trailing
-/// newlines, as bats's `run` captures it (`$(...)`), so surrounding spaces still count.
+/// `git -C <dir> config --local <key>` read with a clean environment, as bats's `run` fills
+/// `$output`: stdout and stderr together, trailing newlines dropped, surrounding spaces kept.
 fn local_config(home: &Path, dir: &Path, key: &str) -> String {
     let out = process::scrubbed("git", home)
         .args(["-C"])
@@ -56,9 +56,7 @@ fn local_config(home: &Path, dir: &Path, key: &str) -> String {
         .args(["config", "--local", key])
         .output()
         .expect("git starts");
-    String::from_utf8_lossy(&out.stdout)
-        .trim_end_matches('\n')
-        .to_owned()
+    process::output_text(&out).trim_end_matches('\n').to_owned()
 }
 
 #[test]
@@ -130,16 +128,19 @@ fn the_git_environment_is_cleared_before_any_suite_runs() {
 }
 
 /// The git variables a bash file clears in its `unset GIT_DIR ...` statement, sorted. The
-/// statement may span lines joined by a trailing backslash.
+/// statement may span lines joined by a trailing backslash. Read as the original's pipeline read
+/// it (`awk | tr -d '\\' | tr -s ' \t' '\n' | grep '^GIT_'`): lines split on `\n` alone,
+/// backslashes deleted, words split on space and tab only. A carriage return or a no-break space
+/// in the statement therefore stays inside a word, as it does for the shell running the hook.
 fn unset_git_vars(text: &str) -> Vec<String> {
     let mut words = Vec::new();
     for line in text
-        .lines()
+        .split('\n')
         .skip_while(|line| !line.starts_with("unset GIT_DIR"))
     {
         words.extend(
-            line.replace('\\', " ")
-                .split_whitespace()
+            line.replace('\\', "")
+                .split([' ', '\t'])
                 .filter(|word| word.starts_with("GIT_"))
                 .map(str::to_owned),
         );
