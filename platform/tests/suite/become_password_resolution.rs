@@ -326,7 +326,8 @@ fn first_in(seq: &[Node]) -> First<'_> {
 
 /// A hashi_vault lookup whose path argument is [`SECRET_PATH`]: the one set_fact value that reads
 /// the store's password. A literal, an extra var, or a default naming the path is not one, and
-/// the trailing arguments hold no parenthesis, so a filter after the lookup's `)` cannot hide in them.
+/// the trailing arguments hold no brace and no parenthesis, so a filter after the lookup's `)`
+/// cannot hide in them.
 static STORE_LOOKUP: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
         r#"^\s*\{{\{{\s*lookup\(\s*['"](?:community\.hashi_vault\.)?hashi_vault['"]\s*,\s*['"]{}['"]\s*(?:,[^{{}}()]*)?\)\s*\}}\}}\s*$"#,
@@ -655,13 +656,27 @@ const FIRST_EXECUTED_CASES: &str = r#"
   tasks:
     - ansible.builtin.set_fact:
         ansible_become_password: "{{ lookup('hashi_vault', 'secret/data/services/ssh:become_password', url=u) | default('x', true) }}"
-- name: bad store lookup whose trailing argument holds a template brace
+- name: bad store lookup whose trailing argument opens a brace
   hosts: h
   become: true
   gather_facts: false
   tasks:
     - ansible.builtin.set_fact:
-        ansible_become_password: "{{ lookup('hashi_vault', 'secret/data/services/ssh:become_password', url='}}{{ u') }}"
+        ansible_become_password: "{{ lookup('hashi_vault', 'secret/data/services/ssh:become_password', url='{') }}"
+- name: bad store lookup whose trailing argument closes a brace
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.set_fact:
+        ansible_become_password: "{{ lookup('hashi_vault', 'secret/data/services/ssh:become_password', url='}') }}"
+- name: bad store lookup whose trailing argument closes a call
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.set_fact:
+        ansible_become_password: "{{ lookup('hashi_vault', 'secret/data/services/ssh:become_password', url=')') }}"
 - name: bad store lookup whose trailing argument opens a call
   hosts: h
   become: true
