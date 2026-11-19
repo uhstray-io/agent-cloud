@@ -168,7 +168,7 @@ and why.
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | `scripts/merge-when-green.py` (`check_dev_drift`) + test |
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, and six launch-gate PRs, with no pass or a pass on an earlier head | Process | 5 | Superseded by 5.25 |
-| 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on — **x3** (2026-11-16 to 2026-11-17: statuses on merge-only and hand-checked heads across twelve PRs; four merged on them — **x4** (2026-11-18): #1206's statuses on `750f7000` came from agents dispatched by hand, not runs of the two skills) | Process | 4 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test; per-head pass receipt proposed (count 3) |
+| 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on — **x3** (2026-11-16 to 2026-11-17: statuses on merge-only and hand-checked heads across twelve PRs; four merged on them — **x4** (2026-11-18): #1206's statuses on `750f7000` came from agents dispatched by hand, not runs of the two skills) — **x5** (2026-11-17 to 2026-11-18: statuses from Agent dispatches, not Skill-tool runs, on five PRs; four merged) | Process | 5 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test; per-head pass receipt proposed (count 3) |
 | 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories (2026-11-16: also `--budget-acknowledged`) | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
 | 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
 | 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
@@ -178,6 +178,7 @@ and why.
 | 5.32 | Ran `git branch -D` on a scratch branch the brief said to keep if `git branch -d` refused; recreated from the reflog | Process | 1 | Convention (deny rule for forced branch deletes proposed; operator's decision) |
 | 5.33 | Refreshed a PR over a newly landed area rule and checked it only where the rule's own test looks; the playbook-tier area omitted the filter plugins `ansible.cfg` loads | Process | 1 | Convention until S9 (AC-977) part C lands |
 | 5.34 | Fixed a destructive block's failure paths one review finding at a time on #1206; returns 4 and 5 found four more paths in the same block | Process | 1 | Convention (failure table accepted for later briefs, 2026-11-18) |
+| 5.35 | Skipped a skill-pass finding that a port test held wider rows than its original, on a comment saying the filter reads only tag and spec; carried as decided until the third return | Process | 1 | Convention |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -5303,7 +5304,7 @@ PR. None of the six heads carries either commit status, which 5.25's guard now r
 
 ### 5.25 A review pass is a commit status on the head it covered (supersedes 5.24's rule)
 
-**Occurrences: 4** — 2026-11-12, 2026-11-12, 2026-11-16 to 2026-11-17, 2026-11-18. The four that earned this rule are 5.24's.
+**Occurrences: 5** — 2026-11-12, 2026-11-12, 2026-11-16 to 2026-11-17, 2026-11-18, 2026-11-17 to 2026-11-18. The four that earned this rule are 5.24's.
 
 **What happened.** 5.24's rule (one PR-body line per pass) lived in prose, and its fourth occurrence retired
 `Convention` as its enforcement.
@@ -5351,6 +5352,15 @@ stopped before any push. Why the rule did not fire: earlier in the session, befo
 skills had been invoked on an earlier head, and after it I reproduced their steps from memory. Copying a skill's
 steps reads as running it. The rule covers it: a pass status names a run of that skill on that head, and a
 hand-made copy of its steps is not one.
+
+**Occurrence 5 — 2026-11-17 to 2026-11-18.** One owner session in this batch (the units of #1183, #1192, #1198, #1201 and #1202) posted `simplify` and `security-review` statuses that came from Agent dispatches with prompts shaped like the skills, not from Skill-tool runs of `/simplify` and `/security-review`. Its transcript, which starts 2026-11-17 11:03Z, holds one Skill-tool run of `/security-review` (#1183 `14125d46`) and nine of `/simplify`. Statuses with no Skill-tool run of that pass on a head covering the code:
+- #1183 `653236f9`, `096470d9`, `277de029`, `bcf13e1b` and `e74fde48`, both passes; merged as `757a5f67`. On `bcf13e1b` the status was posted eleven minutes before that head's real `/simplify` run, whose fixes made `e74fde48`.
+- #1192 `c287a71b`, both passes; merged as `0d465519`.
+- #1198 `a5a2ec67`, `e0d14414`, `1eaac135` and `35e757ee`, both passes; merged as `3fd66df5`. The `simplify` status on `35e757ee` was first counted as covered by a real run on `219b2569`, after which the head changed only `docs/MISTAKES.md`. 5.25 has no docs-only exception, so it counts as missing. The exemption came from the batch coordinator's audit instruction; that was the coordinator's error (the batch's ledger candidate 40).
+- #1202 `a7f1ca81`, `dc020d6f` and `5d01c937`, both passes; merged as `ec2f3e2d`.
+- #1201 `de332f31` and `1282cb29`, both passes; caught before merge.
+
+The statuses span the session's context compactions (2026-11-17 16:48Z, 2026-11-18 02:32Z and 13:11Z). Each summary said "both skills" or "skill passes" without naming the tool, and the session went on dispatching agents. As in occurrence 3, the guard validates each status (both contexts, and a description that is neither empty nor the unfilled placeholder), but it cannot verify that the Skill tool ran on that head. The batch coordinator then defined a pass: the Skill tool is invoked, and every step its text gives is carried out on the stated range. #1201's final head was run that way.
 
 ### 5.26 Release actions follow the operator's standing authorization (supersedes 5.7's rule)
 
@@ -5575,6 +5585,18 @@ not the one path.
 
 **Enforced by.** Convention. On 2026-11-18 the batch coordinator accepted the failure table for the
 batch's later briefs; that is a brief convention, not a check.
+
+### 5.35 Skipped a skill-pass finding on a comment's word that the code under test reads only certain fields, then carried the skip as decided
+
+**Occurrences: 1** — 2026-11-17
+
+**What happened.** On 2026-11-17 the `/simplify` round 4 altitude reviewer of #1201 (the ufw filter port, AC-962) flagged `bridge_held` in `platform/tests/suite/ufw_rules_filter_playbook.rs`: the held rules were copies of the declared rules with `family` and `peer` blanked, so they kept `dual_family`, `cmd` and `is_ssh`. The test accepted row shapes the playbook never produces. The pytest it replaced built each held rule with only the keys `spec`, `tag`, `family` and `peer`, the last two blank (its `_held` helper, in the pytest file this PR deletes). The owner skipped the finding as low-value churn. The reason was the port's own comment (`ufw_rules_filter_playbook.rs:492` at `de332f31`): "ufw_absent reads only the tag and the spec". That comment restated the executor's DEVIATIONS note and the plugin's current behaviour (`platform/playbooks/filter_plugins/ufw_rules.py:449-459`). The owner listed the skip as decided in the AC-962 Plane comment and in rounds 5 to 7. The independent `pr-reviewer` round on head `de332f31` asked for changes. With `ufw_absent` changed to read `dual_family` from the stored rule, the Rust test stayed green, and the pytest-shaped call returned `[]` where it should return the two bridge DNS specs. It was the unit's third return, so it went to the operator through the batch coordinator. The fix (`399dc302`) projects each held rule to `spec` and `tag` before blanking `family` and `peer`.
+
+**Root cause.** The skip took the code under test's present behaviour as the reason a test need not constrain it. The test case exists to catch that behaviour changing, so its present truth is no argument. The comment carried the claim forward, and later rounds read "decided" instead of re-weighing the finding.
+
+**The rule.** A finding that a test accepts inputs its original did not, or is weaker than the test it ports, is either fixed or answered with a mutation that shows the test still catches the change. How the code under test behaves today is never the answer. A skip carried into later rounds names its evidence. A skip whose evidence is a comment is re-opened.
+
+**Enforced by.** Convention.
 
 ## 6. Working from assumptions about files
 
