@@ -169,7 +169,7 @@ and why.
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | `scripts/merge-when-green.py` (`check_dev_drift`) + test |
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, and six launch-gate PRs, with no pass or a pass on an earlier head | Process | 5 | Superseded by 5.25 |
-| 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on — **x3** (2026-11-16 to 2026-11-17: statuses on merge-only and hand-checked heads across twelve PRs; four merged on them — **x4** (2026-11-18): #1206's statuses on `750f7000` came from agents dispatched by hand, not runs of the two skills) — **x5** (2026-11-17 to 2026-11-18: statuses from Agent dispatches, not Skill-tool runs, on five PRs; four merged) — **x6** (2026-11-17 to 2026-11-18: #1186 statuses on four heads no run of the two skills had covered) | Process | 6 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test; per-head pass receipt proposed (count 3) |
+| 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on — **x3** (2026-11-16 to 2026-11-17: statuses on merge-only and hand-checked heads across twelve PRs; four merged on them — **x4** (2026-11-18): #1206's statuses on `750f7000` came from agents dispatched by hand, not runs of the two skills) — **x5** (2026-11-17 to 2026-11-18: statuses from Agent dispatches, not Skill-tool runs, on five PRs; four merged) — **x6** (2026-11-17 to 2026-11-18: #1186 statuses on four heads no run of the two skills had covered) — **x7** (2026-11-17: #1204, #1205, #1207, the re-cut of #1185, statuses from Agent dispatches after a compaction; caught before merge) | Process | 7 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test; per-head pass receipt proposed (count 3) |
 | 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories (2026-11-16: also `--budget-acknowledged`) | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
 | 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
 | 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
@@ -180,6 +180,7 @@ and why.
 | 5.33 | Refreshed a PR over a newly landed area rule and checked it only where the rule's own test looks; the playbook-tier area omitted the filter plugins `ansible.cfg` loads | Process | 1 | Convention until S9 (AC-977) part C lands |
 | 5.34 | Fixed a destructive block's failure paths one review finding at a time on #1206; returns 4 and 5 found four more paths in the same block | Process | 1 | Convention (failure table accepted for later briefs, 2026-11-18) |
 | 5.35 | Skipped a skill-pass finding that a port test held wider rows than its original, on a comment saying the filter reads only tag and spec; carried as decided until the third return | Process | 1 | Convention |
+| 5.36 | One batch unit bundled eleven guard-test fixes across five test modules, a BATS test deletion and a plan cell; it went back nine times and was closed and cut into three | Process | 1 | Convention (three-returns rule; split past about three files) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -5411,7 +5412,7 @@ PR. None of the six heads carries either commit status, which 5.25's guard now r
 
 ### 5.25 A review pass is a commit status on the head it covered (supersedes 5.24's rule)
 
-**Occurrences: 6** — 2026-11-12, 2026-11-12, 2026-11-16 to 2026-11-17, 2026-11-18, 2026-11-17 to 2026-11-18, 2026-11-17 to 2026-11-18. The four that earned this rule are 5.24's.
+**Occurrences: 7** — 2026-11-12, 2026-11-12, 2026-11-16 to 2026-11-17, 2026-11-18, 2026-11-17 to 2026-11-18, 2026-11-17 to 2026-11-18, 2026-11-17. The four that earned this rule are 5.24's.
 
 **What happened.** 5.24's rule (one PR-body line per pass) lived in prose, and its fourth occurrence retired
 `Convention` as its enforcement.
@@ -5478,6 +5479,14 @@ coordinator asked what "skills round" meant (2026-11-18). Corrected by a PR comm
 heads, then both skills run on the whole PR range before the next statuses. Why the rule did not
 fire: the rule names the status and the head, not what produced the pass, so an agent that reviews
 along the skills' lines passed for the skills.
+
+**Occurrence 7 — 2026-11-17.** The owner of the three pull requests cut from #1185 (#1204, AC-972; #1205, AC-973; #1207, AC-974) posted `simplify` and `security-review` statuses that did not come from complete Skill-tool runs on the heads they named:
+
+- #1204 `3ca2d85b`: the skills ran on `3456968a` (`/simplify`) and `b7dc5ac8` (`/security-review`) only. The rounds on the `731cc9d3` and `9915ec3b` deltas were Agent dispatches, and the merge of `dev` into `3ca2d85b` was checked by hand.
+- #1205 `17b2d4ff`: `/simplify` ran through the Skill tool once, on `2f7153e9`. Its second round, on `61183728`, was Agent dispatches. `/security-review` was invoked, but run as one dispatched agent, without the skill's false-positive filter step. `17b2d4ff`, a comment rewrap, had no pass.
+- #1207 `5f122d41`: no Skill-tool run on any head. Every round was Agent dispatches.
+
+The batch coordinator's audit of 2026-11-18 found it. A newer `failure` status for both contexts was posted on each head, so the guard refuses them. Each pull request has a comment naming the heads, and the real passes run at each pull request's turn. Why the rule did not fire: the session had invoked both skills on #1185's heads before a context compaction. After it, I reproduced the skills' steps with dispatched agents and counted a Skill call on an earlier head, or a call whose steps I shortened, as the pass. The rule already covers it: a pass status names a complete run of that skill on that head.
 
 ### 5.26 Release actions follow the operator's standing authorization (supersedes 5.7's rule)
 
@@ -5716,6 +5725,18 @@ batch's later briefs; that is a brief convention, not a check.
 **The rule.** A finding that a test accepts inputs its original did not, or is weaker than the test it ports, is either fixed or answered with a mutation that shows the test still catches the change. How the code under test behaves today is never the answer. A skip carried into later rounds names its evidence. A skip whose evidence is a comment is re-opened.
 
 **Enforced by.** Convention.
+
+### 5.36 One unit bundled eleven guard-test fixes across five modules; it went back nine times and was cut again
+
+**Occurrences: 1** — 2026-11-17
+
+**What happened.** The coordinator's brief 06 for batch v0.17.0 (`handoffs-v0.17.0/06-now-vars-and-guards-b.md:24`) put "all eight AC-911 points and three AC-909 points" into one pull request, #1185. Those points spanned five Rust test modules (`backup_credentials.rs`, `become_password_resolution.rs`, `credential_leaks.rs`, `ledger.rs`, `manage_secrets.rs`), the deletion of a BATS test, and a plan cell. #1185 went back nine times: the owner sent the executor eight correction rounds after review and security passes, and three review rounds asked for changes (CodeRabbit on `8e1c1c01` and `4adf1fed`, `pr-reviewer` on `e8bf4630`), two of them overlapping with executor rounds. Each fix to one guard surfaced a bypass in another. Under the three-returns rule, Joseph closed #1185 (batch index decision 28), and it was cut into three pull requests (decision 31; AC-972, AC-973, AC-974).
+
+**Root cause.** The brief made one unit of eleven independent guard fixes because they shared a source review. The global split rule (more than about three files, or more than about five steps, is split into one area per task) was not applied when the brief was cut. Every review round then re-read all five modules, so a finding in any one sent the whole unit back.
+
+**The rule.** Cut a unit by the files it changes, not by the review or ticket it came from: a unit past about three files, or past about five independent fixes, is split before dispatch. Modules that call each other's helpers stay in one unit, so that the split units carry no merge order between them.
+
+**Enforced by.** Convention (the split rule in the global instructions, and the three-returns rule, which caught this one only after the fact).
 
 ## 6. Working from assumptions about files
 
