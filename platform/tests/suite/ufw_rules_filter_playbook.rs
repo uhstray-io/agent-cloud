@@ -60,7 +60,7 @@
 //! | test_enforcing_an_empty_allowlist_is_refused | merged |
 //! | test_a_probe_timeout_is_a_whole_number_of_seconds (6 cases) | merged |
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use agent_cloud_tests::{playbook, process};
 use serde_json::{Value, json};
@@ -83,6 +83,49 @@ pub(super) const FILTERS: [&str; 10] = [
 /// The cases asserted: the 140 pytest items of `test_ufw_rules_filter.py` (2026-11-17), less the
 /// one ported to the static tier. A case dropped from this port makes the count disagree.
 const CASES: usize = 139;
+
+/// The items asserted more than once, with how many checks each makes: one per input of a
+/// parametrized table, or per assertion of a plain test. `CASES` counts item names, so an input
+/// dropped from a table whose item has others would keep it; this count would not.
+const SHARED: &[(&str, usize)] = &[
+    (
+        "test_a_rule_declared_twice_appears_once_and_keeps_its_first_place",
+        2,
+    ),
+    ("test_a_rule_is_deleted_by_its_spec", 2),
+    (
+        "test_a_rule_is_held_only_by_its_tag_and_its_spec_together",
+        5,
+    ),
+    (
+        "test_a_rule_naming_no_address_is_re_asserted_even_when_held",
+        2,
+    ),
+    ("test_an_explicit_null_is_never_read_as_a_default", 4),
+    (
+        "test_an_ssh_cidr_that_is_not_an_address_cannot_prove_a_denial_safe",
+        4,
+    ),
+    ("test_an_unknown_mode_is_refused_even_without_entries", 2),
+    (
+        "test_egress_containment_is_compared_in_the_spelling_ufw_stores",
+        5,
+    ),
+    ("test_enforcing_needs_dns_out_and_a_probe", 5),
+    (
+        "test_nothing_declared_beyond_ssh_yields_only_the_ssh_allows",
+        2,
+    ),
+    (
+        "test_one_address_spelled_two_ways_is_one_rule_under_one_tag",
+        2,
+    ),
+    (
+        "test_the_audit_rule_exists_only_in_audit_mode_and_only_with_an_allowlist",
+        2,
+    ),
+    ("test_the_tag_names_the_rule_with_the_peer_last", 2),
+];
 
 /// The management prefixes the egress cases are judged against (RFC 5737 documentation ranges).
 fn mgmt() -> Value {
@@ -186,13 +229,14 @@ fn run(calls: &Calls) -> Vec<Value> {
 /// The assertions of the run, collected so one failure does not hide the next.
 #[derive(Default)]
 struct Check {
-    items: BTreeSet<String>,
+    /// Each pytest item checked, with how many checks it made.
+    items: BTreeMap<String, usize>,
     failures: Vec<String>,
 }
 
 impl Check {
     fn that(&mut self, item: &str, ok: bool, detail: impl FnOnce() -> String) {
-        self.items.insert(item.to_string());
+        *self.items.entry(item.to_string()).or_default() += 1;
         if !ok {
             self.failures.push(format!("{item}: {}", detail()));
         }
@@ -1109,26 +1153,38 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         || format!("one problem naming the CIDR: {}", r[mgmt_one]),
     );
 
-    // not broad, contains the SSH CIDR, port, proto
+    // not broad, contains the SSH CIDR, port, proto: one problem each
+    let problems = rows(&r[every_problem]);
+    let each = [
+        "names more than one address",
+        "contains or equals the SSH CIDR",
+        "`port` 0 is not one port",
+        "`proto` 'icmp' is not",
+    ];
     k.that(
         "test_every_problem_of_an_entry_is_reported_not_only_the_first",
-        rows(&r[every_problem]).len() == 4,
-        || format!("four problems: {}", r[every_problem]),
+        problems.len() == 4
+            && each.iter().all(|want| {
+                problems
+                    .iter()
+                    .any(|p| p.as_str().is_some_and(|p| p.contains(want)))
+            }),
+        || format!("one problem each for {each:?}: {}", r[every_problem]),
     );
 
     // Stored forms measured on ufw 0.36.2 (Ubuntu 24.04, 2026-11-09): `allow out to any port 443
     // proto tcp` is stored as `allow out 443/tcp`, a scoped one keeps `to ... port ... proto`, and
     // the audit rule is `allow out log to any`.
     // the SSH allow comes first
-    let after_ssh: Vec<Value> = rows(&fields(&r[allowed_order], &cts))
-        .iter()
-        .skip(1)
-        .cloned()
-        .collect();
     k.eq(
         "test_allowed_egress_comes_after_the_denials_and_the_audit_rule_last",
-        &Value::Array(after_ssh),
+        &fields(&r[allowed_order], &cts),
         &json!([
+            [
+                "allow from 192.0.2.0/24 to any port 22 proto tcp",
+                "agent-cloud:in:22/tcp:192.0.2.0/24",
+                "allow from 192.0.2.0/24 to any port 22 proto tcp"
+            ],
             [
                 "deny out to 198.51.100.1",
                 "agent-cloud:out-deny:any:198.51.100.1",
@@ -1228,4 +1284,11 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         CASES,
         "cases asserted (one per parametrized case, one per plain test)"
     );
+    let shared: Vec<(&str, usize)> = k
+        .items
+        .iter()
+        .filter(|(_, n)| **n > 1)
+        .map(|(item, n)| (item.as_str(), *n))
+        .collect();
+    assert_eq!(shared, SHARED, "checks per item asserted more than once");
 }
