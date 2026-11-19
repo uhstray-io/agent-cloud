@@ -29,6 +29,11 @@
 //! | pre-push lock: branches whose names sanitize alike do not share a lock | `branches_whose_names_sanitize_alike_do_not_share_a_lock` |
 //! | pre-push lock: the printed recovery command works for a path with spaces and quotes | `the_printed_recovery_command_works_for_a_path_with_spaces_and_quotes` |
 //! | pre-push lock: a link failure with no lock present warns and proceeds | `a_link_failure_with_no_lock_present_warns_and_proceeds` |
+//!
+//! Two cases have no BATS original: `the_recovery_command_is_the_text_after_the_last_marker` and
+//! `the_recovery_command_joins_every_marker_line` check the recovery-command reader on fixed text,
+//! because the one live case prints the marker once on a path without it, where every reading
+//! agrees.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -240,17 +245,15 @@ impl Ctx {
         format!("{}\n", self.lock_name(branch))
     }
 
-    /// No lock file may remain once the hook has exited. A missing directory holds none; any
-    /// other read error is a failure, never an empty listing.
+    /// No lock file may remain once the hook has exited. The lock directory must exist and be
+    /// readable: the original's `left=$(find "$LOCKS" -mindepth 1 2>/dev/null)` fails the test
+    /// under `set -e` when it is missing, so a missing directory is a failure here too.
     fn assert_no_locks(&self, repo: &Path) {
         let dir = self.lock_dir(repo);
-        let left: Vec<String> = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries
-                .map(|e| e.expect("a lock entry").path().display().to_string())
-                .collect(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => panic!("the lock directory {} cannot be read: {e}", dir.display()),
-        };
+        let left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("the lock directory {} cannot be read: {e}", dir.display()))
+            .map(|e| e.expect("a lock entry").path().display().to_string())
+            .collect();
         assert!(left.is_empty(), "left behind: {left:?}");
     }
 }
@@ -348,6 +351,20 @@ fn signal_term(home: &Path, pid: &str) {
         .output()
         .expect("sh starts");
     assert!(out.status.success(), "the hook could not be signalled");
+}
+
+/// The recovery command in the hook's refusal, read as the original read it:
+/// `cmd=$(printf '%s\n' "$output" | sed -n 's/.*remove the lock:  //p')`. On every line (split on
+/// `\n` alone) that holds the marker, the text after its last occurrence; the lines joined by
+/// `\n`, trailing newlines dropped as `$(...)` drops them.
+fn recovery_command(output: &str) -> String {
+    output
+        .split('\n')
+        .filter_map(|line| line.rsplit_once("remove the lock:  ").map(|(_, rest)| rest))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_end_matches('\n')
+        .to_owned()
 }
 
 /// A pid that is no longer alive: the pid of a shell that has exited.
@@ -646,13 +663,7 @@ fn the_printed_recovery_command_works_for_a_path_with_spaces_and_quotes() {
     // Act: the refusal prints a command; run exactly what the operator would paste.
     let refused = ctx.push(&repo, &[], &["feat"]);
     let shown = process::output_text(&refused);
-    // As the original's `sed -n 's/.*remove the lock:  //p'` read it: on every line (split on
-    // `\n` alone) holding the marker, the text after its last occurrence.
-    let command = shown
-        .split('\n')
-        .filter_map(|line| line.rsplit_once("remove the lock:  ").map(|(_, rest)| rest))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let command = recovery_command(&shown);
     assert!(
         !command.is_empty(),
         "no recovery command was printed: {shown}"
@@ -714,4 +725,31 @@ fn a_link_failure_with_no_lock_present_warns_and_proceeds() {
         "the hook made no lock directory"
     );
     ctx.assert_no_locks(&ctx.repo);
+}
+
+#[test]
+fn the_recovery_command_is_the_text_after_the_last_marker() {
+    // Arrange: a repository path that itself holds the marker. The expected string is what the
+    // original's sed prints for this text.
+    let shown = "PUSH REFUSED\n  If no such push is running, remove the lock:  rm -rf \
+                 '/t/x remove the lock:  y/.git/pre-push-locks/feat-1.lock'\n";
+
+    // Act
+    let command = recovery_command(shown);
+
+    // Assert
+    assert_eq!(command, "y/.git/pre-push-locks/feat-1.lock'");
+}
+
+#[test]
+fn the_recovery_command_joins_every_marker_line() {
+    // Arrange: two lines carry the marker. The expected string is what the original's sed and
+    // `$(...)` give for this text.
+    let shown = "x\na remove the lock:  one\nmid\nb remove the lock:  two\n";
+
+    // Act
+    let command = recovery_command(shown);
+
+    // Assert
+    assert_eq!(command, "one\ntwo");
 }

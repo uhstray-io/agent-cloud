@@ -3353,7 +3353,7 @@ or a bare backslash between two names (each leaves both variables set in `sh`) s
 two names; and its config read took stdout alone where `run` merges stderr into `$output`. Each
 of the three hook mutants left the old test green and turned the fixed one red.
 Round 10 found one more, in the branch-lock port: it took the text after the first recovery
-marker on the first line, where the original's `sed -n 's/.*remove the lock:  //p'` keeps the
+marker on the first line holding one, where the original's `sed -n 's/.*remove the lock:  //p'` keeps the
 text after the last marker on every line; on a repository path holding the marker the old test
 passed and the original's reading, now the port's, fails.
 
