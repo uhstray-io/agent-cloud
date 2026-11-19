@@ -2,14 +2,17 @@
 //!
 //! The cases run over inline configurations, so an edit to the repository's `areas.yml` cannot
 //! change what they prove. The tests that read the repository itself are the invariant that
-//! every suite module is listed once, the pre-commit hook that runs the commit lane, and the
-//! `testsel` and `lane.sh` runs.
+//! every suite module is listed once, the guard that every repo-wide scan outside the security
+//! set runs when a file it reads changes, the pre-commit hook that runs the commit lane, and the
+//! `testsel` and `lane.sh` runs. This module is in the security set (`areas.yml`), so the guard
+//! runs in every lane.
 
 use std::collections::BTreeSet;
 
 use agent_cloud_tests::lanes::{Config, Lane, Selection, select};
 use agent_cloud_tests::process;
 use agent_cloud_tests::repo;
+use agent_cloud_tests::text;
 use agent_cloud_tests::yaml::{self, Node};
 use proptest::prelude::*;
 use tempfile::TempDir;
@@ -34,6 +37,11 @@ areas:
 
 fn config(text: &str) -> Config {
     Config::parse(text, "inline").expect("the inline configuration parses")
+}
+
+/// The repository's own configuration: areas.yml and areas.d/.
+fn repo_config() -> Config {
+    Config::load(&repo::path("platform/tests/areas.yml")).expect("areas.yml and areas.d/ load")
 }
 
 fn secured() -> Config {
@@ -245,8 +253,7 @@ fn a_selection_renders_as_all_none_or_a_sorted_alternation() {
 
 #[test]
 fn every_suite_module_is_listed_exactly_once_in_areas_yml() {
-    let config =
-        Config::load(&repo::path("platform/tests/areas.yml")).expect("areas.yml and areas.d/ load");
+    let config = repo_config();
     // build.rs declares one module per suite/<name>.rs and records the names it compiled.
     let declared = crate::SUITE_MODULES;
 
@@ -676,4 +683,425 @@ fn the_pre_commit_configuration_runs_the_commit_lane() {
         field("stages"),
         Some(Node::Seq(vec![Node::Str("pre-commit".to_owned())]))
     );
+}
+
+/// The string literal starting at byte `i` of `src` (`"…"`, or a raw `r"…"` / `r#"…"#`), as
+/// its text and the index after it; `None` when no literal starts there. A plain literal's `\\`
+/// and `\"` are unescaped; a pathspec holds no other escape.
+fn literal_at(src: &str, i: usize) -> Option<(String, usize)> {
+    let rest = &src[i..];
+    if let Some(body) = rest.strip_prefix('"') {
+        let mut text = String::new();
+        let mut chars = body.char_indices();
+        while let Some((at, c)) = chars.next() {
+            match c {
+                '"' => return Some((text, i + 1 + at + 1)),
+                '\\' => text.extend(chars.next().map(|(_, e)| e)),
+                _ => text.push(c),
+            }
+        }
+        panic!("an unterminated string literal at byte {i}");
+    }
+    let hashes = rest
+        .strip_prefix('r')?
+        .bytes()
+        .take_while(|b| *b == b'#')
+        .count();
+    let open = 1 + hashes;
+    if rest.as_bytes().get(open) != Some(&b'"') {
+        return None;
+    }
+    let close = format!("\"{}", "#".repeat(hashes));
+    let end = rest[open + 1..]
+        .find(&close)
+        .unwrap_or_else(|| panic!("an unterminated raw string at byte {i}"));
+    Some((
+        rest[open + 1..open + 1 + end].to_owned(),
+        i + open + 1 + end + close.len(),
+    ))
+}
+
+/// The index after the comment starting at byte `i`, or `None` when none starts there. Block
+/// comments nest, as in Rust: an inner `*/` does not end the outer one.
+fn comment_end(src: &str, i: usize) -> Option<usize> {
+    let rest = &src[i..];
+    if rest.starts_with("//") {
+        return Some(rest.find('\n').map_or(src.len(), |n| i + n));
+    }
+    if !rest.starts_with("/*") {
+        return None;
+    }
+    let (mut depth, mut j) = (0, 0);
+    while j < rest.len() {
+        if rest[j..].starts_with("/*") {
+            depth += 1;
+            j += 2;
+        } else if rest[j..].starts_with("*/") {
+            depth -= 1;
+            j += 2;
+            if depth == 0 {
+                return Some(i + j);
+            }
+        } else {
+            j += rest[j..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    panic!("an unclosed block comment at byte {i}");
+}
+
+/// The index after the char literal starting at byte `i` (`'"'`, `'\''`), or `None` when none
+/// starts there; a lifetime (`'a`) is not one.
+fn char_end(src: &str, i: usize) -> Option<usize> {
+    let rest = src[i..].strip_prefix('\'')?;
+    if rest.starts_with('\\') {
+        return Some(i + 3 + rest[2..].find('\'')? + 1);
+    }
+    let c = rest.chars().next()?;
+    rest[c.len_utf8()..]
+        .starts_with('\'')
+        .then(|| i + 1 + c.len_utf8() + 1)
+}
+
+/// The index after the comment, char literal or string literal starting at byte `i`, or
+/// `None` when none starts there.
+fn skip_at(src: &str, i: usize) -> Option<usize> {
+    comment_end(src, i)
+        .or_else(|| char_end(src, i))
+        .or_else(|| literal_at(src, i).map(|(_, end)| end))
+}
+
+/// The top-level arguments of the call whose `(` is at byte `open`, as source slices.
+fn call_args(src: &str, open: usize) -> Vec<&str> {
+    let (mut depth, mut start, mut i) = (0, open + 1, open + 1);
+    let mut args = vec![];
+    while i < src.len() {
+        if let Some(end) = skip_at(src, i) {
+            i = end;
+            continue;
+        }
+        match src.as_bytes()[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' if depth == 0 => {
+                args.push(&src[start..i]);
+                return args;
+            }
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => {
+                args.push(&src[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += src[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    panic!("an unclosed call at byte {open}");
+}
+
+/// The byte where `const NAME:` or `static NAME:` starts in the code of `src` (comments and
+/// literals skipped, so a doc comment quoting it does not count). A name defined twice, in two
+/// scopes, cannot be told apart without parsing them, so it is an error, as is no definition.
+fn definition(src: &str, name: &str) -> Result<usize, String> {
+    let heads = [format!("const {name}:"), format!("static {name}:")];
+    let mut found = None;
+    let mut i = 0;
+    while i < src.len() {
+        if let Some(end) = skip_at(src, i) {
+            i = end;
+            continue;
+        }
+        if !src[..i].ends_with(is_ident)
+            && heads.iter().any(|head| src[i..].starts_with(head.as_str()))
+            && found.replace(i).is_some()
+        {
+            return Err(format!("`{name}` is defined twice in this file"));
+        }
+        i += src[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    found.ok_or_else(|| format!("`{name}` is not a const or static of this file"))
+}
+
+/// The string literals of `expr`, which may hold only literals, constants defined in `src`,
+/// `&`, `[`, `]`, `,`, whitespace and comments. Anything else (a variable, a call, a macro)
+/// cannot be read without running the code, so it is an error.
+fn literals_of(expr: &str, src: &str) -> Result<Vec<String>, String> {
+    let mut out = vec![];
+    let mut i = 0;
+    while i < expr.len() {
+        if let Some(end) = comment_end(expr, i) {
+            i = end;
+        } else if let Some((text, end)) = literal_at(expr, i) {
+            out.push(text);
+            i = end;
+        } else if expr[i..].starts_with(|c: char| c.is_ascii_uppercase()) {
+            let name: String = expr[i..]
+                .chars()
+                .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_')
+                .collect();
+            i += name.len();
+            let def = definition(src, &name)?;
+            let eq = def + src[def..].find('=').ok_or("a constant without `=`")?;
+            let mut end = eq + 1;
+            while !src[end..].starts_with(';') {
+                end = skip_at(src, end)
+                    .unwrap_or_else(|| end + src[end..].chars().next().map_or(1, char::len_utf8));
+            }
+            out.extend(literals_of(&src[eq + 1..end], src)?);
+        } else if expr[i..].starts_with(|c: char| c.is_whitespace() || "&[],".contains(c)) {
+            i += expr[i..].chars().next().map_or(1, char::len_utf8);
+        } else {
+            return Err(format!("`{}` is not a literal or a constant", expr.trim()));
+        }
+    }
+    Ok(out)
+}
+
+/// A character that continues an identifier.
+fn is_ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// The first byte at or after `i` that is neither whitespace nor in a comment.
+fn skip_trivia(src: &str, mut i: usize) -> usize {
+    loop {
+        if let Some(end) = comment_end(src, i) {
+            i = end;
+        } else if let Some(c) = src[i..].chars().next().filter(|c| c.is_whitespace()) {
+            i += c.len_utf8();
+        } else {
+            return i;
+        }
+    }
+}
+
+/// When a call to `repo::grep` or `repo::ls_files` starts at byte `i`, its name, the index of
+/// the argument holding its pathspecs, and the byte of its `(`. Rust allows whitespace and
+/// comments between the path's tokens and before the `(`, and a raw name (`r#grep`).
+fn scan_call_at(src: &str, i: usize) -> Option<(&'static str, usize, usize)> {
+    // `::` must follow `repo`, and `(` must follow the name (comments and whitespace aside). That
+    // alone rejects `repository::` and `grep_in(`; the check before `repo` keeps `my_repo::grep`
+    // out.
+    if src[..i].ends_with(is_ident) || !src[i..].starts_with("repo") {
+        return None;
+    }
+    let colons = skip_trivia(src, i + "repo".len());
+    src[colons..].strip_prefix("::")?;
+    let mut name_at = skip_trivia(src, colons + 2);
+    if src[name_at..].starts_with("r#") {
+        name_at += 2;
+    }
+    let (name, arg) = [("grep", 1), ("ls_files", 0)]
+        .into_iter()
+        .find(|(name, _)| src[name_at..].starts_with(name))?;
+    let open = skip_trivia(src, name_at + name.len());
+    src[open..].starts_with('(').then_some((name, arg, open))
+}
+
+/// Every `repo::grep(pattern, pathspecs)` and `repo::ls_files(pathspecs)` call in the code of
+/// `src` (comments and string literals skipped), as its line and its pathspecs.
+fn repo_wide_scans(src: &str) -> Result<Vec<(usize, Vec<String>)>, String> {
+    let mut scans = vec![];
+    let mut i = 0;
+    while i < src.len() {
+        if let Some(end) = skip_at(src, i) {
+            i = end;
+            continue;
+        }
+        if let Some((name, arg, open)) = scan_call_at(src, i) {
+            let line = src[..i].matches('\n').count() + 1;
+            let args = call_args(src, open);
+            let specs = args
+                .get(arg)
+                .ok_or_else(|| format!("line {line}: `repo::{name}` without its pathspecs"))?;
+            scans.push((
+                line,
+                literals_of(specs, src).map_err(|e| format!("line {line}: {e}"))?,
+            ));
+            i = open;
+        }
+        i += src[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    Ok(scans)
+}
+
+#[test]
+fn repo_wide_scans_reads_literals_constants_and_skips_comments_and_strings() {
+    // Arrange: a pattern holding a paren and a comma; a constant list with an exclusion, after a
+    // constant whose name it prefixes and a doc comment that quotes it; char literals of a quote
+    // and a paren; a scan named only in a comment, in a string and in a raw string holding an
+    // unpaired quote; a non-ASCII name in code; a lookalike function; a nested block comment whose
+    // inner `*/` does not end it; a comment between a callee and its `(`, and before and after the
+    // path's `::`; and a raw name.
+    let src = r##"
+/// `const SPECS: [&str; 1] = ["decoy"];` in a doc comment is not the definition.
+const SPECS_2: [&str; 1] = ["wrong"];
+const SPECS: [&str; 2] = [":(glob)platform/**/*.yml", ":!platform/x.yml"];
+fn f() {
+    let (q, p) = ('"', '(');
+    let raw = r#"a " repo::grep("x", &["raw"])"#;
+    let café = 1;
+    // repo::grep("no", &["comment"])
+    let s = "repo::ls_files(&[\"string\"])";
+    my_repo::grep("no", &["lookalike"]);
+    repo::grep(r"a(b, c", &["platform", "agents"]);
+    repo::ls_files(&SPECS);
+    /* outer /* inner */ repo::grep("no", &["nested"]); // */ repo::ls_files(&["after"]);
+    repo::ls_files /* files */ (&["spaced"]);
+    repo::grep_in(dir, "no", &["boundary"]);
+    repo/* c */::grep("x", &["inpath"]);
+    repo::r#ls_files(&["raw"]);
+    repo:: /* c */ r#grep("x", &["afterpath"]);
+    repository::grep("no", &["prefix"]);
+}
+"##;
+
+    // Act
+    let scans = repo_wide_scans(src).expect("the scans read");
+
+    // Assert
+    assert_eq!(
+        scans,
+        [
+            (12, vec!["platform".to_owned(), "agents".to_owned()]),
+            (
+                13,
+                vec![
+                    ":(glob)platform/**/*.yml".to_owned(),
+                    ":!platform/x.yml".to_owned()
+                ]
+            ),
+            (14, vec!["after".to_owned()]),
+            (15, vec!["spaced".to_owned()]),
+            (17, vec!["inpath".to_owned()]),
+            (18, vec!["raw".to_owned()]),
+            (19, vec!["afterpath".to_owned()]),
+        ]
+    );
+}
+
+#[test]
+fn repo_wide_scans_refuses_a_constant_defined_twice() {
+    // Arrange: one name in two scopes.
+    let src = "const S: [&str; 1] = [\"outer\"];\nfn f() { const S: [&str; 1] = [\"inner\"]; repo::ls_files(&S); }";
+
+    // Act
+    let refusal = repo_wide_scans(src).expect_err("a refusal");
+
+    // Assert
+    assert!(refusal.contains("`S` is defined twice"), "{refusal}");
+}
+
+#[test]
+fn repo_wide_scans_refuses_a_pathspec_it_cannot_read() {
+    // Arrange: a pathspec list held in a variable, a non-ASCII name in a call's arguments, and
+    // one in a constant's value; each is refused by name, never a panic.
+    let cases = [
+        ("fn f(dirs: &[&str]) { repo::grep(\"x\", dirs); }", "`dirs`"),
+        ("fn f() { repo::grep(\"x\", café); }", "`café`"),
+        (
+            "const S: [&str; 1] = [café];\nfn f() { repo::ls_files(&S); }",
+            "`[café]`",
+        ),
+    ];
+
+    for (src, name) in cases {
+        // Act
+        let refusal = repo_wide_scans(src).expect_err("a refusal");
+
+        // Assert
+        assert!(
+            refusal.contains(&format!("{name} is not a literal")),
+            "{refusal}"
+        );
+    }
+}
+
+/// The scans in `src` (module `module`, file `rel`) whose files do not all select the module in
+/// the push lane under `config`, as one line each, and how many scans it read.
+fn unselected_scans(config: &Config, module: &str, rel: &str, src: &str) -> (usize, Vec<String>) {
+    let scans = repo_wide_scans(src).unwrap_or_else(|e| panic!("{rel}: {e}"));
+    let mut problems = vec![];
+    for (line, specs) in &scans {
+        let specs: Vec<&str> = specs.iter().map(String::as_str).collect();
+        let files = repo::ls_files(&specs);
+        assert!(
+            !files.is_empty(),
+            "{rel}:{line}: {specs:?} cover no tracked file"
+        );
+        let missed: Vec<String> = files
+            .into_iter()
+            .filter(
+                |file| match select(config, Lane::Push, std::slice::from_ref(file)) {
+                    Selection::All => false,
+                    Selection::Modules(selected) => !selected.contains(module),
+                },
+            )
+            .collect();
+        if !missed.is_empty() {
+            problems.push(format!(
+                "{rel}:{line} scans {} file(s) whose change does not select {module}, e.g. {}",
+                missed.len(),
+                missed[..missed.len().min(3)].join(", ")
+            ));
+        }
+    }
+    (scans.len(), problems)
+}
+
+#[test]
+fn a_scan_beyond_its_area_is_reported_and_one_within_it_is_not() {
+    // Arrange: BASE's `common_sh` area claims platform/lib/common.sh only, and its
+    // `restart_policy` area claims the compose files.
+    let config = config(BASE);
+    let within = r#"fn t() { repo::grep("x", &[":(glob)platform/**/*compose*.yml"]); }"#;
+    let beyond = r#"fn t() { repo::grep("x", &["platform/lib/common.sh", ":(glob)platform/**/*compose*.yml"]); }"#;
+
+    // Act
+    let (_, as_restart_policy) = unselected_scans(&config, "restart_policy", "inline.rs", within);
+    let (scans, as_common_sh) = unselected_scans(&config, "common_sh", "inline.rs", beyond);
+
+    // Assert
+    assert!(as_restart_policy.is_empty(), "{as_restart_policy:?}");
+    assert_eq!(scans, 1);
+    assert_eq!(as_common_sh.len(), 1, "{as_common_sh:?}");
+    assert!(
+        as_common_sh[0].starts_with("inline.rs:1 scans ")
+            && as_common_sh[0].contains("whose change does not select common_sh"),
+        "{as_common_sh:?}"
+    );
+}
+
+/// A module outside the security set runs only when a change selects its area. A scan that
+/// reads files outside the area's paths would then be skipped by a change that adds an
+/// offender there, wherever another area claims that file. So every file such a scan reads must
+/// select the module in the push lane: by its area, by `full`, or by being unclassified (which
+/// runs everything). A static module that scans beyond its area belongs in `always`
+/// (areas.d/README.md).
+#[test]
+fn every_repo_wide_scan_runs_when_a_file_it_reads_changes() {
+    // Arrange
+    let config = repo_config();
+    let Selection::Modules(always) = select(&config, Lane::Push, &[]) else {
+        panic!("an empty change selects the security set, not everything");
+    };
+
+    // Act
+    let mut scans = 0;
+    let mut problems = vec![];
+    for module in crate::SUITE_MODULES {
+        if always.contains(*module) {
+            continue;
+        }
+        let rel = format!("platform/tests/suite/{module}.rs");
+        let src = text::read(&rel);
+        let (read, found) = unselected_scans(&config, module, &rel, &src);
+        scans += read;
+        problems.extend(found);
+    }
+
+    // Assert
+    assert!(
+        scans > 0,
+        "no repo-wide scan outside the security set; the reader is broken"
+    );
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
 }

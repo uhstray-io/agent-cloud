@@ -1,0 +1,4 @@
+# Port group postiz (plan 24, AC-967): the three docs/MISTAKES.md citations of the deleted test_service_postiz.bats.
+2.2 platform/tests/test_service_postiz.bats # ported (plan 24, AC-967), BATS file deleted; replaced by suite/service_postiz.rs::seed_playbook_uses_the_shared_cleartext_guard
+2.19 platform/tests/test_service_postiz.bats # ported (plan 24, AC-967), BATS file deleted; replaced by suite/service_postiz.rs::app_healthcheck_probes_the_backend_path
+10.1 platform/tests/test_service_postiz.bats # ported (plan 24, AC-967), BATS file deleted; replaced by suite/service_postiz.rs::mounted_app_config_is_actually_loaded

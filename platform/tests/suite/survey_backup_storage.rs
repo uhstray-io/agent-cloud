@@ -1,6 +1,7 @@
 //! The backup-storage survey's helper, `platform/playbooks/files/survey_backup_storage.py` (cli tier):
 //! the planner's storage selection, and the receipt sections that read the newest archive per guest,
-//! CephFS filesystem sharing and pools, and each online node's disks.
+//! CephFS filesystem sharing and pools, each Ceph OSD's fill and the cluster's health codes, and each
+//! online node's disks.
 //!
 //! Each test runs the helper on a hand-written payload with the shape the playbook's summarize task
 //! sends, and asserts on its stdout text. Where the receipt must never print a value, the payload
@@ -173,11 +174,17 @@ fn a_disks_serial_prints_and_its_wwn_and_health_never_do() {
     // Act
     let out = summarize(payload);
 
-    // Assert: the serial is in the receipt; the WWN and health are absent, by value and by key.
+    // Assert: the serial is in the receipt; the WWN and health are absent, by value and by key. The `health`
+    // key is the Ceph section's, so the key is checked within the disks alone.
     assert!(out.contains(r#""serial": "SERIAL-C1""#), "{out}");
-    for absent in ["WWN-SENTINEL", "HEALTH-SENTINEL", r#""wwn""#, r#""health""#] {
+    for absent in ["WWN-SENTINEL", "HEALTH-SENTINEL", r#""wwn""#] {
         assert!(!out.contains(absent), "{absent} printed: {out}");
     }
+    let receipt_value: Value = serde_json::from_str(&out).expect("the receipt is JSON");
+    assert!(
+        !receipt_value["disks"].to_string().contains(r#""health""#),
+        "{out}"
+    );
 }
 
 /// Runs the helper in `mode` (`plan` or `summarize`) on a JSON payload and returns the whole process output, whatever the exit code.
@@ -497,6 +504,38 @@ fn the_planner_reads_no_disabled_storage_even_when_its_status_row_says_active() 
 }
 
 #[test]
+fn a_content_read_or_prune_preview_that_answers_200_without_a_list_refuses_the_survey() {
+    // Arrange: one storage whose content read, or whose one prune preview, answers 200 with no data list.
+    let (plan, content) = cephfs_read("backups", 0);
+    let prune = json!({"item": [{"node": "n1", "storage": "backups"}, "keep-last=1"], "status": 200,
+                       "json": {"data": []}});
+    for (what, mut content, mut prune) in [
+        ("content", content.clone(), prune.clone()),
+        ("prune preview", content, prune),
+    ] {
+        let target = if what == "content" {
+            &mut content
+        } else {
+            &mut prune
+        };
+        target["json"] = json!({"data": null});
+        let payload = json!({
+            "plan": {"reads": [plan.clone()]}, "vms": [], "storage_config": [], "jobs": [],
+            "content_reads": [content], "prune_reads": [prune]
+        });
+
+        // Act
+        let text = refusal(&payload);
+
+        // Assert
+        assert!(
+            text.contains(&format!("no {what} list for storage backups")),
+            "{text}"
+        );
+    }
+}
+
+#[test]
 fn a_disk_listing_that_answers_200_without_a_list_refuses_the_survey() {
     // Arrange: n1 answers 200 with no data list. That is not a disk list, so nothing is summarized.
     let payload = json!({
@@ -510,4 +549,307 @@ fn a_disk_listing_that_answers_200_without_a_list_refuses_the_survey() {
 
     // Assert
     assert!(text.contains("no disk list for node n1"), "{text}");
+}
+
+/// The OSD tree read of the capacity pair: `status` and the body's `data` (unread when the status is not 200).
+fn osd_read(status: u16, data: Value) -> Value {
+    json!({"item": "nodes/pve1/ceph/osd", "status": status, "json": {"data": data}})
+}
+
+/// The cluster-status read of the capacity pair, shaped as `osd_read` is.
+fn status_read(status: u16, data: Value) -> Value {
+    json!({"item": "cluster/ceph/status", "status": status, "json": {"data": data}})
+}
+
+/// Two hosts, three OSDs. osd.1 carries no `host` field, so its host is the host bucket above it. Each leaf
+/// carries `blfsdev`, a device path that must never print. Raw JSON, since the sizes exceed i32.
+fn ceph_tree() -> Value {
+    serde_json::from_str(
+        r#"{"root": {"type": "root", "name": "default", "id": -1, "leaf": 0, "children": [
+            {"type": "host", "name": "pve1", "id": -2, "children": [
+                {"type": "osd", "name": "osd.0", "id": 0, "leaf": 1, "host": "pve1", "device_class": "hdd",
+                 "status": "up", "in": 1, "blfsdev": "/dev/SENTINEL-DEV",
+                 "total_space": 107374182400, "bytes_used": 53687091200, "percent_used": 50.0, "ceph_version_short": "18.2"},
+                {"type": "osd", "name": "osd.1", "id": 1, "leaf": 1, "device_class": "hdd",
+                 "status": "up", "in": 1, "blfsdev": "/dev/SENTINEL-DEV",
+                 "total_space": 214748364800, "bytes_used": 161061273600, "percent_used": 75.0, "ceph_version_short": "18.2"}
+            ]},
+            {"type": "host", "name": "pve2", "id": -3, "children": [
+                {"type": "osd", "name": "osd.2", "id": 2, "leaf": 1, "host": "pve2", "device_class": "ssd",
+                 "status": "up", "in": 1, "blfsdev": "/dev/SENTINEL-DEV",
+                 "total_space": 107374182400, "bytes_used": 21474836480, "percent_used": 20.0, "ceph_version_short": "18.2"}
+            ]}
+        ]}, "flags": "noout,norebalance"}"#,
+    )
+    .expect("the fixture is JSON")
+}
+
+/// The cluster status: a health detail with two checks, one carrying a message, and a monitor map. The
+/// message and the addresses are sentinels that must never print.
+fn ceph_status() -> Value {
+    serde_json::from_str(
+        r#"{"health": {"status": "HEALTH_WARN", "checks": {
+            "POOL_FULL": {"severity": "HEALTH_ERR", "summary": {"message": "SENTINEL-MSG"}},
+            "OSD_NEARFULL": {"severity": "HEALTH_WARN", "summary": {"message": "SENTINEL-MSG"}}}},
+            "monmap": {"mons": [{"addr": "SENTINEL-ADDR"}]}}"#,
+    )
+    .expect("the fixture is JSON")
+}
+
+/// A payload with one own CephFS storage, so the capacity reads apply, and the two capacity reads given.
+fn capacity_payload(osd: Value, status: Value) -> Value {
+    json!({
+        "plan": {"reads": []}, "vms": [], "jobs": [], "content_reads": [], "prune_reads": [],
+        "storage_config": [{"storage": "cephA", "type": "cephfs", "content": "backup"}],
+        "ceph_capacity_reads": [osd, status]
+    })
+}
+
+#[test]
+fn a_ceph_osd_tree_reports_each_osds_fill_its_host_totals_the_fullest_osd_and_the_health_codes() {
+    // Arrange: osd.1 gets its host from the host bucket above it, not from a field of its own.
+    let payload = capacity_payload(osd_read(200, ceph_tree()), status_read(200, ceph_status()));
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: each OSD in id order, each host in name order, the fullest OSD, the health codes with severity
+    // (no message), and the flags split on the comma.
+    assert_eq!(
+        out["ceph_capacity"],
+        json!({
+            "status": "read", "reason": null,
+            "osds": [
+                {"osd": 0, "name": "osd.0", "host": "pve1", "device_class": "hdd", "status": "up", "in": 1,
+                 "total_gib": 100.0, "used_gib": 50.0, "percent_used": 50.0, "version": "18.2"},
+                {"osd": 1, "name": "osd.1", "host": "pve1", "device_class": "hdd", "status": "up", "in": 1,
+                 "total_gib": 200.0, "used_gib": 150.0, "percent_used": 75.0, "version": "18.2"},
+                {"osd": 2, "name": "osd.2", "host": "pve2", "device_class": "ssd", "status": "up", "in": 1,
+                 "total_gib": 100.0, "used_gib": 20.0, "percent_used": 20.0, "version": "18.2"}
+            ],
+            "hosts": [
+                {"host": "pve1", "osds": 2, "total_gib": 300.0, "used_gib": 200.0, "percent_used": 66.7},
+                {"host": "pve2", "osds": 1, "total_gib": 100.0, "used_gib": 20.0, "percent_used": 20.0}
+            ],
+            "fullest_osd": {"osd": 1, "host": "pve1", "percent_used": 75.0},
+            "health": {"status": "HEALTH_WARN", "checks": [
+                {"code": "OSD_NEARFULL", "severity": "HEALTH_WARN"},
+                {"code": "POOL_FULL", "severity": "HEALTH_ERR"}
+            ]},
+            "flags": ["noout", "norebalance"]
+        }),
+        "{out}"
+    );
+}
+
+#[test]
+fn an_osd_without_usage_reports_its_fill_as_null_not_zero_and_its_host_percent_null() {
+    // Arrange: osd.2, alone on pve2, has no total_space, bytes_used or percent_used (Ceph reported none).
+    let mut tree = ceph_tree();
+    let osd2 = &mut tree["root"]["children"][1]["children"][0];
+    for key in ["total_space", "bytes_used", "percent_used"] {
+        osd2.as_object_mut().expect("an OSD object").remove(key);
+    }
+    let payload = capacity_payload(osd_read(200, tree), status_read(200, ceph_status()));
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: osd.2's fill and pve2's totals are null (absent usage is unknown, never 0); pve1 is unchanged.
+    assert_eq!(
+        out["ceph_capacity"]["osds"][2],
+        json!({"osd": 2, "name": "osd.2", "host": "pve2", "device_class": "ssd", "status": "up", "in": 1,
+               "total_gib": null, "used_gib": null, "percent_used": null, "version": "18.2"}),
+        "{out}"
+    );
+    assert_eq!(
+        out["ceph_capacity"]["hosts"][1],
+        json!({"host": "pve2", "osds": 1, "total_gib": null, "used_gib": null, "percent_used": null}),
+        "{out}"
+    );
+    assert_eq!(
+        out["ceph_capacity"]["hosts"][0],
+        json!({"host": "pve1", "osds": 2, "total_gib": 300.0, "used_gib": 200.0, "percent_used": 66.7}),
+        "{out}"
+    );
+    assert_eq!(
+        out["ceph_capacity"]["fullest_osd"],
+        json!({"osd": 1, "host": "pve1", "percent_used": 75.0}),
+        "{out}"
+    );
+}
+
+#[test]
+fn the_fullest_osd_is_chosen_by_its_unrounded_fill() {
+    // Arrange: osd.0 at 75.01 and osd.1 at 75.04 both print as 75.0; osd.1 is the fuller one.
+    let mut tree = ceph_tree();
+    tree["root"]["children"][0]["children"][0]["percent_used"] = json!(75.01);
+    tree["root"]["children"][0]["children"][1]["percent_used"] = json!(75.04);
+    let payload = capacity_payload(osd_read(200, tree), status_read(200, ceph_status()));
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: osd.1 is chosen, not the lower id, and its fill is printed rounded.
+    assert_eq!(
+        out["ceph_capacity"]["fullest_osd"],
+        json!({"osd": 1, "host": "pve1", "percent_used": 75.0}),
+        "{out}"
+    );
+}
+
+#[test]
+fn osds_with_the_same_unrounded_fill_give_the_fullest_to_the_lower_id() {
+    // Arrange: osd.0 and osd.1 both at exactly 75.04.
+    let mut tree = ceph_tree();
+    tree["root"]["children"][0]["children"][0]["percent_used"] = json!(75.04);
+    tree["root"]["children"][0]["children"][1]["percent_used"] = json!(75.04);
+    let payload = capacity_payload(osd_read(200, tree), status_read(200, ceph_status()));
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: the tie goes to osd.0.
+    assert_eq!(
+        out["ceph_capacity"]["fullest_osd"],
+        json!({"osd": 0, "host": "pve1", "percent_used": 75.0}),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_403_on_the_osd_tree_is_unavailable_with_its_privilege_and_the_health_still_reads() {
+    // Arrange: the OSD tree answers 403; the cluster status answers 200.
+    let payload = capacity_payload(osd_read(403, Value::Null), status_read(200, ceph_status()));
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: unavailable with the privilege named, no OSD or host invented, the health from the status read.
+    assert_eq!(
+        out["ceph_capacity"],
+        json!({
+            "status": "unavailable", "reason": "HTTP 403: needs Sys.Audit or Datastore.Audit on /",
+            "osds": [], "hosts": [], "fullest_osd": null,
+            "health": {"status": "HEALTH_WARN", "checks": [
+                {"code": "OSD_NEARFULL", "severity": "HEALTH_WARN"},
+                {"code": "POOL_FULL", "severity": "HEALTH_ERR"}
+            ]},
+            "flags": []
+        }),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_cluster_with_no_own_cephfs_storage_does_not_read_its_capacity() {
+    // Arrange: the only CephFS storage has a monitor list, so it is another cluster's and the capacity is not read.
+    let mut payload = capacity_payload(osd_read(200, ceph_tree()), status_read(200, ceph_status()));
+    payload["storage_config"] = json!([
+        {"storage": "cephExt", "type": "cephfs", "content": "backup", "monhost": "MONHOST-SENTINEL"}
+    ]);
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: not read, with the reason, and the monitor address never prints.
+    assert_eq!(
+        out["ceph_capacity"],
+        json!({"status": "not read", "reason": "no CephFS storage on this cluster's own Ceph",
+               "osds": [], "hosts": [], "fullest_osd": null, "health": null, "flags": []}),
+        "{out}"
+    );
+    assert!(!out.to_string().contains("MONHOST-SENTINEL"), "{out}");
+}
+
+#[test]
+fn skipped_capacity_reads_are_not_read() {
+    // Arrange: the playbook skipped both reads (its gate was off), so each carries "skipped" and no body.
+    let mut payload = capacity_payload(osd_read(200, ceph_tree()), status_read(200, ceph_status()));
+    payload["ceph_capacity_reads"] = json!([
+        {"item": "nodes/pve1/ceph/osd", "skipped": true},
+        {"item": "cluster/ceph/status", "skipped": true}
+    ]);
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert
+    assert_eq!(
+        out["ceph_capacity"],
+        json!({"status": "not read", "reason": "the Ceph OSD tree and health were not read",
+               "osds": [], "hosts": [], "fullest_osd": null, "health": null, "flags": []}),
+        "{out}"
+    );
+}
+
+#[test]
+fn an_osd_tree_without_a_root_refuses_the_survey() {
+    // Arrange: the OSD read answers 200 with a body that has no root bucket, so no tree can be summarized.
+    let payload = capacity_payload(
+        osd_read(200, json!({"flags": "noout"})),
+        status_read(200, ceph_status()),
+    );
+
+    // Act
+    let text = refusal(&payload);
+
+    // Assert
+    assert_eq!(
+        text,
+        "Proxmox returned no Ceph OSD tree; nothing was summarized."
+    );
+}
+
+#[test]
+fn a_cluster_status_without_data_refuses_the_survey() {
+    // Arrange: the status read answers 200 with no data object.
+    let payload = capacity_payload(osd_read(200, ceph_tree()), status_read(200, Value::Null));
+
+    // Act
+    let text = refusal(&payload);
+
+    // Assert
+    assert_eq!(
+        text,
+        "Proxmox returned no Ceph status; nothing was summarized."
+    );
+}
+
+#[test]
+fn ceph_sentinels_never_print_the_device_path_the_check_message_or_the_monitor_map() {
+    // Arrange: the tree, the check messages and the monitor map all carry sentinel values.
+    let payload = capacity_payload(osd_read(200, ceph_tree()), status_read(200, ceph_status()));
+
+    // Act
+    let text = receipt(&payload).to_string();
+
+    // Assert: the sentinel values, and the keys that would carry them, are absent.
+    for absent in ["SENTINEL", "blfsdev", "monmap", "mgrmap", "summary", "mons"] {
+        assert!(!text.contains(absent), "{absent} printed: {text}");
+    }
+}
+
+#[test]
+fn a_tree_without_flags_has_no_flags_and_a_status_without_checks_has_null_checks() {
+    // Arrange: no flags on the tree; a health detail that carries a status but no check list.
+    let mut tree = ceph_tree();
+    tree.as_object_mut()
+        .expect("the tree is an object")
+        .remove("flags");
+    let payload = capacity_payload(
+        osd_read(200, tree),
+        status_read(200, json!({"health": {"status": "HEALTH_OK"}})),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert
+    assert_eq!(out["ceph_capacity"]["flags"], json!([]), "{out}");
+    assert_eq!(
+        out["ceph_capacity"]["health"],
+        json!({"status": "HEALTH_OK", "checks": null}),
+        "{out}"
+    );
 }
