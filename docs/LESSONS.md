@@ -51,3 +51,9 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1206 (AC-856).
 - **DERIVED:** A vmid that this cluster does not know is "gone" only on a storage no other cluster can write to: node-local storage, or CephFS on this cluster's own Ceph (no monitor list). On shared NFS, CIFS, PBS or an external CephFS the vmid may be another cluster's guest, and a storage whose sharing is unknown counts as shared. Work that deletes by "guest no longer exists" restricts itself the same way, or needs the operator to declare each pair. That no client outside this cluster's storage configuration mounts its own CephFS comes from the operator (operator, 2026-11-18), not from a Proxmox or Ceph read: no read the run makes shows such a mount, so the work states it as an assumption the operator confirms.
 - **APPLIES TO:** playbooks that remove or prune Proxmox volumes because their guest is missing.
+
+### L-009 · 2026-11-18 · tests
+
+- **ACCEPTED:** #1204 (AC-972).
+- **DERIVED:** A guard that recognises a whole template expression by regex anchors both ends and refuses, in any free-form tail, every character that could open another expression or call: `{`, `}`, `(` and `)`. Refusing only the braces lets `lookup(..., x) | default('literal', true)` pass as the lookup alone, because the filter's call sits inside the tail. Each refused character has a fixture that must fail.
+- **APPLIES TO:** regex-based checks in `platform/tests/suite/` that accept a templated value only when it is exactly one expression (store lookups, guard bindings).
