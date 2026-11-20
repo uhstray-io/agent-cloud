@@ -52,8 +52,10 @@ given the repository root, a call through a function value, or a directory walk.
   exception table lists it. It reads the real file, so it also asks for the extra-var guard import
   that the test harness drops; that over-selection is accepted.
 - `every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes`: `ansible.cfg` and every
-  tracked path its `[defaults]` values name (the filter and callback plugin directories today)
-  select every playbook-tier module. A line in a form its reader does not take fails the test.
+  tracked path its `[defaults]` and `[DEFAULT]` values name (the filter and callback plugin
+  directories today) select every playbook-tier module. A line or a path in a form its reader does
+  not take, or a path that names no tracked file, fails the test; a value with no `/` is a setting
+  and is not read.
 
 Still not checked: a path built at run time, a read through a variable or a function value, a
 constant defined twice, `repo::playbook_files()`, a directory walk other than `repo::grep` and

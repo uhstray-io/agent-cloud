@@ -1150,9 +1150,10 @@ fn unselected_reads(
     let mut count = 0;
     let mut problems = vec![];
     for (line, literals) in path_reads(src) {
-        for file in literals.iter().filter(|l| tracked.contains(*l)) {
+        let files = literals.iter().filter_map(|l| normalise("", l));
+        for file in files.filter(|f| tracked.contains(f)) {
             count += 1;
-            if !selects(config, module, file) {
+            if !selects(config, module, &file) {
                 problems.push(format!(
                     "{rel}:{line} reads {file}, whose change does not select {module}"
                 ));
@@ -1218,7 +1219,7 @@ fn a_read_beyond_its_area_is_reported_and_one_within_it_is_not() {
         .map(str::to_owned)
         .into();
     let within = r#"fn t() { text::read("platform/lib/common.sh"); f("untracked.txt"); }"#;
-    let beyond = format!(r#"fn t() {{ text::read("{compose}"); }}"#);
+    let beyond = format!(r#"fn t() {{ text::read("{compose}"); text::read("./{compose}"); }}"#);
 
     // Act
     let (read, ok) = unselected_reads(&config, "common_sh", "inline.rs", within, &tracked);
@@ -1227,12 +1228,8 @@ fn a_read_beyond_its_area_is_reported_and_one_within_it_is_not() {
     // Assert
     assert_eq!(read, 1);
     assert!(ok.is_empty(), "{ok:?}");
-    assert_eq!(
-        bad,
-        [format!(
-            "inline.rs:1 reads {compose}, whose change does not select common_sh"
-        )]
-    );
+    let message = format!("inline.rs:1 reads {compose}, whose change does not select common_sh");
+    assert_eq!(bad, [message.clone(), message]);
 }
 
 /// `check` (module, its source file, the source) summed over every suite module outside the
@@ -1362,11 +1359,12 @@ fn a_playbook_module_unselected_by_a_loaded_file_is_reported() {
     assert!(none.is_empty(), "{none:?}");
 }
 
-/// The tracked files the `[defaults]` values of the ansible.cfg text `cfg` name (`./` dropped, `:`
-/// between paths): a run loads what a value names, whatever its key (`*_plugins`, `library`,
-/// `roles_path`). A line that is not blank, a comment, a section or `key = value` (no `:` in the
-/// key, no comment after the value) is refused, so a form this reader does not take fails the
-/// test instead of dropping a path.
+/// The tracked files the `[defaults]` and `[DEFAULT]` values of the ansible.cfg text `cfg` name
+/// (`:` between paths): a run loads what a value names, whatever its key (`*_plugins`, `library`,
+/// `roles_path`). A value holding no `/` and not `.` is a setting, not a path, and is not read. A
+/// line that is not blank, a comment, a section or `key = value` (no `:` in the key) is refused,
+/// and so is an absolute path or one that names no tracked file (a comment after it, `~`, `$`),
+/// so a form this reader does not take fails the test instead of dropping a path.
 fn cfg_paths(cfg: &str, tracked: &BTreeSet<String>) -> Vec<String> {
     let mut section = "";
     let mut paths = vec![];
@@ -1378,16 +1376,28 @@ fn cfg_paths(cfg: &str, tracked: &BTreeSet<String>) -> Vec<String> {
             section = name;
             continue;
         }
-        let Some((_, value)) = line
-            .split_once('=')
-            .filter(|(key, value)| !key.contains(':') && !value.contains(['#', ';']))
-        else {
+        let Some((_, value)) = line.split_once('=').filter(|(key, _)| !key.contains(':')) else {
             panic!("ansible.cfg: {line:?} is not `key = value`, the one form this reader takes");
         };
-        if section == "defaults" {
-            for path in value.split(':') {
-                paths.extend(tracked_at(path.trim().trim_start_matches("./"), tracked));
+        if section != "defaults" && section != "DEFAULT" {
+            continue;
+        }
+        for path in value.split(':').map(str::trim) {
+            if !path.contains('/') && path != "." {
+                continue;
             }
+            assert!(
+                !path.starts_with('/'),
+                "ansible.cfg: {path:?} is outside the repository"
+            );
+            let files = normalise("", path)
+                .map(|rel| tracked_at(&rel, tracked))
+                .unwrap_or_default();
+            assert!(
+                !files.is_empty(),
+                "ansible.cfg: {path:?} names no tracked file"
+            );
+            paths.extend(files);
         }
     }
     paths
@@ -1395,21 +1405,28 @@ fn cfg_paths(cfg: &str, tracked: &BTreeSet<String>) -> Vec<String> {
 
 #[test]
 fn cfg_paths_reads_defaults_values_and_refuses_other_forms() {
-    // Arrange: a commented line, paths under any key, one not a path, another section's key.
-    let tracked: BTreeSet<String> = ["a/1.py", "b/2.py", "c/3.py", "d/4.py"]
+    // Arrange: commented lines, paths under any key and spelling, a setting, another section's
+    // path, and [DEFAULT], which Ansible reads with [defaults].
+    let tracked: BTreeSet<String> = ["a/1.py", "b/2.py", "c/3.py", "d/4.py", "e/5.py"]
         .map(str::to_owned)
         .into();
-    let cfg = "# x = d\n[defaults]\nfilter_plugins = ./a\nlibrary = b:./c\nshow = True\n[colors]\nx = d\n";
+    let cfg = "[defaults]\n# x = ./d\n; x = ./d\nfilter_plugins = ./a/\nlibrary = b/:x/../c\nshow = True\n[colors]\nx = ./d\n[DEFAULT]\nroles_path = ./e\n";
 
     // Act
     let paths = cfg_paths(cfg, &tracked);
 
     // Assert
-    assert_eq!(paths, ["a/1.py", "b/2.py", "c/3.py"]);
+    assert_eq!(paths, ["a/1.py", "b/2.py", "c/3.py", "e/5.py"]);
     for line in [
         "filter_plugins: ./a",
         "filter_plugins: ./a=b",
         "filter_plugins = ./a ; a note",
+        "filter_plugins = ./a # a note",
+        "filter_plugins = ./missing",
+        "filter_plugins = .",
+        "filter_plugins = /a",
+        "filter_plugins = ~/a",
+        "filter_plugins = $V/a",
     ] {
         let refused =
             std::panic::catch_unwind(|| cfg_paths(&format!("[defaults]\n{line}\n"), &tracked));
@@ -1554,7 +1571,9 @@ fn chain_files(
             }
         }
         for (target, why, walk) in targets {
-            let why = why.or_else(|| target.contains("{{").then_some("a templated path"));
+            let why = why
+                .or_else(|| target.contains("{{").then_some("a templated path"))
+                .or_else(|| target.starts_with('/').then_some("an absolute path"));
             let resolved = normalise(dir, &target);
             let found = resolved
                 .as_deref()
@@ -1674,6 +1693,7 @@ fn chain_files_refuses_a_target_it_cannot_resolve() {
         ("- import_playbook: \"{{ x }}.yml\"\n", "{{ x }}.yml"),
         ("- import_playbook: missing.yml\n", "missing.yml"),
         ("- import_playbook: ../../up.yml\n", "../../up.yml"),
+        ("- import_playbook: /b.yml\n", "/b.yml"),
         ("- debug: {msg: \"{{ playbook_dir }}/f{x.py\"}\n", "f{x.py"),
         ("- debug: {msg: \"{{ playbook_dir }}/f}x.py\"}\n", "f}x.py"),
         ("- debug: {msg: \"{{ playbook_dir }}/f(x.py\"}\n", "f(x.py"),
@@ -1683,8 +1703,8 @@ fn chain_files_refuses_a_target_it_cannot_resolve() {
     for (content, target) in cases {
         let (root, mut tracked) = chain_repo(&[("p/a.yml", content)]);
         // Every target but the missing one is tracked, so each check is the only refusal.
-        if target != "missing.yml" {
-            tracked.insert(format!("p/{target}"));
+        if let Some(path) = normalise("p", target).filter(|_| target != "missing.yml") {
+            tracked.insert(path);
         }
 
         // Act
@@ -1749,7 +1769,6 @@ fn every_file_a_playbook_chain_loads_selects_its_module() {
     let config = repo_config();
     let (main, area_files) = area_documents();
     let tracked: BTreeSet<String> = repo::ls_files(&[]).into_iter().collect();
-    let playbooks: BTreeSet<String> = repo::playbook_files().into_iter().collect();
 
     // Act
     let mut walked = 0;
@@ -1761,8 +1780,10 @@ fn every_file_a_playbook_chain_loads_selects_its_module() {
             .into_iter()
             .flat_map(|(_, literals)| literals)
             .filter(|f| {
-                playbooks.contains(f)
-                    && tracked.contains(f)
+                tracked.contains(f)
+                    && (f.ends_with(".yml") || f.ends_with(".yaml"))
+                    && (f.starts_with("platform/playbooks/")
+                        || f.starts_with("platform/semaphore/"))
                     && !f.starts_with("platform/playbooks/tasks/")
             })
             .collect();
