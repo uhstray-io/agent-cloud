@@ -1359,83 +1359,41 @@ fn a_playbook_module_unselected_by_a_loaded_file_is_reported() {
     assert!(none.is_empty(), "{none:?}");
 }
 
-/// The tracked files the `[defaults]` and `[DEFAULT]` values of the ansible.cfg text `cfg` name
-/// (`:` between entries): a run loads what a value names, whatever its key (`*_plugins`,
-/// `library`, `roles_path`). The reader takes one grammar and refuses the rest, so a form it does
-/// not take fails the test instead of dropping a path. At column 0 a line is blank, a comment, a
-/// `[section]` or `key = value` (no `:` in the key, no `;` or `#` in the value); an indented line
-/// (a continuation for Ansible) is refused. Each entry resolves to tracked files, or is refused
-/// when it is empty, absolute, or holds a `/` or is `.`; a bare word naming nothing is a setting.
-fn cfg_paths(cfg: &str, tracked: &BTreeSet<String>) -> Vec<String> {
-    let mut section = "";
-    let mut paths = vec![];
-    for line in cfg.lines().map(str::trim_end) {
-        if line.is_empty() || line.starts_with(['#', ';']) {
-            continue;
-        }
-        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
-            section = name;
-            continue;
-        }
-        let Some((_, value)) = line.split_once('=').filter(|(key, value)| {
-            !line.starts_with(char::is_whitespace)
-                && !key.contains(':')
-                && !value.contains([';', '#'])
-        }) else {
-            panic!("ansible.cfg: {line:?} is not `key = value`, the one form this reader takes");
-        };
-        if section != "defaults" && section != "DEFAULT" {
-            continue;
-        }
-        for entry in value.split(':').map(str::trim) {
-            assert!(
-                !entry.is_empty() && !entry.starts_with('/'),
-                "ansible.cfg: {entry:?} is empty or outside the repository"
-            );
-            let files = normalise("", entry)
-                .map(|rel| tracked_at(&rel, tracked))
-                .unwrap_or_default();
-            assert!(
-                !files.is_empty() || !(entry.contains('/') || entry == "."),
-                "ansible.cfg: {entry:?} names no tracked file"
-            );
-            paths.extend(files);
-        }
-    }
-    paths
+/// ansible.cfg's settings, pinned whole: its lines, trimmed, without blank lines or `#` comments.
+/// The guard keeps no reader of Ansible's config grammar (three review passes each found a form a
+/// reader dropped); a change to the file fails the test below until this and `CFG_LOADED` are
+/// updated together.
+const CFG_SETTINGS: [&str; 5] = [
+    "[defaults]",
+    "show_custom_stats = True",
+    "stdout_callback = redact_requests",
+    "callback_plugins = ./callback_plugins",
+    "filter_plugins = ./platform/playbooks/filter_plugins",
+];
+
+/// The directories `CFG_SETTINGS` loads into every playbook run.
+const CFG_LOADED: [&str; 2] = ["callback_plugins", "platform/playbooks/filter_plugins"];
+
+/// The setting lines of an ansible.cfg text: trimmed, without blank lines or `#` comments.
+fn cfg_settings(cfg: &str) -> Vec<&str> {
+    cfg.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect()
 }
 
 #[test]
-fn cfg_paths_reads_defaults_values_and_refuses_other_forms() {
-    // Arrange: commented lines, paths under any key and spelling (a bare directory too), a
-    // setting, another section's path, and [DEFAULT], which Ansible reads with [defaults].
-    let tracked: BTreeSet<String> = ["a/1.py", "b/2.py", "c/3.py", "d/4.py", "e/5.py", "f/6.py"]
-        .map(str::to_owned)
-        .into();
-    let cfg = "[defaults]\n# x = ./d\n; x = ./d\nfilter_plugins = ./a/\nlibrary = b/:x/../c\nmodule_utils = f\nshow = True\n[colors]\nx = ./d\n[DEFAULT]\nroles_path = ./e\n";
+fn the_cfg_pin_ignores_comments_and_refuses_an_added_or_changed_setting() {
+    // Arrange
+    let real = text::read("ansible.cfg");
+    let commented = format!("{real}\n  # a note\n\n");
+    let added = format!("{real}library = ./x\n");
+    let changed = real.replace("./platform/playbooks/filter_plugins", "./other");
 
-    // Act
-    let paths = cfg_paths(cfg, &tracked);
-
-    // Assert
-    assert_eq!(paths, ["a/1.py", "b/2.py", "c/3.py", "f/6.py", "e/5.py"]);
-    for line in [
-        "filter_plugins: ./a",
-        "filter_plugins: ./a=b",
-        "filter_plugins = a ; a note",
-        "filter_plugins = a # a note",
-        "  filter_plugins = ./a",
-        "filter_plugins = ./a::./b",
-        "filter_plugins = ./missing",
-        "filter_plugins = .",
-        "filter_plugins = /a",
-        "filter_plugins = ~/a",
-        "filter_plugins = $V/a",
-    ] {
-        let refused =
-            std::panic::catch_unwind(|| cfg_paths(&format!("[defaults]\n{line}\n"), &tracked));
-        assert!(refused.is_err(), "{line} was read");
-    }
+    // Act and assert
+    assert_eq!(cfg_settings(&commented), CFG_SETTINGS);
+    assert_ne!(cfg_settings(&added), CFG_SETTINGS);
+    assert_ne!(cfg_settings(&changed), CFG_SETTINGS);
 }
 
 /// ansible.cfg loads every plugin in each directory it names (filter and callback plugins) into
@@ -1445,10 +1403,17 @@ fn every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes() {
     // Arrange
     let config = repo_config();
     let (main, area_files) = area_documents();
-    let tracked: BTreeSet<String> = repo::ls_files(&[]).into_iter().collect();
+    assert_eq!(
+        cfg_settings(&text::read("ansible.cfg")),
+        CFG_SETTINGS,
+        "ansible.cfg changed: update CFG_SETTINGS and CFG_LOADED together"
+    );
     let mut loaded = vec!["ansible.cfg".to_owned()];
-    loaded.extend(cfg_paths(&text::read("ansible.cfg"), &tracked));
-    assert!(loaded.len() > 1, "ansible.cfg names no tracked path");
+    for dir in CFG_LOADED {
+        let files = repo::ls_files(&[&format!("{dir}/")]);
+        assert!(!files.is_empty(), "{dir} holds no tracked file");
+        loaded.extend(files);
+    }
 
     // Act
     let modules = playbook_modules(&main, &area_files);
