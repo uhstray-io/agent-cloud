@@ -585,6 +585,23 @@ fn the_first_task_check_rejects_gathering_before_the_resolver() {
     assert_eq!(invalid, vec!["gathering before resolver".to_owned()]);
 }
 
+/// The plays of a case table, each given the header every case shares: it escalates, and fact
+/// gathering is off, so a verdict is about the opening alone. A case that lost the header would not
+/// escalate and would be flagged by nothing, so [`assert_named_verdicts`] fails on it.
+fn case_plays(text: &str) -> Vec<Node> {
+    synthetic_plays(text)
+        .into_iter()
+        .map(|play| {
+            let Node::Map(mut entries) = play else {
+                panic!("a case play is a mapping")
+            };
+            entries.push((Node::Str("become".to_owned()), Node::Bool(true)));
+            entries.push((Node::Str("gather_facts".to_owned()), Node::Bool(false)));
+            Node::Map(entries)
+        })
+        .collect()
+}
+
 /// Checks a table of named plays against the plays a check flagged. Every play is named `ok ...` or
 /// `bad ...`, the table holds both kinds (a table of one kind proves nothing about the other), and
 /// exactly the `bad ...` plays are flagged.
@@ -613,156 +630,93 @@ fn assert_named_verdicts(plays: &[Node], invalid: &[String]) {
 }
 
 /// The opening check with the harden-ssh exception off. Each play is an `ok` shape with at most one
-/// change, so each `bad` play is refused for the reason its name gives. Every play sets
-/// `gather_facts: false`, so the verdict is about the opening alone.
+/// change, so each `bad` play is refused for the reason its name gives. [`case_plays`] gives every
+/// play its header, so the verdict is about the opening alone.
 const OPENING_CASES: &str = r#"
 - name: ok resolver first
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: ok resolver first with the always tag
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
       tags: [always]
 - name: ok guard then resolver
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: ok resolver first in pre_tasks
-  hosts: h
-  become: true
-  gather_facts: false
   pre_tasks:
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
   tasks:
     - ansible.builtin.debug: {msg: hi}
 - name: ok guard then resolver in pre_tasks
-  hosts: h
-  become: true
-  gather_facts: false
   pre_tasks:
     - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
   tasks:
     - ansible.builtin.debug: {msg: hi}
 - name: bad debug before the resolver
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.debug: {msg: hi}
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad guard then debug
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
     - ansible.builtin.debug: {msg: hi}
 - name: bad two guards then the resolver
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
     - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad resolver with when true
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
       when: true
 - name: bad resolver with when false
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
       when: false
 - name: bad resolver with a loop
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
       loop: [1]
 - name: bad resolver tagged never
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
       tags: [never]
 - name: bad guard with when true then the resolver
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
       when: true
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad resolver inside a block
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad resolver under tasks while pre_tasks opens with a debug
-  hosts: h
-  become: true
-  gather_facts: false
   pre_tasks:
     - ansible.builtin.debug: {msg: hi}
   tasks:
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad resolver in tasks with roles and no pre_tasks
-  hosts: h
-  become: true
-  gather_facts: false
   roles: [something]
   tasks:
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad templated resolver path
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: "{{ _d }}/resolve-become-password.yml"
 - name: bad templated resolver path under tasks
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: "{{ _d }}/tasks/resolve-become-password.yml"
 - name: bad templated guard path then the resolver
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: "{{ _d }}/tasks/refuse-var-overrides.yml"
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad store lookup set_fact as the first task
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.set_fact:
         ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"
 - name: bad harden-ssh block shape with the exception off
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
@@ -776,16 +730,10 @@ const OPENING_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: ok empty pre_tasks then the resolver in tasks
-  hosts: h
-  become: true
-  gather_facts: false
   pre_tasks: []
   tasks:
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad guard with a loop then the resolver
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
       loop: [a]
@@ -793,17 +741,11 @@ const OPENING_CASES: &str = r#"
         loop_var: _rvo_name
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad guard tagged never then the resolver
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
       tags: [never]
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad guard then the resolver with when true
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
@@ -812,7 +754,7 @@ const OPENING_CASES: &str = r#"
 
 #[test]
 fn the_opening_check_accepts_only_the_resolver_or_the_guard_then_the_resolver() {
-    let plays = synthetic_plays(OPENING_CASES);
+    let plays = case_plays(OPENING_CASES);
     let invalid = escalating_plays_not_resolving_first(&plays, false);
     assert_named_verdicts(&plays, &invalid);
 }
@@ -822,9 +764,6 @@ fn the_opening_check_accepts_only_the_resolver_or_the_guard_then_the_resolver() 
 /// block with the password value swapped, and each is refused for that value alone.
 const HARDEN_SSH_CASES: &str = r#"
 - name: ok pinned harden-ssh opening
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - name: Harden and verify, recording any failure
       block:
@@ -841,9 +780,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening without the guard
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.set_fact:
@@ -853,9 +789,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening with the password before the guard
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.set_fact:
@@ -869,9 +802,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening with a literal password
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
@@ -885,9 +815,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose block has a when
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - when: true
       block:
@@ -902,9 +829,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose block is tagged never
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - tags: [never]
       block:
@@ -919,9 +843,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose block loops
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - loop: [1]
       block:
@@ -936,9 +857,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose guard has a when
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
@@ -953,9 +871,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose guard is tagged never
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
@@ -970,9 +885,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose guard path is templated
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: "{{ _d }}/tasks/refuse-var-overrides.yml"
@@ -986,9 +898,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose password set_fact has a when
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
@@ -1003,9 +912,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose password set_fact is tagged never
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
@@ -1020,9 +926,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose password set_fact loops
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
@@ -1037,9 +940,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose password default names the store path
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
@@ -1053,9 +953,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose password filter follows the lookup
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
@@ -1069,9 +966,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose lookup argument opens a brace
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
@@ -1085,9 +979,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose lookup argument closes a brace
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
@@ -1101,9 +992,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose lookup argument closes a call
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
@@ -1117,9 +1005,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose lookup argument opens a call
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
@@ -1133,9 +1018,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose literal precedes the lookup
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
@@ -1149,9 +1031,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose store path is concatenated in the lookup
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
@@ -1165,9 +1044,6 @@ const HARDEN_SSH_CASES: &str = r#"
       rescue:
         - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose lookup sits in a Jinja comment
-  hosts: h
-  become: true
-  gather_facts: false
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
@@ -1184,7 +1060,7 @@ const HARDEN_SSH_CASES: &str = r#"
 
 #[test]
 fn the_harden_ssh_exception_accepts_only_its_pinned_block() {
-    let plays = synthetic_plays(HARDEN_SSH_CASES);
+    let plays = case_plays(HARDEN_SSH_CASES);
     let invalid = escalating_plays_not_resolving_first(&plays, true);
     assert_named_verdicts(&plays, &invalid);
 }
