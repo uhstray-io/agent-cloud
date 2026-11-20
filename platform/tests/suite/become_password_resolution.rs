@@ -937,6 +937,34 @@ const HARDEN_SSH_CASES: &str = r#"
           loop: [1]
       rescue:
         - ansible.builtin.debug: {msg: hi}
+- name: bad harden-ssh opening behind a debug
+  tasks:
+    - ansible.builtin.debug: {msg: hi}
+    - block:
+        - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
+          loop: [a]
+          loop_control:
+            loop_var: _rvo_name
+        - ansible.builtin.set_fact:
+            ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"
+          become: false
+          no_log: true
+      rescue:
+        - ansible.builtin.debug: {msg: hi}
+- name: bad harden-ssh opening with a task between the guard and the password
+  tasks:
+    - block:
+        - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
+          loop: [a]
+          loop_control:
+            loop_var: _rvo_name
+        - ansible.builtin.debug: {msg: hi}
+        - ansible.builtin.set_fact:
+            ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"
+          become: false
+          no_log: true
+      rescue:
+        - ansible.builtin.debug: {msg: hi}
 "#;
 
 /// harden-ssh.yml's pinned opening block as a case play, with the guard's loop line and the password
@@ -974,6 +1002,7 @@ const GUARD_LOOP_REFUSALS: &[(&str, &str)] = &[
         "guard has two loop keys",
         "loop: [a]\n          with_items: [a]",
     ),
+    ("guard loop is templated", "loop: \"{{ _names }}\""),
 ];
 
 /// The store lookup the pinned block reads the password with.
