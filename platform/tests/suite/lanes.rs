@@ -1359,10 +1359,9 @@ fn a_playbook_module_unselected_by_a_loaded_file_is_reported() {
     assert!(none.is_empty(), "{none:?}");
 }
 
-/// ansible.cfg's settings, pinned whole: its lines, trimmed, without blank lines or `#` comments.
-/// The guard keeps no reader of Ansible's config grammar (three review passes each found a form a
-/// reader dropped); a change to the file fails the test below until this and `CFG_LOADED` are
-/// updated together.
+/// ansible.cfg's settings, pinned whole: its lines without trailing whitespace, blank lines or
+/// lines starting with `#`. The guard keeps no reader of Ansible's config grammar (three review
+/// passes each found a form a reader dropped); any other change to the file fails the test below.
 const CFG_SETTINGS: [&str; 5] = [
     "[defaults]",
     "show_custom_stats = True",
@@ -1371,29 +1370,95 @@ const CFG_SETTINGS: [&str; 5] = [
     "filter_plugins = ./platform/playbooks/filter_plugins",
 ];
 
-/// The directories `CFG_SETTINGS` loads into every playbook run.
-const CFG_LOADED: [&str; 2] = ["callback_plugins", "platform/playbooks/filter_plugins"];
+/// Every key `CFG_SETTINGS` may hold, and whether its value is a directory Ansible loads plugins
+/// from. That is Ansible's meaning, which nothing here can derive, so it is declared once, here.
+const CFG_KEYS: [(&str, bool); 4] = [
+    ("show_custom_stats", false),
+    ("stdout_callback", false),
+    ("callback_plugins", true),
+    ("filter_plugins", true),
+];
 
-/// The setting lines of an ansible.cfg text: trimmed, without blank lines or `#` comments.
+/// The setting lines of an ansible.cfg text: trailing whitespace trimmed, without blank lines or
+/// lines whose first character is `#`. An indented line is kept, so it fails the pin.
 fn cfg_settings(cfg: &str) -> Vec<&str> {
     cfg.lines()
-        .map(str::trim)
+        .map(str::trim_end)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .collect()
 }
 
+/// The plugin directories `settings` loads, classified by `CFG_KEYS`: `[defaults]` first, then
+/// `key = ./dir` lines. A line, key or value it cannot classify, or a missing key, is an error.
+fn cfg_dirs(settings: &[&str]) -> Result<Vec<String>, String> {
+    let Some((&"[defaults]", lines)) = settings.split_first() else {
+        return Err("line 1 is not [defaults]".into());
+    };
+    let mut seen = vec![];
+    let mut dirs = vec![];
+    for line in lines {
+        let (key, value) = line
+            .split_once(" = ")
+            .ok_or(format!("not `key = value`: {line}"))?;
+        let &(_, loads) = CFG_KEYS
+            .iter()
+            .find(|(k, _)| *k == key)
+            .ok_or(format!("{key} is not in CFG_KEYS"))?;
+        if loads {
+            match value.strip_prefix("./") {
+                Some(dir) if !dir.is_empty() && !dir.contains(':') => dirs.push(dir.to_owned()),
+                _ => return Err(format!("{key} is not one ./ directory: {value}")),
+            }
+        }
+        seen.push(key);
+    }
+    match CFG_KEYS.iter().find(|(k, _)| !seen.contains(k)) {
+        Some((k, _)) => Err(format!("{k} is missing")),
+        None => Ok(dirs),
+    }
+}
+
 #[test]
-fn the_cfg_pin_ignores_comments_and_refuses_an_added_or_changed_setting() {
+fn the_cfg_pin_ignores_column_0_comments_and_refuses_any_other_change() {
     // Arrange
     let real = text::read("ansible.cfg");
-    let commented = format!("{real}\n  # a note\n\n");
-    let added = format!("{real}library = ./x\n");
-    let changed = real.replace("./platform/playbooks/filter_plugins", "./other");
+    let commented = format!("{real}# a note\n\n");
+    let changes = [
+        real.replacen("\nstdout_callback", "\n    stdout_callback", 1),
+        format!("{real}  # a note\n"),
+        format!("{real}library = ./x\n"),
+        real.replace("./platform/playbooks/filter_plugins", "./other"),
+    ];
 
     // Act and assert
     assert_eq!(cfg_settings(&commented), CFG_SETTINGS);
-    assert_ne!(cfg_settings(&added), CFG_SETTINGS);
-    assert_ne!(cfg_settings(&changed), CFG_SETTINGS);
+    for changed in &changes {
+        assert_ne!(cfg_settings(changed), CFG_SETTINGS, "{changed}");
+    }
+}
+
+#[test]
+fn cfg_dirs_classifies_every_pinned_key_and_refuses_the_rest() {
+    // Arrange
+    let with = |extra: &'static str| [&CFG_SETTINGS[..], &[extra]].concat();
+    let refused = [
+        with("library = ./x"),
+        with("filter_plugins = plugins"),
+        with("filter_plugins = ./"),
+        with("filter_plugins = ./a:./b"),
+        with("filter_plugins=./x"),
+        CFG_SETTINGS[..4].to_vec(),
+        [&["[other]"][..], &CFG_SETTINGS[1..]].concat(),
+    ];
+
+    // Act and assert
+    assert_eq!(
+        cfg_dirs(&CFG_SETTINGS).unwrap(),
+        ["callback_plugins", "platform/playbooks/filter_plugins"]
+    );
+    for settings in &refused {
+        assert!(cfg_dirs(settings).is_err(), "{settings:?}");
+    }
 }
 
 /// ansible.cfg loads every plugin in each directory it names (filter and callback plugins) into
@@ -1406,10 +1471,11 @@ fn every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes() {
     assert_eq!(
         cfg_settings(&text::read("ansible.cfg")),
         CFG_SETTINGS,
-        "ansible.cfg changed: update CFG_SETTINGS and CFG_LOADED together"
+        "ansible.cfg changed: update CFG_SETTINGS, and classify a new key in CFG_KEYS"
     );
+    let dirs = cfg_dirs(&CFG_SETTINGS).unwrap_or_else(|e| panic!("CFG_SETTINGS: {e}"));
     let mut loaded = vec!["ansible.cfg".to_owned()];
-    for dir in CFG_LOADED {
+    for dir in dirs {
         let files = repo::ls_files(&[&format!("{dir}/")]);
         assert!(!files.is_empty(), "{dir} holds no tracked file");
         loaded.extend(files);

@@ -54,8 +54,10 @@ given the repository root, a call through a function value, or a directory walk.
 - `every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes`: `ansible.cfg` and every
   tracked file in the directories it loads (the filter and callback plugins) select every
   playbook-tier module. The config is pinned, not parsed: `CFG_SETTINGS` holds its setting lines
-  whole and `CFG_LOADED` the directories they load, and a change to `ansible.cfg` fails the test
-  until both are updated together.
+  whole (an indented line counts as a change), so any change other than a blank line or a line
+  starting with `#` fails the test. `CFG_KEYS` declares, for every key the pin may hold, whether
+  its value is a plugin directory; a key it does not list, or a directory value other than one
+  `./` path, fails the test too.
 
 Still not checked: a path built at run time, a read through a variable or a function value, a
 constant defined twice, `repo::playbook_files()`, a directory walk other than `repo::grep` and
