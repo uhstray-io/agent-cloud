@@ -9,6 +9,7 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::LazyLock;
 
 use agent_cloud_tests::lanes::{Config, Lane, Selection, select};
 use agent_cloud_tests::process;
@@ -1018,6 +1019,14 @@ fn repo_wide_scans_refuses_a_pathspec_it_cannot_read() {
     }
 }
 
+/// Whether a change to `file` alone selects `module` in the push lane (everything counts).
+fn selects(config: &Config, module: &str, file: &str) -> bool {
+    match select(config, Lane::Push, &[file.to_owned()]) {
+        Selection::All => true,
+        Selection::Modules(selected) => selected.contains(module),
+    }
+}
+
 /// The scans in `src` (module `module`, file `rel`) whose files do not all select the module in
 /// the push lane under `config`, as one line each, and how many scans it read.
 fn unselected_scans(config: &Config, module: &str, rel: &str, src: &str) -> (usize, Vec<String>) {
@@ -1032,12 +1041,7 @@ fn unselected_scans(config: &Config, module: &str, rel: &str, src: &str) -> (usi
         );
         let missed: Vec<String> = files
             .into_iter()
-            .filter(
-                |file| match select(config, Lane::Push, std::slice::from_ref(file)) {
-                    Selection::All => false,
-                    Selection::Modules(selected) => !selected.contains(module),
-                },
-            )
+            .filter(|file| !selects(config, module, file))
             .collect();
         if !missed.is_empty() {
             problems.push(format!(
@@ -1083,23 +1087,11 @@ fn a_scan_beyond_its_area_is_reported_and_one_within_it_is_not() {
 fn every_repo_wide_scan_runs_when_a_file_it_reads_changes() {
     // Arrange
     let config = repo_config();
-    let Selection::Modules(always) = select(&config, Lane::Push, &[]) else {
-        panic!("an empty change selects the security set, not everything");
-    };
 
     // Act
-    let mut scans = 0;
-    let mut problems = vec![];
-    for module in crate::SUITE_MODULES {
-        if always.contains(*module) {
-            continue;
-        }
-        let rel = format!("platform/tests/suite/{module}.rs");
-        let src = text::read(&rel);
-        let (read, found) = unselected_scans(&config, module, &rel, &src);
-        scans += read;
-        problems.extend(found);
-    }
+    let (scans, problems) = beyond_security_set(&config, |module, rel, src| {
+        unselected_scans(&config, module, rel, src)
+    });
 
     // Assert
     assert!(
@@ -1160,11 +1152,7 @@ fn unselected_reads(
     for (line, literals) in path_reads(src) {
         for file in literals.iter().filter(|l| tracked.contains(*l)) {
             count += 1;
-            let selected = match select(config, Lane::Push, std::slice::from_ref(file)) {
-                Selection::All => true,
-                Selection::Modules(selected) => selected.contains(module),
-            };
-            if !selected {
+            if !selects(config, module, file) {
                 problems.push(format!(
                     "{rel}:{line} reads {file}, whose change does not select {module}"
                 ));
@@ -1247,30 +1235,41 @@ fn a_read_beyond_its_area_is_reported_and_one_within_it_is_not() {
     );
 }
 
-/// A literal that names a tracked file and is a whole argument of a call is a read of that file,
-/// so a change to the file must select the module that reads it, as for a repo-wide scan.
-#[test]
-fn every_fixed_path_read_runs_when_its_file_changes() {
-    // Arrange
-    let config = repo_config();
-    let Selection::Modules(always) = select(&config, Lane::Push, &[]) else {
+/// `check` (module, its source file, the source) summed over every suite module outside the
+/// security set: how many reads it counted, and its problem lines.
+fn beyond_security_set(
+    config: &Config,
+    mut check: impl FnMut(&str, &str, &str) -> (usize, Vec<String>),
+) -> (usize, Vec<String>) {
+    let Selection::Modules(always) = select(config, Lane::Push, &[]) else {
         panic!("an empty change selects the security set, not everything");
     };
-    let tracked: BTreeSet<String> = repo::ls_files(&[]).into_iter().collect();
-
-    // Act
-    let mut reads = 0;
+    let mut count = 0;
     let mut problems = vec![];
     for module in crate::SUITE_MODULES {
         if always.contains(*module) {
             continue;
         }
         let rel = format!("platform/tests/suite/{module}.rs");
-        let src = text::read(&rel);
-        let (read, found) = unselected_reads(&config, module, &rel, &src, &tracked);
-        reads += read;
+        let (read, found) = check(module, &rel, &text::read(&rel));
+        count += read;
         problems.extend(found);
     }
+    (count, problems)
+}
+
+/// A literal that names a tracked file and is a whole argument of a call is a read of that file,
+/// so a change to the file must select the module that reads it, as for a repo-wide scan.
+#[test]
+fn every_fixed_path_read_runs_when_its_file_changes() {
+    // Arrange
+    let config = repo_config();
+    let tracked: BTreeSet<String> = repo::ls_files(&[]).into_iter().collect();
+
+    // Act
+    let (reads, problems) = beyond_security_set(&config, |module, rel, src| {
+        unselected_reads(&config, module, rel, src, &tracked)
+    });
 
     // Assert
     assert!(
@@ -1278,6 +1277,16 @@ fn every_fixed_path_read_runs_when_its_file_changes() {
         "no fixed-path read outside the security set; the reader is broken"
     );
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// The repository's `areas.yml` and each tracked area file, parsed.
+fn area_documents() -> (Node, Vec<Node>) {
+    let main = yaml::load_one(&repo::path("platform/tests/areas.yml")).expect("areas.yml loads");
+    let area_files = repo::ls_files(&[":(glob)platform/tests/areas.d/*.yml"])
+        .iter()
+        .map(|f| yaml::load_one(&repo::path(f)).unwrap_or_else(|| panic!("{f} loads")))
+        .collect();
+    (main, area_files)
 }
 
 /// The modules of every `playbook` tier: those of `areas.yml`'s areas and of each area file.
@@ -1303,10 +1312,7 @@ fn unloaded_playbook_modules(
     let mut problems = vec![];
     for module in modules {
         for path in loaded {
-            if let Selection::Modules(selected) =
-                select(config, Lane::Push, std::slice::from_ref(path))
-                && !selected.contains(module)
-            {
+            if !selects(config, module, path) {
                 problems.push(format!("{path} does not select {module}"));
             }
         }
@@ -1356,22 +1362,30 @@ fn a_playbook_module_unselected_by_a_loaded_file_is_reported() {
     assert!(none.is_empty(), "{none:?}");
 }
 
-/// ansible.cfg loads every filter plugin into every playbook run, so a change to it or to any
-/// plugin must select every playbook-tier module.
+/// ansible.cfg loads every plugin in each directory it names (filter and callback plugins) into
+/// every playbook run, so a change to it or to any of them must select every playbook-tier module.
 #[test]
 fn every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes() {
     // Arrange
     let config = repo_config();
-    let main = yaml::load_one(&repo::path("platform/tests/areas.yml")).expect("areas.yml loads");
-    let area_files: Vec<Node> = repo::ls_files(&[":(glob)platform/tests/areas.d/*.yml"])
-        .iter()
-        .map(|f| yaml::load_one(&repo::path(f)).unwrap_or_else(|| panic!("{f} loads")))
-        .collect();
-    let plugins = repo::ls_files(&["platform/playbooks/filter_plugins/"]);
-    assert!(!plugins.is_empty(), "no tracked filter plugin");
-    let loaded: Vec<String> = std::iter::once("ansible.cfg".to_owned())
-        .chain(plugins)
-        .collect();
+    let (main, area_files) = area_documents();
+    // Each `<kind>_plugins = ./<dir>` line of ansible.cfg names a directory every run loads.
+    let mut loaded = vec!["ansible.cfg".to_owned()];
+    for line in text::read("ansible.cfg").lines() {
+        let Some((key, dir)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim().ends_with("_plugins") {
+            let dir = dir.trim().trim_start_matches("./");
+            let plugins = repo::ls_files(&[&format!("{dir}/")]);
+            assert!(
+                !plugins.is_empty(),
+                "ansible.cfg: {dir} holds no tracked file"
+            );
+            loaded.extend(plugins);
+        }
+    }
+    assert!(loaded.len() > 1, "ansible.cfg names no plugin directory");
 
     // Act
     let modules = playbook_modules(&main, &area_files);
@@ -1385,15 +1399,10 @@ fn every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
-/// The keys that load another file into a playbook run.
-const CHAIN_KEYS: [&str; 6] = [
-    "import_playbook",
-    "ansible.builtin.import_playbook",
-    "include_tasks",
-    "ansible.builtin.include_tasks",
-    "import_tasks",
-    "ansible.builtin.import_tasks",
-];
+/// The actions that load another file into a playbook run. Each is read under the three spellings
+/// Ansible runs: the short name, `ansible.builtin.<short>` and `ansible.legacy.<short>`
+/// (deploy_playbooks_preflight.rs, IMPORT_KEYS).
+const CHAIN_SHORTS: [&str; 3] = ["import_playbook", "include_tasks", "import_tasks"];
 
 /// Chain targets the walk may not resolve, each as (file, target, reason). A closed list: a row
 /// that matches no refusal is stale and reported.
@@ -1411,15 +1420,10 @@ struct Unresolved {
 
 impl std::fmt::Display for Unresolved {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Unresolved {
-            file,
-            line,
-            target,
-            why,
-        } = self;
         write!(
             f,
-            "{file}:{line}: {target} does not resolve to a tracked file ({why})"
+            "{}:{}: {} does not resolve to a tracked file ({})",
+            self.file, self.line, self.target, self.why
         )
     }
 }
@@ -1452,6 +1456,11 @@ fn tracked_at(path: &str, tracked: &BTreeSet<String>) -> Vec<String> {
         .collect()
 }
 
+/// A string that is `{{ playbook_dir }}/<path>` and nothing else; the path is captured.
+static PLAYBOOK_DIR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\{\{\s*playbook_dir\s*\}\}/(.+)$").expect("the pattern compiles")
+});
+
 /// Every file the playbook `start` loads (itself included): `import_playbook` targets walked
 /// recursively, `include_tasks`/`import_tasks` targets, and `{{ playbook_dir }}/<path>` strings,
 /// each resolved against the directory of the file that names it. Second: one refusal per target
@@ -1461,8 +1470,6 @@ fn chain_files(
     start: &str,
     tracked: &BTreeSet<String>,
 ) -> (BTreeSet<String>, Vec<Unresolved>) {
-    let playbook_dir =
-        Regex::new(r"^\{\{\s*playbook_dir\s*\}\}/(.+)$").expect("the pattern compiles");
     let mut files = BTreeSet::from([start.to_owned()]);
     let mut refusals = vec![];
     let mut queue = vec![start.to_owned()];
@@ -1480,12 +1487,17 @@ fn chain_files(
         // (target, why it is refused, whether it is a playbook to walk)
         let mut targets: Vec<(String, Option<&'static str>, bool)> = vec![];
         for task in yaml::tasks(&doc) {
-            for key in CHAIN_KEYS {
-                let Some(value) = task.get(key) else { continue };
+            let keys = CHAIN_SHORTS.iter().flat_map(|short| {
+                ["", "ansible.builtin.", "ansible.legacy."].map(|p| format!("{p}{short}"))
+            });
+            for key in keys {
+                let Some(value) = task.get(&key) else {
+                    continue;
+                };
                 match value.as_str().or_else(|| value.get("file")?.as_str()) {
                     Some(t) => targets.push((t.to_owned(), None, key.ends_with("import_playbook"))),
                     None => targets.push((
-                        key.to_owned(),
+                        key.clone(),
                         Some("not a string or a mapping with a string file"),
                         false,
                     )),
@@ -1493,7 +1505,7 @@ fn chain_files(
             }
         }
         for s in yaml::strings(&doc, false) {
-            if let Some(tail) = playbook_dir.captures(s).map(|c| c[1].to_owned()) {
+            if let Some(tail) = PLAYBOOK_DIR.captures(s).map(|c| c[1].to_owned()) {
                 let why = tail
                     .contains(['{', '}', '(', ')'])
                     .then_some("a templated or computed path");
@@ -1576,6 +1588,7 @@ fn chain_files_follows_imports_includes_and_playbook_dir_paths() {
   tasks:
     - include_tasks: tasks/t.yml
     - ansible.builtin.import_tasks: {file: tasks/u.yml}
+    - ansible.legacy.include_tasks: tasks/v.yml
     - command: "{{ playbook_dir }}/files/s.py"
       args: {chdir: "{{ playbook_dir }}/../infra/d"}
     - debug: {msg: "{{ playbook_dir }}/files/n.py\nrest"}
@@ -1587,6 +1600,7 @@ fn chain_files_follows_imports_includes_and_playbook_dir_paths() {
         ("p/z.yml", "- hosts: all\n"),
         ("p/tasks/t.yml", "- debug: {}\n"),
         ("p/tasks/u.yml", "- debug: {}\n"),
+        ("p/tasks/v.yml", "- debug: {}\n"),
         ("p/files/s.py", ""),
         ("p/files/n.py", ""),
         ("infra/d/1.tf", ""),
@@ -1606,6 +1620,7 @@ fn chain_files_follows_imports_includes_and_playbook_dir_paths() {
         "p/files/s.py",
         "p/tasks/t.yml",
         "p/tasks/u.yml",
+        "p/tasks/v.yml",
     ];
     assert_eq!(files, expected.map(str::to_owned).into());
     assert!(refusals.is_empty(), "{refusals:?}");
@@ -1691,13 +1706,8 @@ fn an_exception_accepts_its_refusal_and_a_stale_one_is_reported() {
 fn every_file_a_playbook_chain_loads_selects_its_module() {
     // Arrange
     let config = repo_config();
-    let main = yaml::load_one(&repo::path("platform/tests/areas.yml")).expect("areas.yml loads");
-    let area_files: Vec<Node> = repo::ls_files(&[":(glob)platform/tests/areas.d/*.yml"])
-        .iter()
-        .map(|f| yaml::load_one(&repo::path(f)).unwrap_or_else(|| panic!("{f} loads")))
-        .collect();
+    let (main, area_files) = area_documents();
     let tracked: BTreeSet<String> = repo::ls_files(&[]).into_iter().collect();
-    let root = repo::path("");
 
     // Act
     let mut walked = 0;
@@ -1718,13 +1728,10 @@ fn every_file_a_playbook_chain_loads_selects_its_module() {
             .collect();
         for start in starts {
             walked += 1;
-            let (files, refused) = chain_files(&root, &start, &tracked);
+            let (files, refused) = chain_files(repo::root(), &start, &tracked);
             refusals.extend(refused);
             for file in files {
-                if let Selection::Modules(selected) =
-                    select(&config, Lane::Push, std::slice::from_ref(&file))
-                    && !selected.contains(&module)
-                {
+                if !selects(&config, &module, &file) {
                     problems.push(format!(
                         "{module}: {start} loads {file}, whose change does not select {module}"
                     ));

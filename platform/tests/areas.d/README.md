@@ -46,16 +46,18 @@ given the repository root, a call through a function value, or a directory walk.
   and a macro argument are needles, not reads.
 - `every_file_a_playbook_chain_loads_selects_its_module`: for each playbook-tier module, the files
   each playbook it reads loads: `import_playbook` targets followed recursively,
-  `include_tasks`/`import_tasks` targets, and `{{ playbook_dir }}/<path>` strings (a directory
+  `include_tasks`/`import_tasks` targets (each action under its short, `ansible.builtin.` and
+  `ansible.legacy.` spellings), and `{{ playbook_dir }}/<path>` strings (a directory
   stands for every tracked file under it). A target it cannot resolve fails the test unless its
   exception table lists it. It reads the real file, so it also asks for the extra-var guard import
   that the test harness drops; that over-selection is accepted.
 - `every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes`: `ansible.cfg` and every
-  filter plugin it loads select every playbook-tier module.
+  plugin in each `*_plugins` directory it names (filter and callback plugins) select every
+  playbook-tier module.
 
 Still not checked: a path built at run time, a read through a variable or a function value, a
-constant defined twice, `repo::playbook_files()`, and a directory walk other than `repo::grep` and
-`repo::ls_files`. List those files in the area's `paths`.
+constant defined twice, `repo::playbook_files()`, a directory walk other than `repo::grep` and
+`repo::ls_files`, and a playbook's `vars_files` and `include_vars` targets. List those files in the area's `paths`.
 
 ```yaml
 # areas.d/netbox_prefix.yml
