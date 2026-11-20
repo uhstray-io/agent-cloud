@@ -713,7 +713,7 @@ leaves the file, so turning a flag off would otherwise leave the rules live and 
   least 1 million prompt tokens. The rule is evaluated every five minutes over a one-day
   window and holds for 15 minutes. Its expression is wrapped in `count()`, so a zero hit
   ratio still fires. The group is removed when the trial ends, by a PR that deletes the
-  group and keeps its uid in `deleteRules`.
+  group and lists its uid under `deleteRules` unconditionally.
 
 Every rule holds for at least five minutes and routes to the existing `agent-cloud-ops`
 Discord contact point. Their uids start with `inference_`. The deploy readback covers
