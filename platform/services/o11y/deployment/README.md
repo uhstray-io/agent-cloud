@@ -711,9 +711,8 @@ leaves the file, so turning a flag off would otherwise leave the rules live and 
   dgx-spark 8 GiB KV pool trial. It fires when the stop line is reached: a vLLM preemption,
   a KV pool peak of 0.90 or more, or a prefix-cache hit ratio under 0.75 on a day with at
   least 1 million prompt tokens. The rule is evaluated every five minutes over a one-day
-  window and holds for 15 minutes. Its expression is wrapped in `count()`, so a zero hit
-  ratio still fires. The group is removed when the trial ends, by a PR that deletes the
-  group and lists its uid under `deleteRules` unconditionally.
+  window and holds for 15 minutes. The group is removed when the trial ends, by a PR that
+  deletes the group and lists its uid under `deleteRules` unconditionally.
 
 Every rule holds for at least five minutes and routes to the existing `agent-cloud-ops`
 Discord contact point. Their uids start with `inference_`. The deploy readback covers

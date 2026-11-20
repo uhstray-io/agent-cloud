@@ -8,8 +8,8 @@ case "fires" when the query returns one sample and is silent when it returns
 none. Two mutants must each fail as a PromQL result mismatch: the expression
 without its count() wrap (a zero hit ratio on a busy day no longer passes gt 0)
 and the expression without its prompt-token condition (a low ratio on a quiet
-day would fire). Engine, image, and cleanup handling is shared with
-o11y_native_promql_runner.py, which is imported rather than copied.
+day would fire). The engine, image, and cleanup helpers are imported from
+o11y_native_promql_runner.py; main() follows o11y_endpoint_missing_promql_runner.py.
 """
 
 from __future__ import annotations
@@ -113,20 +113,19 @@ def _test_lines(query, overrides, fires):
     return lines
 
 
-def _rules_file(query, case_names):
+def _rules_file(query, cases):
     lines = ["rule_files: []", "evaluation_interval: 1m", "tests:"]
-    for name, overrides, fires in CASES:
-        if name in case_names:
-            lines.extend(_test_lines(query, overrides, fires))
+    for _name, overrides, fires in cases:
+        lines.extend(_test_lines(query, overrides, fires))
     return ("\n".join(lines) + "\n").encode()
 
 
 def build_cases():
     """(case name, promtool rules file) in run order: the positive set, then each mutant."""
     built = queries()
-    cases = [("positive", _rules_file(built["positive"], {name for name, _o, _f in CASES}))]
+    cases = [("positive", _rules_file(built["positive"], CASES))]
     for mutant, target in MUTANT_CASES.items():
-        cases.append((mutant, _rules_file(built[mutant], {target})))
+        cases.append((mutant, _rules_file(built[mutant], [case for case in CASES if case[0] == target])))
     return cases
 
 

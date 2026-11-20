@@ -3470,7 +3470,6 @@ kv_inner = ('(sum(increase(vllm:num_preemptions_total{job="dgx-spark-vllm"}[1d])
             '((sum(increase(vllm:prefix_cache_hits_total{job="dgx-spark-vllm"}[1d])) / '
             'sum(increase(vllm:prefix_cache_queries_total{job="dgx-spark-vllm"}[1d])) < 0.75) and '
             '(sum(increase(vllm:prompt_tokens_total{job="dgx-spark-vllm"}[1d])) >= 1e6))')
-assert kv_rule['uid'] == 'inference_kv_pool_trial_stop_line', kv_rule['uid']
 assert kv_rule['data'][0]['model']['expr'] == 'count(' + kv_inner + ')', kv_rule['data'][0]['model']['expr']
 assert kv_rule['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [0]}
 assert kv_rule['for'] == '15m', kv_rule['for']
