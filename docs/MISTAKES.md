@@ -174,13 +174,15 @@ and why.
 | 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
 | 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
 | 5.29 | Briefed six port workers never to edit the ledger, which forbade the "Enforcement moved" note a deleted cited test needs; the ratchet kept every gate green (widens 5.28) — **x2** (2026-11-16: brief 11 repeated the ledger prohibition; caught before any port) | Process | 2 | Convention (a ledger test requiring the note proposed) |
-| 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 2 | Convention (per-agent scratch directory in every brief) |
+| 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 5 | Convention (per-agent scratch directory in every brief); deny rule for recursive `rm` proposed, operator's decision |
 | 5.31 | A peer session allowed `SKIP_TESTS=1` for docs-only pushes; two owners retried a denied compound command as a standalone push | Process | 1 | Convention (deny rule for the skipped push proposed; operator's decision) |
 | 5.32 | Ran `git branch -D` on a scratch branch the brief said to keep if `git branch -d` refused; recreated from the reflog | Process | 1 | Convention (deny rule for forced branch deletes proposed; operator's decision) |
-| 5.33 | Refreshed a PR over a newly landed area rule and checked it only where the rule's own test looks; the playbook-tier area omitted the filter plugins `ansible.cfg` loads | Process | 1 | Convention until S9 (AC-977) part C lands |
+| 5.33 | Refreshed a PR over a newly landed area rule and checked it only where the rule's own test looks; the playbook-tier area omitted the filter plugins `ansible.cfg` loads | Process | 1 | Test: `lanes` suite (`every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes`) |
 | 5.34 | Fixed a destructive block's failure paths one review finding at a time on #1206; returns 4 and 5 found four more paths in the same block | Process | 1 | Convention (failure table accepted for later briefs, 2026-11-18) |
 | 5.35 | Skipped a skill-pass finding that a port test held wider rows than its original, on a comment saying the filter reads only tag and spec; carried as decided until the third return | Process | 1 | Convention |
 | 5.36 | One batch unit bundled eleven guard-test fixes across five test modules, a BATS test deletion and a plan cell; it went back nine times and was closed and cut into three | Process | 1 | Convention (three-returns rule; split past about three files) |
+| 5.37 | Ran two rounds of four-agent `/simplify` plus security passes on S9 without totalling agent tokens, against a 450k stop never sized from a measured round; spend reached about six times the stop | Process | 2 | Convention (stop set per model class from a measured round; running total before each wave) |
+| 5.38 | Three returns on S9's `ansible.cfg` check: a grammar reader, then a pin with a second unchecked list; no plan said where the fact "this setting loads a directory" was declared | Process | 1 | Test: `lanes` suite (`cfg_dirs_classifies_every_pinned_key_and_refuses_the_rest`) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -5628,7 +5630,7 @@ entry naming at least one `#[test]` fn. Entry 6.9 gains its missing note in this
 
 ### 5.30 Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14)
 
-**Occurrences: 2** — 2026-11-13, 2026-11-18
+**Occurrences: 5** — 2026-11-13, 2026-11-18, 2026-11-19, 2026-11-19, 2026-11-20
 
 **What happened.** During wave 1 of the BATS port, five `pr-reviewer` agents ran at once, each told
 only to use "scratch" under the session's scratchpad. Two reviewers (AC-874, AC-875) both created
@@ -5649,6 +5651,12 @@ elsewhere in the scratchpad and recursive deletes.
 delta reviews on.
 
 **Occurrence 2 — 2026-11-18.** On #1186 (AC-949) the owner dispatched four parallel `/simplify` review agents over the whole PR range. The briefs said read-only and named no scratch directory and no ban on recursive deletes. The efficiency agent measured symlink cost with a script that ran `rm -rf` in a loop on temporary directories it had made in the scratchpad, and reported it. Nothing in the worktree or another agent's files was touched. Why the rule did not fire: the briefs were written as short review prompts, not from the brief template, so the template's scratch and delete lines were never added.
+
+**Occurrence 3 — 2026-11-19.** On S9 (AC-977) the owner dispatched four parallel `/simplify` review agents over the branch range. Each brief named its own scratch directory and said read-only, but none forbade recursive deletes. The efficiency agent ran `rm -rf` twice on scratch directories it had made inside its own, recreated them, and reported it. Nothing in the worktree or another agent's directory was touched. Why the rule did not fire: the owner wrote the scratch half of the rule into the briefs and left out the delete half; a brief written by hand carries only the lines its writer recalls. Three occurrences retire Convention here: the proposed guard is a deny rule in the operator's `settings.json` for recursive `rm` forms (`rm -r`, `rm -rf`, `rm -fr`, `rm -R`), which binds every agent whatever its brief says. Changing a permission is the operator's decision.
+
+**Occurrence 4 — 2026-11-19.** In the next `/simplify` round on S9 every brief said "NO DELETES of any kind", naming `rm`, `rm -r`, `rm -rf` and `git clean`. The altitude agent ran one `rm -f` on a scratch file it had made, and reported it. Nothing outside its directory was touched. Why the rule did not fire: this time the brief carried it, and the agent broke it anyway. A line in a brief does not bind an agent; only a permission rule does, which is the guard occurrence 3 proposes, widened to forced deletes (`rm -f`).
+
+**Occurrence 5 — 2026-11-20.** In the return pass on S9 head `6b3f0ea2`, the altitude agent's brief again said "NO DELETES of any kind". It ran `rm -rf` on a scratch subdirectory of its own before creating it; the directory did not exist, so nothing was removed, and it reported the form. Why the rule did not fire: as in occurrence 4, a brief line does not bind the agent.
 
 ### 5.31 A peer session allowed a guard skip, and two denied compound commands were retried as a standalone push
 
@@ -5685,6 +5693,8 @@ delta reviews on.
 **The rule.** After refreshing a branch over a rule that landed on `dev`, check the branch against every clause of the rule, not only the ones its test enforces. A module in the `playbook` tier loads the filter plugins through the root `ansible.cfg`, so a change to a filter plugin must select it in the push lane. While other areas claim the plugins, its own area lists `"platform/playbooks/filter_plugins/**"` in `paths` too.
 
 **Enforced by.** Convention until S9 (AC-977) part C lands. Part C fails the `lanes` suite when a change to `ansible.cfg` or under `platform/playbooks/filter_plugins/` does not select a playbook-tier module in the push lane, and its fixes add the path to the areas it names. On `dev` `4a0e3d49` the same gap is in three more areas: `areas.d/cloudflare_edge.yml` claims no filter plugin, `areas.d/firewall.yml` claims `filter_plugins/ufw_rules.py` alone, and `areas.d/support_forgeries.yml` has `paths: []`.
+
+**Status 2026-11-19.** Part C landed (AC-977): the `lanes` suite test `every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes` fails when a change to `ansible.cfg` or to any tracked file under `platform/playbooks/filter_plugins/` does not select a playbook-tier module in the push lane. On `dev` `92922b7e` it found the gap in four areas (`cloudflare_edge`, `firewall`, `support_forgeries`, `cleanup_backup_archives`), and each now claims `platform/playbooks/filter_plugins/**`. The Index cell now names the test; the paragraphs above are left as written.
 
 ### 5.34 Fixed a destructive block's failure paths one review finding at a time; two more returns found the rest
 
@@ -5739,6 +5749,30 @@ batch's later briefs; that is a brief convention, not a check.
 **The rule.** Cut a unit by the files it changes, not by the review or ticket it came from: a unit past about three files, or past about five independent fixes, is split before dispatch. Modules that call each other's helpers stay in one unit, so that the split units carry no merge order between them.
 
 **Enforced by.** Convention (the split rule in the global instructions, and the three-returns rule, which caught this one only after the fact).
+
+### 5.37 Ran two rounds of four-agent passes without totalling agent tokens; the unit passed its spend stop about six times over
+
+**Occurrences: 2** — 2026-11-19, 2026-11-20
+
+**What happened.** The S9 brief (`handoffs-v0.17.0/25-lane-guard-s9.md:188-189`, AC-977) says to stop and report at 450k tokens for the unit, executors and passes together, and records that one `/simplify` reviewer on a 1,452-line range cost about 200k. The owner ran `/simplify` round 1 (four agents: about 227k, 254k, 266k and 260k), `/security-review` round 1 (about 184k), `/simplify` round 2 (about 280k, 301k, 260k and 280k) and `/security-review` round 2 (about 284k) on a range of 806 to 940 diff lines. Each agent's result reported its own token count. The owner added them up only after round 2, while re-reading the brief for the pull request body: about 2.6M for the passes alone, before the executor runs. Nothing was pushed past the stop; the owner reported to the coordinator before the push.
+
+**Root cause.** Two causes, one in the run and one in the plan. (1) The owner kept no running total against the stop before each wave: the summary carried "Stops: 450k tokens" as a line, and no step before a dispatch looked at it. (2) The coordinator set the 450k stop without sizing it from a measured round, and counted every model's tokens alike. The coordinator's read of the ten pass-agent transcripts put almost all of the spend on Haiku, the model those agents run on. One `/simplify` round here is four agents at about 1.0M to 1.1M Haiku tokens, and one `/security-review` about 0.2M to 0.3M. Two rounds of both passes, which the brief allowed (up to three), could never fit 450k.
+
+**The rule.** A brief's spend stop is set per model class from one measured round of the passes it allows. Before each wave of agents, the owner adds the token counts the earlier agents reported, plus the next wave's estimate, and compares the sum with the stop. Over the stop, the owner reports to the coordinator before dispatching, with what is done and what is left.
+
+**Enforced by.** Convention (a stop sized per model class from a measured round; a running total before each wave).
+
+**Repeat (2026-11-20).** The confirming round on S9's head `61b16729` (four `/simplify` agents and one `/security-review`) was briefed with a cap of about 100k tokens per agent. Each agent reported 166k to 214k, about 944k for the round. The owner added the counts after the round, as the rule asks, and reported the total to the coordinator before anything was pushed. The rule did not cover this case: it sizes the stop and keeps a running total between waves, but a cap written into a prompt does not stop an agent inside its wave. Within one wave, only the agent's own report shows the spend, and only after the fact. The next cut sizes its pass stop from this measured round (about 944k for one round, stop at 1.2M).
+
+### 5.38 Three returns on one check because no plan said where "which setting loads a directory" was declared
+
+**What happened.** S9 (AC-977, PR #1213) asked a `lanes` test to select every playbook-tier module when `ansible.cfg` or a plugin directory it loads changes. The first plan had the test read `ansible.cfg`'s grammar. CodeRabbit's round on `b4af7d2b` and the owner's passes on `6b3f0ea2` and `9ea7a578` each found a form of the file the reader did not handle. The coordinator replaced the reader with a pin: `CFG_SETTINGS` held the setting lines whole, and a second constant, `CFG_LOADED`, named the directories they load. The confirming round on `61b16729` found that nothing checked `CFG_LOADED` against the pin. Dropping an entry from `CFG_LOADED`, or adding a plugin directory to `ansible.cfg` and `CFG_SETTINGS` without it, left every check green, while the doc comment, the failure message and `platform/tests/areas.d/README.md` said the test failed until both were updated. The same round showed that trimming leading whitespace let an indented setting line pass the pin, although Ansible's config parser reads it as a continuation of the line above (`ansible-config dump --only-changed` lost `stdout_callback`). That was the third return, and the coordinator cut the unit again.
+
+**Root cause.** The fact the test needs, whether a setting's value is a directory Ansible loads plugins from, is Ansible's meaning, and no code in the repository can derive it. No plan said where that fact was declared or what fails when it is missing. The reader buried it in a grammar it could not finish. The pin buried it in a hand-kept list that nothing checked.
+
+**The rule.** A brief that asks a test to know what a config file loads names where that knowledge is declared, and what fails when it is missing or stale. Here it is one table keyed by the pinned settings' own keys, exhaustive both ways: a key the table does not list fails, a table key the settings lack fails, and a directory value that is not one `./` path fails. The pin keeps leading whitespace, so an indented line fails without the test knowing continuation lines.
+
+**Enforced by.** Test: `lanes` suite (`cfg_dirs_classifies_every_pinned_key_and_refuses_the_rest`, `the_cfg_pin_ignores_trailing_whitespace_and_column_0_comments_only`).
 
 ## 6. Working from assumptions about files
 

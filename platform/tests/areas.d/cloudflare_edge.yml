@@ -7,10 +7,15 @@
 paths:
   - "platform/infra/cloudflare/**"
   - "platform/playbooks/apply-cloudflare-tofu.yml"
+  # Files its playbook chain loads (lanes test every_file_a_playbook_chain_loads_selects_its_module).
+  - "platform/playbooks/refuse-internal-extra-vars.yml"
   - "platform/playbooks/apply-cloudflare-grafana-api-tofu.yml"
   - "platform/playbooks/files/cloudflare_grafana_plan_guard.py"
   - "platform/semaphore/templates.yml"
   - "plan/development/openspec/changes/o11y-signal-labeling-profiling-alerting/tasks.md"
+  # ansible.cfg loads every filter plugin into every playbook run (lanes test
+  # every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes).
+  - "platform/playbooks/filter_plugins/**"
 tiers:
   static: [cloudflare_mcp_edge, cloudflare_grafana_plan_guard, edge_dns_step_result]
   playbook: [cloudflare_dry_run_backend_playbook, edge_dns_tofu_run_playbook]
