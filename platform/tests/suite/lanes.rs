@@ -1423,6 +1423,10 @@ fn the_cfg_pin_ignores_trailing_whitespace_and_column_0_comments_only() {
     // Arrange
     let real = text::read("ansible.cfg");
     let commented = format!("{real}# a note\n\n");
+    let ignored = [
+        real.replace("= True", "= True  "),
+        real.replace('\n', "\r\n"),
+    ];
     let changes = [
         real.replacen("\nstdout_callback", "\n    stdout_callback", 1),
         format!("{real}  # a note\n"),
@@ -1432,6 +1436,10 @@ fn the_cfg_pin_ignores_trailing_whitespace_and_column_0_comments_only() {
 
     // Act and assert
     assert_eq!(cfg_settings(&commented), CFG_SETTINGS);
+    for same in &ignored {
+        assert_ne!(same, &real);
+        assert_eq!(cfg_settings(same), CFG_SETTINGS, "{same:?}");
+    }
     for changed in &changes {
         assert_ne!(cfg_settings(changed), CFG_SETTINGS, "{changed}");
     }
