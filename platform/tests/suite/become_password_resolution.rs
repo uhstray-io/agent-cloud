@@ -7,11 +7,12 @@
 //! and of the six playbooks escalating at play level only harden-ssh.yml resolved the password.
 //!
 //! So the ordering is the invariant. The resolver opens the play: it is the first task, or the second
-//! straight after the controller-only guard (harden-ssh.yml alone opens with a pinned block; see
-//! `harden_ssh_opening`). Automatic fact gathering is off (gathering runs before tasks), and
-//! gathering happens explicitly straight after. The transport guard runs before the lookup it
-//! protects and needs no privilege. No dynamic include carries `become`: ansible-core refuses that
-//! only when a play reaches the task, and no syntax check sees it (docs/MISTAKES.md 2.17).
+//! straight after the controller-only guard, included with the loop its usage contract requires
+//! (harden-ssh.yml alone opens with a pinned block; see `harden_ssh_opening`). Automatic fact
+//! gathering is off (gathering runs before tasks), and gathering happens explicitly straight after.
+//! The transport guard runs before the lookup it protects and needs no privilege. No dynamic
+//! include carries `become`: ansible-core refuses that only when a play reaches the task, and no
+//! syntax check sees it (docs/MISTAKES.md 2.17).
 //! deploy-github-runner.yml is the one named gap, because its fix belongs to work on another branch.
 //!
 //! Replaces platform/tests/test_become_password_resolution.bats (plan 24, Phase 4).
@@ -262,8 +263,9 @@ fn sequence<'a>(play: &'a Node, key: &str) -> Option<&'a [Node]> {
 }
 
 /// Whether a task may not run: it may be skipped ([`skippable`]), or it has a `loop` or `with_*` key
-/// (a loop may run zero times, and its list is decided at run time). An opening include that may
-/// not run leaves the resolver unproven, so it is refused.
+/// (a loop may run zero times, and its list is decided at run time). The resolver include, the
+/// harden-ssh block and its password task are refused when they may not run. The guard include is
+/// judged by [`is_usable_override_guard`] instead, because its contract requires a loop.
 fn may_not_run(task: &Node) -> bool {
     skippable(task) || loop_keys(task).next().is_some()
 }
@@ -283,29 +285,29 @@ fn loop_keys(task: &Node) -> impl Iterator<Item = (&str, &Node)> {
 }
 
 /// Whether a task sequence opens with the resolver: its first task is the resolver include, or its
-/// first task is the guard include and its second is the resolver include. Each include of that
-/// opening must be able to run ([`may_not_run`]). A block is not an include, so a block is refused.
+/// first task is a usable guard include ([`is_usable_override_guard`]) and its second is the
+/// resolver include. The resolver include must be able to run ([`may_not_run`]). A block is not an
+/// include, so a block is refused.
 fn opens_with_resolver(seq: &[Node]) -> bool {
     match seq {
         [first, ..] if includes(first, RESOLVER_FILE) => !may_not_run(first),
-        [guard, second, ..] if includes(guard, CONTROLLER_ONLY_GUARD) => {
-            includes(second, RESOLVER_FILE) && !may_not_run(guard) && !may_not_run(second)
+        [guard, second, ..] if is_usable_override_guard(guard) => {
+            includes(second, RESOLVER_FILE) && !may_not_run(second)
         }
         _ => false,
     }
 }
 
 /// The pinned opening of harden-ssh.yml, and of no other play. Its first task is one block, whose
-/// first item is the guard include and whose second item sets the sudo password from the store
-/// ([`STORE_LOOKUP`]). The guard refuses extra-var overrides before the password is fetched. The
-/// block's `when`, `never` tag and loop keys are checked; its `rescue` and `always`, the store task's
-/// `become` and `no_log`, the rest of the play and the names are not.
+/// first item is a usable guard include ([`is_usable_override_guard`]) and whose second item sets
+/// the sudo password from the store ([`STORE_LOOKUP`]). The guard refuses extra-var overrides
+/// before the password is fetched. The block's `when`, `never` tag and loop keys are checked; its
+/// `rescue` and `always`, the store task's `become` and `no_log`, the rest of the play and the
+/// names are not.
 ///
 /// Why it exists: harden-ssh.yml runs its whole hardening in one block, so that a failure anywhere
-/// is recorded as the step's result (harden-ssh.yml:51-54). The guard's loop over the play's
-/// internal names (harden-ssh.yml:69-72) is required, as exactly one non-empty `loop` list: an
-/// empty one runs the guard zero times. No other opening task may loop. The exception also skips
-/// the resolver's transport guard; that gap is held by `platform/tests/known_unguarded_bao_plays.txt`.
+/// is recorded as the step's result (harden-ssh.yml:51-54). The exception also skips the
+/// resolver's transport guard; that gap is held by `platform/tests/known_unguarded_bao_plays.txt`.
 ///
 /// Follow-up: Plane AC-998 moves harden-ssh.yml to the standard opening; delete this exception then.
 fn harden_ssh_opening(seq: &[Node]) -> bool {
@@ -318,15 +320,8 @@ fn harden_ssh_opening(seq: &[Node]) -> bool {
     let (Some(guard), Some(store)) = (block.first(), block.get(1)) else {
         return false;
     };
-    let guard_loops: Vec<_> = loop_keys(guard).collect();
-    let guard_loops_over_a_list = matches!(
-        guard_loops.as_slice(),
-        [("loop", list)] if list.as_seq().is_some_and(|l| !l.is_empty())
-    );
     !may_not_run(block_task)
-        && includes(guard, CONTROLLER_ONLY_GUARD)
-        && !skippable(guard)
-        && guard_loops_over_a_list
+        && is_usable_override_guard(guard)
         && sets_password_from_store(store)
         && !may_not_run(store)
 }
@@ -337,9 +332,37 @@ fn harden_ssh_opening(seq: &[Node]) -> bool {
 /// resolver; `the_controller_only_guard_runs_only_assert_and_set_fact` holds it to that.
 const CONTROLLER_ONLY_GUARD: &str = "refuse-var-overrides.yml";
 
-/// Whether a task is exactly an include or import of `tasks/<file>`, under any spelling, as every
-/// playbook includes the guard and the resolver. A templated path (`{{ dir }}/tasks/...`) could
-/// render to another file, so it is not one.
+/// The loop variable the guard reads each name from (refuse-var-overrides.yml:25 and :30).
+const GUARD_LOOP_VAR: &str = "_rvo_name";
+
+/// Whether a task is a guard include the guard file's own usage contract accepts
+/// (platform/playbooks/tasks/refuse-var-overrides.yml:16-31). All of these must hold:
+///
+/// - The task is an `include_tasks` of exactly `tasks/refuse-var-overrides.yml`, under any
+///   spelling. An `import_tasks` is refused, because Ansible refuses a loop on a static import.
+/// - Its only loop key is `loop`, and that is a YAML list with at least one entry. An empty list
+///   runs the guard zero times, and a templated string is not a list.
+/// - `loop_control.loop_var` is `_rvo_name`. The guard asserts `_rvo_name is defined`, so any other
+///   loop variable fails it.
+/// - It has no `when` and no `never` tag ([`skippable`]).
+fn is_usable_override_guard(task: &Node) -> bool {
+    let loops: Vec<_> = loop_keys(task).collect();
+    include_target(task, &["include_tasks"])
+        == Some(format!("tasks/{CONTROLLER_ONLY_GUARD}").as_str())
+        && matches!(
+            loops.as_slice(),
+            [("loop", list)] if list.as_seq().is_some_and(|l| !l.is_empty())
+        )
+        && task
+            .get("loop_control")
+            .and_then(|control| control.get("loop_var"))
+            .and_then(Node::as_str)
+            == Some(GUARD_LOOP_VAR)
+        && !skippable(task)
+}
+
+/// Whether a task is exactly an include or import of `tasks/<file>`, under any spelling. A templated
+/// path (`{{ dir }}/tasks/...`) could render to another file, so it is not one.
 fn includes(task: &Node, file: &str) -> bool {
     include_target(task, &INCLUDE_SHORTS) == Some(format!("tasks/{file}").as_str())
 }
@@ -647,10 +670,6 @@ const OPENING_CASES: &str = r#"
   tasks:
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
       tags: [always]
-- name: ok guard then resolver
-  tasks:
-    - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
-    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: ok resolver first in pre_tasks
   pre_tasks:
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
@@ -659,6 +678,9 @@ const OPENING_CASES: &str = r#"
 - name: ok guard then resolver in pre_tasks
   pre_tasks:
     - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
+      loop: [a]
+      loop_control:
+        loop_var: _rvo_name
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
   tasks:
     - ansible.builtin.debug: {msg: hi}
@@ -669,11 +691,20 @@ const OPENING_CASES: &str = r#"
 - name: bad guard then debug
   tasks:
     - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
+      loop: [a]
+      loop_control:
+        loop_var: _rvo_name
     - ansible.builtin.debug: {msg: hi}
 - name: bad two guards then the resolver
   tasks:
     - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
+      loop: [a]
+      loop_control:
+        loop_var: _rvo_name
     - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
+      loop: [a]
+      loop_control:
+        loop_var: _rvo_name
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad resolver with when true
   tasks:
@@ -691,11 +722,6 @@ const OPENING_CASES: &str = r#"
   tasks:
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
       tags: [never]
-- name: bad guard with when true then the resolver
-  tasks:
-    - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
-      when: true
-    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad resolver inside a block
   tasks:
     - block:
@@ -715,10 +741,6 @@ const OPENING_CASES: &str = r#"
 - name: bad templated resolver path under tasks
   tasks:
     - ansible.builtin.include_tasks: "{{ _d }}/tasks/resolve-become-password.yml"
-- name: bad templated guard path then the resolver
-  tasks:
-    - ansible.builtin.include_tasks: "{{ _d }}/tasks/refuse-var-overrides.yml"
-    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad store lookup set_fact as the first task
   tasks:
     - ansible.builtin.set_fact:
@@ -727,39 +749,41 @@ const OPENING_CASES: &str = r#"
   pre_tasks: []
   tasks:
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
-- name: bad guard with a loop then the resolver
+- name: bad guard then the resolver with when true
   tasks:
     - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
       loop: [a]
       loop_control:
         loop_var: _rvo_name
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
-- name: bad guard tagged never then the resolver
-  tasks:
-    - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
-      tags: [never]
-    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
-- name: bad guard then the resolver with when true
-  tasks:
-    - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
-    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
       when: true
 "#;
 
 #[test]
 fn the_opening_check_accepts_only_the_resolver_or_the_guard_then_the_resolver() {
+    let template = guard_then_resolver("ok guard then resolver", "", "");
+    let guards: String = GUARD_REFUSALS
+        .iter()
+        .map(|(row, from, to)| {
+            guard_then_resolver(
+                &format!("bad guard then the resolver where the {row}"),
+                from,
+                to,
+            )
+        })
+        .collect();
     let pinned = pinned_play(
         "bad harden-ssh block shape with the exception off",
-        PINNED_LOOP,
+        &guard_at(8, "", ""),
         STORE_VALUE,
     );
-    let plays = case_plays(&format!("{OPENING_CASES}{pinned}"));
+    let plays = case_plays(&format!("{OPENING_CASES}{template}{guards}{pinned}"));
     let invalid = escalating_plays_not_resolving_first(&plays, false);
     assert_named_verdicts(&plays, &invalid);
 }
 
 /// The harden-ssh exception with it on. Each play is the pinned block with at most one change,
-/// except where a comment says why a row needs a second. The test adds [`GUARD_LOOP_REFUSALS`] and
+/// except where a comment says why a row needs a second. The test adds [`GUARD_REFUSALS`] and
 /// [`STORE_LOOKUP_REFUSALS`].
 const HARDEN_SSH_CASES: &str = r#"
 - name: ok pinned harden-ssh opening
@@ -855,47 +879,6 @@ const HARDEN_SSH_CASES: &str = r#"
           no_log: true
       rescue:
         - ansible.builtin.debug: {msg: hi}
-- name: bad harden-ssh opening whose guard has a when
-  tasks:
-    - block:
-        - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
-          loop: [a]
-          loop_control:
-            loop_var: _rvo_name
-          when: true
-        - ansible.builtin.set_fact:
-            ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"
-          become: false
-          no_log: true
-      rescue:
-        - ansible.builtin.debug: {msg: hi}
-- name: bad harden-ssh opening whose guard is tagged never
-  tasks:
-    - block:
-        - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
-          loop: [a]
-          loop_control:
-            loop_var: _rvo_name
-          tags: [never]
-        - ansible.builtin.set_fact:
-            ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"
-          become: false
-          no_log: true
-      rescue:
-        - ansible.builtin.debug: {msg: hi}
-- name: bad harden-ssh opening whose guard path is templated
-  tasks:
-    - block:
-        - ansible.builtin.include_tasks: "{{ _d }}/tasks/refuse-var-overrides.yml"
-          loop: [a]
-          loop_control:
-            loop_var: _rvo_name
-        - ansible.builtin.set_fact:
-            ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"
-          become: false
-          no_log: true
-      rescue:
-        - ansible.builtin.debug: {msg: hi}
 - name: bad harden-ssh opening whose password set_fact has a when
   tasks:
     - block:
@@ -966,14 +949,12 @@ const HARDEN_SSH_CASES: &str = r#"
           no_log: true
       rescue:
         - ansible.builtin.debug: {msg: hi}
-# The leading debug keeps the password at block[1] and loops like the guard, so only the guard's
-# place is wrong: a check that found the guard anywhere in the block would accept this row. Without
-# the loop the row is refused for the debug's missing loop, whatever the check does with the guard.
+# The leading debug keeps the password at block[1], so only the guard's place is wrong: a check
+# that found the guard anywhere in the block would accept this row.
 - name: bad harden-ssh opening with the guard after the password
   tasks:
     - block:
         - ansible.builtin.debug: {msg: hi}
-          loop: [a]
         - ansible.builtin.set_fact:
             ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"
           become: false
@@ -986,20 +967,94 @@ const HARDEN_SSH_CASES: &str = r#"
         - ansible.builtin.debug: {msg: hi}
 "#;
 
-/// harden-ssh.yml's pinned opening block as a case play, with the guard's loop line and the password
-/// value given. Built unchanged it is an `ok` row of the test, so a broken template cannot refuse the
-/// rows built from it for the wrong reason.
-fn pinned_play(name: &str, guard_loop: &str, password: &str) -> String {
+/// A usable guard include ([`is_usable_override_guard`]) as a task-list item at no indent: the
+/// shape every row of [`GUARD_REFUSALS`] changes in one place.
+const USABLE_GUARD: &str = "\
+- ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
+  loop: [a]
+  loop_control:
+    loop_var: _rvo_name";
+
+/// The guard refusals, `(row name, from, to)`: [`USABLE_GUARD`] with its first `from` replaced by
+/// `to`, refused for that change alone by both the opening check and the harden-ssh exception. A
+/// `from` that matched nothing would leave a usable guard under a `bad` name, which
+/// [`assert_named_verdicts`] fails on.
+const GUARD_REFUSALS: &[(&str, &str, &str)] = &[
+    (
+        "guard is bare",
+        "\n  loop: [a]\n  loop_control:\n    loop_var: _rvo_name",
+        "",
+    ),
+    ("guard has no loop", "\n  loop: [a]", ""),
+    ("guard loop is empty", "loop: [a]", "loop: []"),
+    (
+        "guard loop is templated",
+        "loop: [a]",
+        "loop: \"{{ _names }}\"",
+    ),
+    (
+        "guard loops with with_items",
+        "loop: [a]",
+        "with_items: [a]",
+    ),
+    (
+        "guard has two loop keys",
+        "loop: [a]",
+        "loop: [a]\n  with_items: [a]",
+    ),
+    (
+        "guard has no loop_control",
+        "\n  loop_control:\n    loop_var: _rvo_name",
+        "",
+    ),
+    (
+        "guard loop_var is item",
+        "loop_var: _rvo_name",
+        "loop_var: item",
+    ),
+    ("guard is an import", "include_tasks", "import_tasks"),
+    (
+        "guard path is templated",
+        "tasks/refuse-var-overrides.yml",
+        "\"{{ _d }}/tasks/refuse-var-overrides.yml\"",
+    ),
+    ("guard has a when", "loop: [a]", "when: true\n  loop: [a]"),
+    (
+        "guard is tagged never",
+        "loop: [a]",
+        "tags: [never]\n  loop: [a]",
+    ),
+];
+
+/// [`USABLE_GUARD`] with its first `from` replaced by `to` (`""` for `""` changes nothing), each
+/// line indented by `indent` spaces.
+fn guard_at(indent: usize, from: &str, to: &str) -> String {
+    let pad = " ".repeat(indent);
+    USABLE_GUARD
+        .replacen(from, to, 1)
+        .lines()
+        .map(|line| format!("{pad}{line}\n"))
+        .collect()
+}
+
+/// A play whose `tasks` open with the guard, changed as `from` to `to`, then the resolver.
+fn guard_then_resolver(name: &str, from: &str, to: &str) -> String {
+    format!(
+        "- name: {name}\n  tasks:\n{}    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml\n",
+        guard_at(4, from, to)
+    )
+}
+
+/// harden-ssh.yml's pinned opening block as a case play, with the guard task (from [`guard_at`] at
+/// indent 8) and the password value given. Built unchanged it is an `ok` row of the test, so a
+/// broken template cannot refuse the rows built from it for the wrong reason.
+fn pinned_play(name: &str, guard: &str, password: &str) -> String {
     format!(
         r#"
 - name: {name}
   tasks:
     - block:
-        - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
-          {guard_loop}
-          loop_control:
-            loop_var: _rvo_name
-        - ansible.builtin.set_fact:
+{guard}        - ansible.builtin.set_fact:
             ansible_become_password: "{password}"
           become: false
           no_log: true
@@ -1008,22 +1063,6 @@ fn pinned_play(name: &str, guard_loop: &str, password: &str) -> String {
 "#
     )
 }
-
-/// The guard's loop line in the pinned block.
-const PINNED_LOOP: &str = "loop: [a]";
-
-/// The guard-loop refusals: the pinned block with only the guard's loop line changed (a comment line
-/// drops the loop), each refused for that line alone. Named `bad harden-ssh opening whose <row name>`.
-const GUARD_LOOP_REFUSALS: &[(&str, &str)] = &[
-    ("guard loop is empty", "loop: []"),
-    ("guard loops with with_items", "with_items: [a]"),
-    ("guard has no loop", "# no loop"),
-    (
-        "guard has two loop keys",
-        "loop: [a]\n          with_items: [a]",
-    ),
-    ("guard loop is templated", "loop: \"{{ _names }}\""),
-];
 
 /// The store lookup the pinned block reads the password with.
 const STORE_VALUE: &str = r#"{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"#;
@@ -1071,25 +1110,26 @@ const STORE_LOOKUP_REFUSALS: &[(&str, &str)] = &[
 
 #[test]
 fn the_harden_ssh_exception_accepts_only_its_pinned_block() {
-    let guard_loops = GUARD_LOOP_REFUSALS
+    let usable = guard_at(8, "", "");
+    let guards = GUARD_REFUSALS
         .iter()
-        .map(|(name, guard_loop)| (name, *guard_loop, STORE_VALUE));
+        .map(|(row, from, to)| (row, guard_at(8, from, to), STORE_VALUE));
     let values = STORE_LOOKUP_REFUSALS
         .iter()
-        .map(|(name, value)| (name, PINNED_LOOP, *value));
-    let refusals: String = guard_loops
+        .map(|(row, value)| (row, usable.clone(), *value));
+    let refusals: String = guards
         .chain(values)
-        .map(|(name, guard_loop, value)| {
+        .map(|(row, guard, value)| {
             pinned_play(
-                &format!("bad harden-ssh opening whose {name}"),
-                guard_loop,
+                &format!("bad harden-ssh opening whose {row}"),
+                &guard,
                 value,
             )
         })
         .collect();
     let template = pinned_play(
         "ok harden-ssh opening built by pinned_play",
-        PINNED_LOOP,
+        &usable,
         STORE_VALUE,
     );
     let plays = case_plays(&format!("{HARDEN_SSH_CASES}{template}{refusals}"));
