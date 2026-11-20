@@ -63,3 +63,9 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1204 (AC-972).
 - **DERIVED:** A guard that recognises a whole template expression by regex anchors both ends and refuses, in any free-form tail, every character that could open another expression or call: `{`, `}`, `(` and `)`. Each refused character has a fixture that must fail.
 - **APPLIES TO:** regex-based checks in `platform/tests/suite/` that accept a templated value only when it is exactly one expression (store lookups, guard bindings).
+
+### L-011 · 2026-11-19 · o11y
+
+- **ACCEPTED:** the KV pool trial stop-line alert rule (AC-999).
+- **DERIVED:** A Grafana alert whose query joins branches with `or` (the macro `inference_rule` in `alerts.yml.j2`: query A, then a threshold on A with reducer `last`) wraps the whole union in `count()` and thresholds it `gt 0` when the branches return different kinds of value. Without the wrap, `gt 0` compares each branch's own value: a hit ratio of exactly 0 is a firing branch and fails `gt 0`, so the stop line is missed (checked with promtool 3.1.0 on 2026-11-19: the raw union returned 288, 0.95 and 0.5 for three firing cases, and its zero-ratio case returned 0, which `> 0` dropped). `count()` returns 1 whenever any branch returns a series and nothing otherwise.
+- **APPLIES TO:** Grafana alert rules in `platform/services/o11y/deployment/templates/alerts.yml.j2` whose expression is an `or` of conditions.
