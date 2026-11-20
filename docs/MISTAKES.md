@@ -5682,7 +5682,9 @@ delta reviews on.
 
 **The rule.** After refreshing a branch over a rule that landed on `dev`, check the branch against every clause of the rule, not only the ones its test enforces. A module in the `playbook` tier loads the filter plugins through the root `ansible.cfg`, so a change to a filter plugin must select it in the push lane. While other areas claim the plugins, its own area lists `"platform/playbooks/filter_plugins/**"` in `paths` too.
 
-**Enforced by.** Test: the `lanes` suite test `every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes` (AC-977) fails when a change to `ansible.cfg` or to any tracked file under `platform/playbooks/filter_plugins/` does not select a playbook-tier module in the push lane. It found the gap in four areas on `dev` `92922b7e` (`cloudflare_edge`, `firewall`, `support_forgeries`, `cleanup_backup_archives`), and each now claims `platform/playbooks/filter_plugins/**`.
+**Enforced by.** Convention until S9 (AC-977) part C lands. Part C fails the `lanes` suite when a change to `ansible.cfg` or under `platform/playbooks/filter_plugins/` does not select a playbook-tier module in the push lane, and its fixes add the path to the areas it names. On `dev` `4a0e3d49` the same gap is in three more areas: `areas.d/cloudflare_edge.yml` claims no filter plugin, `areas.d/firewall.yml` claims `filter_plugins/ufw_rules.py` alone, and `areas.d/support_forgeries.yml` has `paths: []`.
+
+**Status 2026-11-19.** Part C landed (AC-977): the `lanes` suite test `every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes` fails when a change to `ansible.cfg` or to any tracked file under `platform/playbooks/filter_plugins/` does not select a playbook-tier module in the push lane. On `dev` `92922b7e` it found the gap in four areas (`cloudflare_edge`, `firewall`, `support_forgeries`, `cleanup_backup_archives`), and each now claims `platform/playbooks/filter_plugins/**`. The Index cell now names the test; the paragraphs above are left as written.
 
 ### 5.34 Fixed a destructive block's failure paths one review finding at a time; two more returns found the rest
 

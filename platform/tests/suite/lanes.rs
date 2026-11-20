@@ -1399,6 +1399,31 @@ const CHAIN_KEYS: [&str; 6] = [
 /// that matches no refusal is stale and reported.
 const CHAIN_EXCEPTIONS: &[(&str, &str, &str)] = &[];
 
+/// A target the chain walk cannot resolve: the file naming it, the line, the target and why.
+/// Matched by value, so an exception for one target never accepts another that contains it.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Unresolved {
+    file: String,
+    line: usize,
+    target: String,
+    why: &'static str,
+}
+
+impl std::fmt::Display for Unresolved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Unresolved {
+            file,
+            line,
+            target,
+            why,
+        } = self;
+        write!(
+            f,
+            "{file}:{line}: {target} does not resolve to a tracked file ({why})"
+        )
+    }
+}
+
 /// `dir/tail` with `.` and `..` resolved lexically; `None` above the repository root.
 fn normalise(dir: &str, tail: &str) -> Option<String> {
     let mut parts = vec![];
@@ -1435,7 +1460,7 @@ fn chain_files(
     root: &Path,
     start: &str,
     tracked: &BTreeSet<String>,
-) -> (BTreeSet<String>, Vec<String>) {
+) -> (BTreeSet<String>, Vec<Unresolved>) {
     let playbook_dir =
         Regex::new(r"^\{\{\s*playbook_dir\s*\}\}/(.+)$").expect("the pattern compiles");
     let mut files = BTreeSet::from([start.to_owned()]);
@@ -1453,7 +1478,7 @@ fn chain_files(
         };
         let dir = file.rsplit_once('/').map_or("", |(d, _)| d);
         // (target, why it is refused, whether it is a playbook to walk)
-        let mut targets: Vec<(String, Option<&str>, bool)> = vec![];
+        let mut targets: Vec<(String, Option<&'static str>, bool)> = vec![];
         for task in yaml::tasks(&doc) {
             for key in CHAIN_KEYS {
                 let Some(value) = task.get(key) else { continue };
@@ -1492,9 +1517,12 @@ fn chain_files(
                     .lines()
                     .position(|l| l.contains(target.as_str()))
                     .map_or(0, |i| i + 1);
-                refusals.push(format!(
-                    "{file}:{line}: {target} does not resolve to a tracked file ({why})"
-                ));
+                refusals.push(Unresolved {
+                    file: file.clone(),
+                    line,
+                    target,
+                    why,
+                });
                 continue;
             }
             for f in found {
@@ -1509,14 +1537,14 @@ fn chain_files(
 }
 
 /// The refusals no exception row accepts, then one line per row that accepts no refusal.
-fn unexcepted(refusals: &[String], exceptions: &[(&str, &str, &str)]) -> Vec<String> {
-    let accepts = |r: &str, (file, target, _): &(&str, &str, &str)| {
-        r.starts_with(&format!("{file}:")) && r.contains(&format!(": {target} does not resolve"))
+fn unexcepted(refusals: &[Unresolved], exceptions: &[(&str, &str, &str)]) -> Vec<String> {
+    let accepts = |r: &Unresolved, (file, target, _): &(&str, &str, &str)| {
+        r.file == *file && r.target == *target
     };
     let mut problems: Vec<String> = refusals
         .iter()
         .filter(|r| !exceptions.iter().any(|e| accepts(r, e)))
-        .cloned()
+        .map(Unresolved::to_string)
         .collect();
     for e @ (file, target, reason) in exceptions {
         if !refusals.iter().any(|r| accepts(r, e)) {
@@ -1608,8 +1636,19 @@ fn chain_files_refuses_a_target_it_cannot_resolve() {
 
         // Assert
         assert_eq!(refusals.len(), 1, "{content}: {refusals:?}");
+        assert_eq!(
+            (
+                refusals[0].file.as_str(),
+                refusals[0].line,
+                refusals[0].target.as_str()
+            ),
+            ("p/a.yml", 1, target),
+            "{content}"
+        );
         assert!(
-            refusals[0].starts_with(&format!("p/a.yml:1: {target} does not resolve")),
+            refusals[0]
+                .to_string()
+                .starts_with(&format!("p/a.yml:1: {target} does not resolve")),
             "{content}: {refusals:?}"
         );
     }
@@ -1617,15 +1656,33 @@ fn chain_files_refuses_a_target_it_cannot_resolve() {
 
 #[test]
 fn an_exception_accepts_its_refusal_and_a_stale_one_is_reported() {
-    // Arrange
-    let refusals = ["p/a.yml:3: x.yml does not resolve to a tracked file (not tracked)".to_owned()];
-    let rows = [("p/a.yml", "x.yml", "why"), ("p/b.yml", "y.yml", "gone")];
+    // Arrange: one row per refusal, a stale row, and a refusal whose target holds another row's
+    // target after `: ` (its message contains that row's), which no row accepts.
+    let refusal = |file: &str, target: &str| Unresolved {
+        file: file.to_owned(),
+        line: 3,
+        target: target.to_owned(),
+        why: "not tracked",
+    };
+    let refusals = [refusal("p/a.yml", "x.yml"), refusal("p/c.yml", "d: w.yml")];
+    let rows = [
+        ("p/a.yml", "x.yml", "why"),
+        ("p/b.yml", "y.yml", "gone"),
+        ("p/c.yml", "w.yml", "a different target"),
+    ];
 
     // Act
     let problems = unexcepted(&refusals, &rows);
 
     // Assert
-    assert_eq!(problems, ["stale exception: p/b.yml y.yml (gone)"]);
+    assert_eq!(
+        problems,
+        [
+            "p/c.yml:3: d: w.yml does not resolve to a tracked file (not tracked)",
+            "stale exception: p/b.yml y.yml (gone)",
+            "stale exception: p/c.yml w.yml (a different target)",
+        ]
+    );
 }
 
 /// A playbook-tier module runs a playbook, and the run loads every file the playbook's chain
