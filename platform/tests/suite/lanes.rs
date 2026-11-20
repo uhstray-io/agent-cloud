@@ -1020,8 +1020,8 @@ fn repo_wide_scans_refuses_a_pathspec_it_cannot_read() {
 }
 
 /// Whether a change to `file` alone selects `module` in the push lane (everything counts).
-fn selects(config: &Config, module: &str, file: &str) -> bool {
-    match select(config, Lane::Push, &[file.to_owned()]) {
+fn selects(config: &Config, module: &str, file: &String) -> bool {
+    match select(config, Lane::Push, std::slice::from_ref(file)) {
         Selection::All => true,
         Selection::Modules(selected) => selected.contains(module),
     }
@@ -1362,6 +1362,61 @@ fn a_playbook_module_unselected_by_a_loaded_file_is_reported() {
     assert!(none.is_empty(), "{none:?}");
 }
 
+/// The tracked files the `[defaults]` values of the ansible.cfg text `cfg` name (`./` dropped, `:`
+/// between paths): a run loads what a value names, whatever its key (`*_plugins`, `library`,
+/// `roles_path`). A line that is not blank, a comment, a section or `key = value` (no `:` in the
+/// key, no comment after the value) is refused, so a form this reader does not take fails the
+/// test instead of dropping a path.
+fn cfg_paths(cfg: &str, tracked: &BTreeSet<String>) -> Vec<String> {
+    let mut section = "";
+    let mut paths = vec![];
+    for line in cfg.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with(['#', ';']) {
+            continue;
+        }
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            section = name;
+            continue;
+        }
+        let Some((_, value)) = line
+            .split_once('=')
+            .filter(|(key, value)| !key.contains(':') && !value.contains(['#', ';']))
+        else {
+            panic!("ansible.cfg: {line:?} is not `key = value`, the one form this reader takes");
+        };
+        if section == "defaults" {
+            for path in value.split(':') {
+                paths.extend(tracked_at(path.trim().trim_start_matches("./"), tracked));
+            }
+        }
+    }
+    paths
+}
+
+#[test]
+fn cfg_paths_reads_defaults_values_and_refuses_other_forms() {
+    // Arrange: a commented line, paths under any key, one not a path, another section's key.
+    let tracked: BTreeSet<String> = ["a/1.py", "b/2.py", "c/3.py", "d/4.py"]
+        .map(str::to_owned)
+        .into();
+    let cfg = "# x = d\n[defaults]\nfilter_plugins = ./a\nlibrary = b:./c\nshow = True\n[colors]\nx = d\n";
+
+    // Act
+    let paths = cfg_paths(cfg, &tracked);
+
+    // Assert
+    assert_eq!(paths, ["a/1.py", "b/2.py", "c/3.py"]);
+    for line in [
+        "filter_plugins: ./a",
+        "filter_plugins: ./a=b",
+        "filter_plugins = ./a ; a note",
+    ] {
+        let refused =
+            std::panic::catch_unwind(|| cfg_paths(&format!("[defaults]\n{line}\n"), &tracked));
+        assert!(refused.is_err(), "{line} was read");
+    }
+}
+
 /// ansible.cfg loads every plugin in each directory it names (filter and callback plugins) into
 /// every playbook run, so a change to it or to any of them must select every playbook-tier module.
 #[test]
@@ -1369,23 +1424,10 @@ fn every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes() {
     // Arrange
     let config = repo_config();
     let (main, area_files) = area_documents();
-    // Each `<kind>_plugins = ./<dir>` line of ansible.cfg names a directory every run loads.
+    let tracked: BTreeSet<String> = repo::ls_files(&[]).into_iter().collect();
     let mut loaded = vec!["ansible.cfg".to_owned()];
-    for line in text::read("ansible.cfg").lines() {
-        let Some((key, dir)) = line.split_once('=') else {
-            continue;
-        };
-        if key.trim().ends_with("_plugins") {
-            let dir = dir.trim().trim_start_matches("./");
-            let plugins = repo::ls_files(&[&format!("{dir}/")]);
-            assert!(
-                !plugins.is_empty(),
-                "ansible.cfg: {dir} holds no tracked file"
-            );
-            loaded.extend(plugins);
-        }
-    }
-    assert!(loaded.len() > 1, "ansible.cfg names no plugin directory");
+    loaded.extend(cfg_paths(&text::read("ansible.cfg"), &tracked));
+    assert!(loaded.len() > 1, "ansible.cfg names no tracked path");
 
     // Act
     let modules = playbook_modules(&main, &area_files);
@@ -1445,13 +1487,10 @@ fn normalise(dir: &str, tail: &str) -> Option<String> {
 
 /// The tracked file `path`, or every tracked file under the directory `path`.
 fn tracked_at(path: &str, tracked: &BTreeSet<String>) -> Vec<String> {
-    if tracked.contains(path) {
-        return vec![path.to_owned()];
-    }
     let prefix = format!("{path}/");
     tracked
-        .range(prefix.clone()..)
-        .take_while(|f| f.starts_with(&prefix))
+        .iter()
+        .filter(|f| *f == path || f.starts_with(&prefix))
         .cloned()
         .collect()
 }
@@ -1487,17 +1526,19 @@ fn chain_files(
         // (target, why it is refused, whether it is a playbook to walk)
         let mut targets: Vec<(String, Option<&'static str>, bool)> = vec![];
         for task in yaml::tasks(&doc) {
-            let keys = CHAIN_SHORTS.iter().flat_map(|short| {
-                ["", "ansible.builtin.", "ansible.legacy."].map(|p| format!("{p}{short}"))
-            });
-            for key in keys {
-                let Some(value) = task.get(&key) else {
+            for (key, value) in task.as_map().unwrap_or_default() {
+                let Some(key) = key.as_str() else { continue };
+                let short = key
+                    .strip_prefix("ansible.builtin.")
+                    .or_else(|| key.strip_prefix("ansible.legacy."))
+                    .unwrap_or(key);
+                if !CHAIN_SHORTS.contains(&short) {
                     continue;
-                };
+                }
                 match value.as_str().or_else(|| value.get("file")?.as_str()) {
-                    Some(t) => targets.push((t.to_owned(), None, key.ends_with("import_playbook"))),
+                    Some(t) => targets.push((t.to_owned(), None, short == "import_playbook")),
                     None => targets.push((
-                        key.clone(),
+                        key.to_owned(),
                         Some("not a string or a mapping with a string file"),
                         false,
                     )),
@@ -1708,6 +1749,7 @@ fn every_file_a_playbook_chain_loads_selects_its_module() {
     let config = repo_config();
     let (main, area_files) = area_documents();
     let tracked: BTreeSet<String> = repo::ls_files(&[]).into_iter().collect();
+    let playbooks: BTreeSet<String> = repo::playbook_files().into_iter().collect();
 
     // Act
     let mut walked = 0;
@@ -1719,10 +1761,8 @@ fn every_file_a_playbook_chain_loads_selects_its_module() {
             .into_iter()
             .flat_map(|(_, literals)| literals)
             .filter(|f| {
-                tracked.contains(f)
-                    && (f.ends_with(".yml") || f.ends_with(".yaml"))
-                    && (f.starts_with("platform/playbooks/")
-                        || f.starts_with("platform/semaphore/"))
+                playbooks.contains(f)
+                    && tracked.contains(f)
                     && !f.starts_with("platform/playbooks/tasks/")
             })
             .collect();

@@ -52,12 +52,13 @@ given the repository root, a call through a function value, or a directory walk.
   exception table lists it. It reads the real file, so it also asks for the extra-var guard import
   that the test harness drops; that over-selection is accepted.
 - `every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes`: `ansible.cfg` and every
-  plugin in each `*_plugins` directory it names (filter and callback plugins) select every
-  playbook-tier module.
+  tracked path its `[defaults]` values name (the filter and callback plugin directories today)
+  select every playbook-tier module. A line in a form its reader does not take fails the test.
 
 Still not checked: a path built at run time, a read through a variable or a function value, a
 constant defined twice, `repo::playbook_files()`, a directory walk other than `repo::grep` and
-`repo::ls_files`, and a playbook's `vars_files` and `include_vars` targets. List those files in the area's `paths`.
+`repo::ls_files`, a playbook's `vars_files` and `include_vars` targets, roles (`roles:`,
+`include_role`, `import_role`), and plugin directories beside a playbook. List those files in the area's `paths`.
 
 ```yaml
 # areas.d/netbox_prefix.yml
