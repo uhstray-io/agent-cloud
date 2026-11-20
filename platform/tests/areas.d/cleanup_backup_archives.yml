@@ -5,6 +5,9 @@
 # reviewed-checkout import and the delete block's gate.
 paths:
   - "platform/playbooks/cleanup-proxmox-backup-archives.yml"
+  # Files its playbook chain loads (lanes test every_file_a_playbook_chain_loads_selects_its_module).
+  - "platform/playbooks/refuse-internal-extra-vars.yml"
+  - "platform/playbooks/require-reviewed-checkout.yml"
   - "platform/playbooks/files/cleanup_backup_archives.py"
   - "platform/playbooks/files/survey_backup_storage.py"
   # ansible.cfg loads every filter plugin into every playbook run (lanes test

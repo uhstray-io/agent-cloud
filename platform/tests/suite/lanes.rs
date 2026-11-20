@@ -8,6 +8,7 @@
 //! runs in every lane.
 
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use agent_cloud_tests::lanes::{Config, Lane, Selection, select};
 use agent_cloud_tests::process;
@@ -15,6 +16,7 @@ use agent_cloud_tests::repo;
 use agent_cloud_tests::text;
 use agent_cloud_tests::yaml::{self, Node};
 use proptest::prelude::*;
+use regex::Regex;
 use tempfile::TempDir;
 
 /// Three areas: a static module, a cli module, and one area with a module in each tier.
@@ -951,6 +953,7 @@ fn f() {
     repo::r#ls_files(&["raw"]);
     repo:: /* c */ r#grep("x", &["afterpath"]);
     repository::grep("no", &["prefix"]);
+    f(repo, grep("no", &["nocolons"]));
 }
 "##;
 
@@ -1379,5 +1382,304 @@ fn every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes() {
         !modules.is_empty(),
         "no playbook-tier module; the reader is broken"
     );
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// The keys that load another file into a playbook run.
+const CHAIN_KEYS: [&str; 6] = [
+    "import_playbook",
+    "ansible.builtin.import_playbook",
+    "include_tasks",
+    "ansible.builtin.include_tasks",
+    "import_tasks",
+    "ansible.builtin.import_tasks",
+];
+
+/// Chain targets the walk may not resolve, each as (file, target, reason). A closed list: a row
+/// that matches no refusal is stale and reported.
+const CHAIN_EXCEPTIONS: &[(&str, &str, &str)] = &[];
+
+/// `dir/tail` with `.` and `..` resolved lexically; `None` above the repository root.
+fn normalise(dir: &str, tail: &str) -> Option<String> {
+    let mut parts = vec![];
+    for part in dir.split('/').chain(tail.split('/')) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// The tracked file `path`, or every tracked file under the directory `path`.
+fn tracked_at(path: &str, tracked: &BTreeSet<String>) -> Vec<String> {
+    if tracked.contains(path) {
+        return vec![path.to_owned()];
+    }
+    let prefix = format!("{path}/");
+    tracked
+        .range(prefix.clone()..)
+        .take_while(|f| f.starts_with(&prefix))
+        .cloned()
+        .collect()
+}
+
+/// Every file the playbook `start` loads (itself included): `import_playbook` targets walked
+/// recursively, `include_tasks`/`import_tasks` targets, and `{{ playbook_dir }}/<path>` strings,
+/// each resolved against the directory of the file that names it. Second: one refusal per target
+/// the walk cannot resolve to a tracked file or directory.
+fn chain_files(
+    root: &Path,
+    start: &str,
+    tracked: &BTreeSet<String>,
+) -> (BTreeSet<String>, Vec<String>) {
+    let playbook_dir =
+        Regex::new(r"^\{\{\s*playbook_dir\s*\}\}/(.+)$").expect("the pattern compiles");
+    let mut files = BTreeSet::from([start.to_owned()]);
+    let mut refusals = vec![];
+    let mut queue = vec![start.to_owned()];
+    let mut walked = BTreeSet::new();
+    while let Some(file) = queue.pop() {
+        if !walked.insert(file.clone()) {
+            continue;
+        }
+        let text =
+            std::fs::read_to_string(root.join(&file)).unwrap_or_else(|e| panic!("{file}: {e}"));
+        let Some(doc) = yaml::parse(&text, &file).into_iter().next() else {
+            continue;
+        };
+        let dir = file.rsplit_once('/').map_or("", |(d, _)| d);
+        // (target, why it is refused, whether it is a playbook to walk)
+        let mut targets: Vec<(String, Option<&str>, bool)> = vec![];
+        for task in yaml::tasks(&doc) {
+            for key in CHAIN_KEYS {
+                let Some(value) = task.get(key) else { continue };
+                match value.as_str().or_else(|| value.get("file")?.as_str()) {
+                    Some(t) => targets.push((t.to_owned(), None, key.ends_with("import_playbook"))),
+                    None => targets.push((
+                        key.to_owned(),
+                        Some("not a string or a mapping with a string file"),
+                        false,
+                    )),
+                }
+            }
+        }
+        for s in yaml::strings(&doc, false) {
+            if let Some(tail) = playbook_dir.captures(s).map(|c| c[1].to_owned()) {
+                let why = tail
+                    .contains(['{', '}', '(', ')'])
+                    .then_some("a templated or computed path");
+                targets.push((tail, why, false));
+            }
+        }
+        for (target, why, walk) in targets {
+            let why = why.or_else(|| target.contains("{{").then_some("a templated path"));
+            let resolved = normalise(dir, &target);
+            let found = resolved
+                .as_deref()
+                .map(|r| tracked_at(r, tracked))
+                .unwrap_or_default();
+            let why = why.or(match (&resolved, found.is_empty()) {
+                (None, _) => Some("above the repository root"),
+                (_, true) => Some("not tracked"),
+                _ => None,
+            });
+            if let Some(why) = why {
+                let line = text
+                    .lines()
+                    .position(|l| l.contains(target.as_str()))
+                    .map_or(0, |i| i + 1);
+                refusals.push(format!(
+                    "{file}:{line}: {target} does not resolve to a tracked file ({why})"
+                ));
+                continue;
+            }
+            for f in found {
+                if walk {
+                    queue.push(f.clone());
+                }
+                files.insert(f);
+            }
+        }
+    }
+    (files, refusals)
+}
+
+/// The refusals no exception row accepts, then one line per row that accepts no refusal.
+fn unexcepted(refusals: &[String], exceptions: &[(&str, &str, &str)]) -> Vec<String> {
+    let accepts = |r: &str, (file, target, _): &(&str, &str, &str)| {
+        r.starts_with(&format!("{file}:")) && r.contains(&format!(": {target} does not resolve"))
+    };
+    let mut problems: Vec<String> = refusals
+        .iter()
+        .filter(|r| !exceptions.iter().any(|e| accepts(r, e)))
+        .cloned()
+        .collect();
+    for e @ (file, target, reason) in exceptions {
+        if !refusals.iter().any(|r| accepts(r, e)) {
+            problems.push(format!("stale exception: {file} {target} ({reason})"));
+        }
+    }
+    problems
+}
+
+/// A temporary repository holding `files` (path, content), and their tracked set.
+fn chain_repo(files: &[(&str, &str)]) -> (TempDir, BTreeSet<String>) {
+    let root = TempDir::new().expect("a temporary directory");
+    for (path, content) in files {
+        let at = root.path().join(path);
+        std::fs::create_dir_all(at.parent().expect("a parent")).expect("the directory is made");
+        std::fs::write(at, content).expect("the file is written");
+    }
+    let tracked = files.iter().map(|(p, _)| (*p).to_owned()).collect();
+    (root, tracked)
+}
+
+#[test]
+fn chain_files_follows_imports_includes_and_playbook_dir_paths() {
+    // Arrange: a imports b, b imports c; a commented import is not followed, nor a path with
+    // more lines after it.
+    let a = r#"# - import_playbook: z.yml
+- ansible.builtin.import_playbook: b.yml
+- hosts: all
+  tasks:
+    - include_tasks: tasks/t.yml
+    - ansible.builtin.import_tasks: {file: tasks/u.yml}
+    - command: "{{ playbook_dir }}/files/s.py"
+      args: {chdir: "{{ playbook_dir }}/../infra/d"}
+    - debug: {msg: "{{ playbook_dir }}/files/n.py\nrest"}
+"#;
+    let (root, tracked) = chain_repo(&[
+        ("p/a.yml", a),
+        ("p/b.yml", "- import_playbook: c.yml\n"),
+        ("p/c.yml", "- hosts: all\n"),
+        ("p/z.yml", "- hosts: all\n"),
+        ("p/tasks/t.yml", "- debug: {}\n"),
+        ("p/tasks/u.yml", "- debug: {}\n"),
+        ("p/files/s.py", ""),
+        ("p/files/n.py", ""),
+        ("infra/d/1.tf", ""),
+        ("infra/d/2.tf", ""),
+    ]);
+
+    // Act
+    let (files, refusals) = chain_files(root.path(), "p/a.yml", &tracked);
+
+    // Assert
+    let expected = [
+        "infra/d/1.tf",
+        "infra/d/2.tf",
+        "p/a.yml",
+        "p/b.yml",
+        "p/c.yml",
+        "p/files/s.py",
+        "p/tasks/t.yml",
+        "p/tasks/u.yml",
+    ];
+    assert_eq!(files, expected.map(str::to_owned).into());
+    assert!(refusals.is_empty(), "{refusals:?}");
+}
+
+#[test]
+fn chain_files_refuses_a_target_it_cannot_resolve() {
+    // Arrange: one playbook per case, each line naming the target the refusal must name.
+    let cases = [
+        ("- import_playbook: \"{{ x }}.yml\"\n", "{{ x }}.yml"),
+        ("- import_playbook: missing.yml\n", "missing.yml"),
+        ("- import_playbook: ../../up.yml\n", "../../up.yml"),
+        ("- debug: {msg: \"{{ playbook_dir }}/f{x.py\"}\n", "f{x.py"),
+        ("- debug: {msg: \"{{ playbook_dir }}/f}x.py\"}\n", "f}x.py"),
+        ("- debug: {msg: \"{{ playbook_dir }}/f(x.py\"}\n", "f(x.py"),
+        ("- debug: {msg: \"{{ playbook_dir }}/f)x.py\"}\n", "f)x.py"),
+        ("- import_playbook: [a.yml]\n", "import_playbook"),
+    ];
+    for (content, target) in cases {
+        let (root, mut tracked) = chain_repo(&[("p/a.yml", content)]);
+        // Every target but the missing one is tracked, so each check is the only refusal.
+        if target != "missing.yml" {
+            tracked.insert(format!("p/{target}"));
+        }
+
+        // Act
+        let (_, refusals) = chain_files(root.path(), "p/a.yml", &tracked);
+
+        // Assert
+        assert_eq!(refusals.len(), 1, "{content}: {refusals:?}");
+        assert!(
+            refusals[0].starts_with(&format!("p/a.yml:1: {target} does not resolve")),
+            "{content}: {refusals:?}"
+        );
+    }
+}
+
+#[test]
+fn an_exception_accepts_its_refusal_and_a_stale_one_is_reported() {
+    // Arrange
+    let refusals = ["p/a.yml:3: x.yml does not resolve to a tracked file (not tracked)".to_owned()];
+    let rows = [("p/a.yml", "x.yml", "why"), ("p/b.yml", "y.yml", "gone")];
+
+    // Act
+    let problems = unexcepted(&refusals, &rows);
+
+    // Assert
+    assert_eq!(problems, ["stale exception: p/b.yml y.yml (gone)"]);
+}
+
+/// A playbook-tier module runs a playbook, and the run loads every file the playbook's chain
+/// names, so a change to any of them must select the module.
+#[test]
+fn every_file_a_playbook_chain_loads_selects_its_module() {
+    // Arrange
+    let config = repo_config();
+    let main = yaml::load_one(&repo::path("platform/tests/areas.yml")).expect("areas.yml loads");
+    let area_files: Vec<Node> = repo::ls_files(&[":(glob)platform/tests/areas.d/*.yml"])
+        .iter()
+        .map(|f| yaml::load_one(&repo::path(f)).unwrap_or_else(|| panic!("{f} loads")))
+        .collect();
+    let tracked: BTreeSet<String> = repo::ls_files(&[]).into_iter().collect();
+    let root = repo::path("");
+
+    // Act
+    let mut walked = 0;
+    let mut refusals = vec![];
+    let mut problems = vec![];
+    for module in playbook_modules(&main, &area_files) {
+        let src = text::read(&format!("platform/tests/suite/{module}.rs"));
+        let starts: BTreeSet<String> = path_reads(&src)
+            .into_iter()
+            .flat_map(|(_, literals)| literals)
+            .filter(|f| {
+                tracked.contains(f)
+                    && (f.ends_with(".yml") || f.ends_with(".yaml"))
+                    && (f.starts_with("platform/playbooks/")
+                        || f.starts_with("platform/semaphore/"))
+                    && !f.starts_with("platform/playbooks/tasks/")
+            })
+            .collect();
+        for start in starts {
+            walked += 1;
+            let (files, refused) = chain_files(&root, &start, &tracked);
+            refusals.extend(refused);
+            for file in files {
+                if let Selection::Modules(selected) =
+                    select(&config, Lane::Push, std::slice::from_ref(&file))
+                    && !selected.contains(&module)
+                {
+                    problems.push(format!(
+                        "{module}: {start} loads {file}, whose change does not select {module}"
+                    ));
+                }
+            }
+        }
+    }
+    refusals.sort();
+    refusals.dedup();
+    problems.extend(unexcepted(&refusals, CHAIN_EXCEPTIONS));
+
+    // Assert
+    assert!(walked > 0, "no playbook chain walked; the reader is broken");
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
