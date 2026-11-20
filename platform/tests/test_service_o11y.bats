@@ -1976,7 +1976,7 @@ inf_doc = yaml.safe_load(render_alerts.render(local_mode=False, o11y_alerts_enab
                                               dgx_spark_scrape_enabled=True, o11y_inference_probe_enabled=True))
 local_live, prod_live, inf_live = live_of(local_doc), live_of(prod_doc), live_of(inf_doc)
 inference = [rule for rule in inf_live if rule['uid'].startswith('inference_')]
-assert len(inference) == 9, [rule['uid'] for rule in inference]
+assert len(inference) == 10, [rule['uid'] for rule in inference]
 assert next(rule for rule in local_live if rule['uid'] == 'o11y_receiver_root_disk_low')['isPaused'] is True
 assert verify_rules(local_live, local_doc)
 assert verify_rules(prod_live, prod_doc)
@@ -3421,7 +3421,7 @@ for scrape in (False, True):
     names = [group['name'] for group in groups]
     if not scrape:
         assert names == ['service-telemetry'], names
-assert names == ['service-telemetry', 'inference-failing', 'telemetry-missing', 'memory-thermal', 'benchmark-gate'], names
+assert names == ['service-telemetry', 'inference-failing', 'telemetry-missing', 'memory-thermal', 'benchmark-gate', 'kv-pool-trial'], names
 
 placeholder = 'inference_benchmark_gate_placeholder'
 for enabled in (False, True):
@@ -3436,6 +3436,7 @@ for enabled in (False, True):
         assert [rule['uid'] for rule in rules['telemetry-missing']] == ['inference_target_down', 'inference_vllm_metrics_absent']
         assert [rule['uid'] for rule in rules['memory-thermal']] == ['inference_node_memavailable_low', 'inference_node_memfree_low']
         assert [rule['uid'] for rule in rules['benchmark-gate']] == [placeholder]
+        assert [rule['uid'] for rule in rules['kv-pool-trial']] == ['inference_kv_pool_trial_stop_line']
         active = enabled and canary is None
         for rule in (rule for group in rules.values() for rule in group):
             assert rule['uid'].startswith('inference_') and not rule['uid'].startswith('o11y_')
@@ -3461,6 +3462,20 @@ memory = {rule['uid']: rule for rule in rules['memory-thermal']}
 assert memory['inference_node_memavailable_low']['data'][0]['model']['expr'] == 'node_memory_MemAvailable_bytes{job="dgx-spark-node",cluster="dgx-spark"}'
 assert memory['inference_node_memavailable_low']['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [536870912]}
 assert memory['inference_node_memfree_low']['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'lt', 'params': [1073741824]}
+kv_group = next(group for group in groups if group['name'] == 'kv-pool-trial')
+assert kv_group['interval'] == '5m', kv_group['interval']
+kv_rule = kv_group['rules'][0]
+kv_inner = ('(sum(increase(vllm:num_preemptions_total{job="dgx-spark-vllm"}[1d])) > 0) or '
+            '(max(max_over_time(vllm:kv_cache_usage_perc{job="dgx-spark-vllm"}[1d])) >= 0.90) or '
+            '((sum(increase(vllm:prefix_cache_hits_total{job="dgx-spark-vllm"}[1d])) / '
+            'sum(increase(vllm:prefix_cache_queries_total{job="dgx-spark-vllm"}[1d])) < 0.75) and '
+            '(sum(increase(vllm:prompt_tokens_total{job="dgx-spark-vllm"}[1d])) >= 1e6))')
+assert kv_rule['data'][0]['model']['expr'] == 'count(' + kv_inner + ')', kv_rule['data'][0]['model']['expr']
+assert kv_rule['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [0]}
+assert kv_rule['for'] == '15m', kv_rule['for']
+assert kv_rule['labels']['severity'] == 'warning' and kv_rule['labels']['service'] == 'vllm', kv_rule['labels']
+assert kv_rule['noDataState'] == 'OK', kv_rule['noDataState']
+assert kv_rule['title'] == 'vLLM KV pool trial stop line reached', kv_rule['title']
 stalled = rules['inference-failing'][0]['data'][0]['model']['expr']
 assert 'vllm:num_requests_waiting{job="dgx-spark-vllm",cluster="dgx-spark"}' in stalled
 assert 'rate(vllm:generation_tokens_total{job="dgx-spark-vllm",cluster="dgx-spark"}[5m])) == 0' in stalled
@@ -3669,7 +3684,7 @@ assert listed['o11y_scheduled_job_silent']['data'][0]['relativeTimeRange'] == {'
 # alongside the inference rules when the scrape is off.
 inference = ['inference_queue_stalled', 'inference_queue_depth_high', 'inference_target_down', 'inference_vllm_metrics_absent',
              'inference_node_memavailable_low', 'inference_node_memfree_low',
-             'inference_benchmark_gate_placeholder']
+             'inference_benchmark_gate_placeholder', 'inference_kv_pool_trial_stop_line']
 probe = ['inference_probe_failing', 'inference_probe_stale']
 availability = ['o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing']
 for scrape, deleted in ((True, probe + availability + ['o11y_scheduled_job_silent']),

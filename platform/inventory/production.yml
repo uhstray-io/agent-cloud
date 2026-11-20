@@ -83,4 +83,5 @@ all:
     target_node: "{{ proxmox_node | default('alphacentauri') }}"
     vm_storage: "{{ proxmox_vm_storage | default('vm-lvms') }}"
     iso_storage: "{{ proxmox_iso_storage | default('SharedISOs') }}"
+    # proxmox_backup_cleanup_pairs: [{vmid: <vmid>, storage: <storage id>}]  # archives Clean Up Proxmox Backup Archives (Dev) may delete; values in site-config
     template_vmid: 9000

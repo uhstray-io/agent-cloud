@@ -38,6 +38,12 @@
 //! checker runs: it does not read `.rs` spans, so it reads such a ratchet line as stale. Until
 //! the Python checker goes (Phase 5), a cited Rust test that is renamed gets a dated note in the
 //! ledger entry naming its new name, as 10.15's "Enforcement moved" note does.
+//!
+//! ## Port map
+//!
+//! | BATS @test | Rust fn |
+//! |---|---|
+//! | mistakes doc: the four tests named below exist | `the_tests_the_mistakes_doc_names_exist`, with the self-check `a_test_fn_inside_a_literal_or_comment_is_not_a_test` |
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -62,6 +68,9 @@ static FILE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static FILE_RS: LazyLock<Regex> =
     LazyLock::new(|| re(r"^(?P<path>(?:[\w.-]+/)*suite/[\w-]+\.rs)(?:::(?P<name>\w+))?$"));
+static INNER_CFG: LazyLock<Regex> =
+    LazyLock::new(|| re(r"#\s*!\s*\[\s*cfg(?:_attr)?\s*\([^\]]*\]"));
+static ATTRIBUTE: LazyLock<Regex> = LazyLock::new(|| re(r"#\s*\[[^\]]*\]"));
 static NAME: LazyLock<Regex> = LazyLock::new(|| re(r"^test_\w+$"));
 static TEST_FILE: LazyLock<Regex> = LazyLock::new(|| re(r"^(?:test_\w+\.py|[\w-]+\.bats)$"));
 static BATS_TEST: LazyLock<Regex> =
@@ -192,18 +201,62 @@ fn defines(path: &Path, name: &str) -> bool {
     if !text.contains(name) {
         return false;
     }
-    let name = regex::escape(name);
     if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-        // Line-anchored like the Python rule; attributes and `pub`/`async` may precede it.
-        // Comments and literals are blanked first, so a fn inside one does not count.
-        let code = blank_comments_and_literals(&text);
-        let pattern = format!(
-            r"(?m)^[ \t]*(?:#\[[^\]]*\][ \t]*)*(?:pub(?:\([^)]*\))?[ \t]+)?(?:async[ \t]+)?fn[ \t]+{name}[ \t]*[<(]"
-        );
-        re(&pattern).is_match(&code)
+        defines_fn(&text, name, false)
     } else {
+        let name = regex::escape(name);
         re(&format!(r"(?m)^\s*(?:async\s+)?(?:def|class)\s+{name}\b")).is_match(&text)
     }
+}
+
+/// Whether Rust source defines `fn <fn_name>` in code: line-anchored like the Python rule, with
+/// attributes (on its line or the lines above, blank lines between), `pub`/`pub(..)` and `async`
+/// allowed before it. Comments and literals are blanked first, so a fn inside one does not count.
+/// With `require_test`, its attributes may hold only `#[test]`, `#[cfg(test)]` and `#[allow(..)]`
+/// and must include `#[test]`, and the file may carry no inner `#![cfg(..)]` but `#![cfg(test)]` and
+/// no inner `#![cfg_attr(..)]`: anything else could compile the test out or skip it.
+fn defines_fn(text: &str, fn_name: &str, require_test: bool) -> bool {
+    let code = blank_comments_and_literals(text);
+    // An inner `#![cfg(..)]` other than `#![cfg(test)]`, or any inner `#![cfg_attr(..)]`, can compile
+    // the whole file out.
+    if require_test
+        && INNER_CFG
+            .find_iter(&code)
+            .any(|m| m.as_str().split_whitespace().collect::<String>() != "#![cfg(test)]")
+    {
+        return false;
+    }
+    let name = regex::escape(fn_name);
+    let attribute = ATTRIBUTE.as_str();
+    let pattern = re(&format!(
+        r"(?m)^[ \t]*((?:{attribute}[ \t\n]*)*)(?:pub(?:\([^)]*\))?[ \t]+)?(?:async[ \t]+)?fn[ \t]+{name}[ \t]*[<(]"
+    ));
+    pattern.captures_iter(&code).any(|c| {
+        if !require_test {
+            return true;
+        }
+        // A counted test is a top-level item: its `fn` line starts at column 0. Inside a `mod`
+        // (rustfmt indents its items, which the rust_format test enforces) an outer attribute on
+        // the module could compile it out.
+        let fn_line = c[0].rsplit('\n').next().unwrap_or_default();
+        if fn_line.starts_with([' ', '\t']) {
+            return false;
+        }
+        // Every attribute on the fn, blank lines between them or not. They may be `#[test]`,
+        // `#[cfg(test)]` or `#[allow(..)]` and must include `#[test]`. Anything else (`#[ignore]`,
+        // `#[should_panic]`, `#[cfg_attr(..)]`, another `#[cfg(..)]`) changes whether or how the
+        // test runs; others (`#[serial]`, say) are refused on purpose: a named test must carry
+        // only these.
+        // Compared with all whitespace removed: `# [test]` is `#[test]`.
+        let run: Vec<String> = ATTRIBUTE
+            .find_iter(&c[1])
+            .map(|m| m.as_str().split_whitespace().collect())
+            .collect();
+        run.iter().any(|a| a == "#[test]")
+            && run
+                .iter()
+                .all(|a| a == "#[test]" || a == "#[cfg(test)]" || a.starts_with("#[allow("))
+    })
 }
 
 /// `src` with every comment (nested `/* */` included), string literal (plain, byte, C, raw) and char
@@ -796,4 +849,145 @@ fn a_rust_citation_resolves_in_this_repository() {
 
     // Assert
     assert_eq!(found, Vec::<String>::new());
+}
+
+/// `fn <name>` defined as a test in code: `#[test]` among its attributes, in any order, and no
+/// `#[cfg(...)]` but `#[cfg(test)]` ([`defines_fn`] with `require_test`).
+fn defines_test(text: &str, name: &str) -> bool {
+    defines_fn(text, name, true)
+}
+
+/// The fns a module's `//!` port map names for a BATS test: rows `| <name> | <fn>... |`, the
+/// first cell compared without backticks; from the second cell, its first backticked name, or
+/// its first word when nothing is backticked. Only the file's leading `//!` header is read, so a
+/// row-shaped line elsewhere (in a string, say) is not a port map.
+fn port_map_fns(text: &str, name: &str) -> Vec<String> {
+    text.lines()
+        .map_while(|line| line.strip_prefix("//!"))
+        .filter_map(|row| {
+            let cells: Vec<&str> = row.split('|').collect();
+            if cells.len() < 3 || cells[1].trim().trim_matches('`').trim() != name {
+                return None;
+            }
+            SPAN.captures(cells[2])
+                .map(|c| c[1].to_owned())
+                .or_else(|| cells[2].split_whitespace().next().map(str::to_owned))
+        })
+        .collect()
+}
+
+/// Whether a test name exists: a BATS `@test` in `platform/tests/*.bats`, or a port-map row in a
+/// suite module whose fn that module defines as a test.
+fn test_name_exists(root: &Path, name: &str) -> bool {
+    let tests = root.join("platform/tests");
+    let files = |dir: &Path, ext: &str| -> Vec<PathBuf> {
+        fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some(ext))
+            .collect()
+    };
+    files(&tests, "bats")
+        .iter()
+        .any(|bats| bats_names(bats).contains(name))
+        || files(&tests.join("suite"), "rs").iter().any(|rs| {
+            let text = read_lossy(rs);
+            port_map_fns(&text, name)
+                .iter()
+                .any(|f| defines_test(&text, f))
+        })
+}
+
+#[test]
+fn the_tests_the_mistakes_doc_names_exist() {
+    // Entry 8.2 is an invented cross-reference. The names are listed, not discovered: a
+    // discovering version needed enough pattern matching to mistake code for prose (entry 2.2).
+    // Deliberately not exhaustive over every name the ledger mentions.
+    let root = repo::root();
+    let doc = read_repo(LEDGER)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for name in [
+        "every play that resolves an OpenBao URL includes the transport guard",
+        "the transport pattern accepts internal endpoints and refuses public ones",
+        "postiz: the seed playbook uses the shared cleartext OpenBao guard",
+        "install-podman: configures no podman API socket",
+    ] {
+        assert!(doc.contains(name), "{LEDGER} no longer names {name:?}");
+        assert!(
+            test_name_exists(root, name),
+            "no BATS @test and no Rust port-map #[test] fn for: {name}"
+        );
+    }
+    // The ported test itself, pinned as the BATS original pinned it: `docs/MISTAKES.md` names this
+    // fn as the enforcement, so it must stay a counted test whichever fn its port-map row names.
+    assert!(
+        defines_test(
+            &read_repo("platform/tests/suite/install_podman.rs"),
+            "configures_no_podman_api_socket"
+        ),
+        "install_podman.rs no longer defines configures_no_podman_api_socket as a test"
+    );
+}
+
+#[test]
+fn a_test_fn_inside_a_literal_or_comment_is_not_a_test() {
+    let text = "#[test]\nfn real() {}\n\
+        const R: &str = r\"\n#[test]\nfn in_raw() {}\n\";\n\
+        const S: &str = \"\n#[test]\nfn in_plain() {}\n\";\n\
+        let x = 1; /*\n#[test]\nfn after_mid_line_comment() {}\n*/\n\
+        fn untested() {}\n";
+    assert!(defines_test(text, "real"));
+    for name in ["in_raw", "in_plain", "after_mid_line_comment", "untested"] {
+        assert!(!defines_test(text, name), "{name}");
+    }
+    let rows = "//! | a bats name | `real_fn`, with `other` |\n//! | bare name | bare_fn |\n\n\
+        const S: &str = \"\n//! | late name | `late_fn` |\n\";\n";
+    assert_eq!(
+        port_map_fns(rows, "a bats name"),
+        vec!["real_fn".to_owned()]
+    );
+    assert_eq!(port_map_fns(rows, "bare name"), vec!["bare_fn".to_owned()]);
+    assert!(port_map_fns(rows, "late name").is_empty());
+    let cfg_out = "#[cfg(any())]\n#[test]\nfn x() {}\n#[cfg(test)]\n\n#[test]\nfn y() {}\n";
+    assert!(!defines_test(cfg_out, "x"));
+    assert!(defines_test(cfg_out, "y"));
+    assert!(!defines_test("#[test]\n#[ignore]\nfn x() {}\n", "x"));
+    assert!(!defines_test("#[ignore]\n\n#[test]\nfn x() {}\n", "x"));
+    assert!(!defines_test("# [cfg(any())]\n#[test]\nfn x() {}\n", "x"));
+    assert!(!defines_test(
+        "#[cfg(any())]\nmod m {\n    #[test]\n    fn x() {}\n}\n",
+        "x"
+    ));
+    assert!(!defines_test("#![cfg(any())]\n#[test]\nfn x() {}\n", "x"));
+    assert!(!defines_test("#![cfg (any())]\n#[test]\nfn x() {}\n", "x"));
+    assert!(!defines_test(
+        "#! [ cfg(any()) ]\n#[test]\nfn x() {}\n",
+        "x"
+    ));
+    assert!(!defines_test("# ![cfg(any())]\n#[test]\nfn x() {}\n", "x"));
+    assert!(defines_test("#! [cfg(test)]\n#[test]\nfn x() {}\n", "x"));
+    assert!(!defines_test(
+        "#![cfg_attr(any(), ignore)]\n#[test]\nfn x() {}\n",
+        "x"
+    ));
+    assert!(defines_test("#![cfg(test)]\n#[test]\nfn x() {}\n", "x"));
+    assert!(!defines_test("#[cfg(any())]\n\n#[test]\nfn x() {}\n", "x"));
+    assert!(!defines_test(
+        "#[cfg_attr(test, ignore)]\n#[test]\nfn x() {}\n",
+        "x"
+    ));
+    assert!(!defines_test("#[test]\n#[should_panic]\nfn x() {}\n", "x"));
+    assert!(defines_test(
+        "#[test]\n#[allow(dead_code)]\nfn x() {}\n",
+        "x"
+    ));
+    assert!(defines_test("#[test] fn x() {}\n", "x"));
+    assert!(!defines_test(
+        "#[ignore = \"slow\"]\n#[test]\nfn x() {}\n",
+        "x"
+    ));
 }
