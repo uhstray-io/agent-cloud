@@ -966,13 +966,14 @@ const HARDEN_SSH_CASES: &str = r#"
           no_log: true
       rescue:
         - ansible.builtin.debug: {msg: hi}
-# The leading debug keeps the password at block[1], so against the password only the guard's place
-# differs. Without it this is "password before the guard" above, which a check that looked for
-# the guard anywhere in the block would still refuse, and that check would pass this table.
+# The leading debug keeps the password at block[1] and loops like the guard, so only the guard's
+# place is wrong: a check that found the guard anywhere in the block would accept this row. Without
+# the loop the row is refused for the debug's missing loop, whatever the check does with the guard.
 - name: bad harden-ssh opening with the guard after the password
   tasks:
     - block:
         - ansible.builtin.debug: {msg: hi}
+          loop: [a]
         - ansible.builtin.set_fact:
             ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"
           become: false
