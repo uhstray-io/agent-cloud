@@ -792,7 +792,7 @@ groups:
 {# The synthetic probe rules read the probe's textfile samples, scraped by the
    receiver-host job, so they follow o11y_inference_probe_enabled instead of the
    DGX scrape; turning the probe off deletes them the same way. #}
-{% set _inference_uids = ['inference_queue_stalled', 'inference_queue_depth_high', 'inference_target_down', 'inference_vllm_metrics_absent', 'inference_node_memavailable_low', 'inference_node_memfree_low', 'inference_benchmark_gate_placeholder'] %}
+{% set _inference_uids = ['inference_queue_stalled', 'inference_queue_depth_high', 'inference_target_down', 'inference_vllm_metrics_absent', 'inference_node_memavailable_low', 'inference_node_memfree_low', 'inference_benchmark_gate_placeholder', 'inference_kv_pool_trial_stop_line'] %}
 {% set _probe_uids = ['inference_probe_failing', 'inference_probe_stale'] %}
 {% set _dgx_on = dgx_spark_scrape_enabled | default(false) | bool %}
 {% set _probe_on = o11y_inference_probe_enabled | default(false) | bool %}
@@ -947,6 +947,22 @@ groups:
      'Placeholder for the benchmark gate; disabled.',
      'Replace this rule when the dgx-spark benchmark manifest writer publishes a metric.',
      '/d/inference-placement-comparison', paused=true) }}
+{# Temporary, for the dgx-spark 8 GiB KV pool trial (dgx-spark PR 57). count()
+   makes the rule fire whenever any branch returns a series; the raw expression
+   would not pass gt 0 for a zero prefix-cache hit ratio. Removal is a PR that
+   deletes this group AND keeps the uid in deleteRules, because Grafana 11.4
+   provisioning keeps a rule whose group leaves the file. #}
+  - orgId: 1
+    name: kv-pool-trial
+    folder: agent-cloud
+    interval: 5m
+    rules:
+{{ inference_rule('inference_kv_pool_trial_stop_line', 'vLLM KV pool trial stop line reached',
+     'count((sum(increase(vllm:num_preemptions_total{job="dgx-spark-vllm"}[1d])) > 0) or (max(max_over_time(vllm:kv_cache_usage_perc{job="dgx-spark-vllm"}[1d])) >= 0.90) or ((sum(increase(vllm:prefix_cache_hits_total{job="dgx-spark-vllm"}[1d])) / sum(increase(vllm:prefix_cache_queries_total{job="dgx-spark-vllm"}[1d])) < 0.75) and (sum(increase(vllm:prompt_tokens_total{job="dgx-spark-vllm"}[1d])) >= 1e6)))',
+     'gt', 0, '15m', 'warning', 'vllm',
+     '8 GiB KV pool trial stop line reached: a preemption, a pool peak of 0.90 or more, or a prefix-cache hit ratio under 0.75 on a day with at least 1 million prompt tokens.',
+     'Trial of dgx-spark PR 57. Do not restart serving. Tell Joseph the same day; the revert is prepared on branch trial/kv-pool-8g-revert.',
+     '/d/inference-latency-capacity') }}
 {% endif %}
 {# Expected-target retirement stays as a generic inert tombstone; it is never
    deleted because Grafana may preserve omitted provisioned rules. #}
