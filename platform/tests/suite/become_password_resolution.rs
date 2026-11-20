@@ -304,8 +304,8 @@ fn opens_with_resolver(seq: &[Node]) -> bool {
 /// Why it exists: harden-ssh.yml runs its whole hardening in one block, so that a failure anywhere
 /// is recorded as the step's result (harden-ssh.yml:51-54). The guard's loop over the play's
 /// internal names (harden-ssh.yml:69-72) is required, as exactly one non-empty `loop` list: an
-/// empty one runs the guard zero times. No other opening include may loop. The exception also skips the
-/// resolver's transport guard; that gap is held by `platform/tests/known_unguarded_bao_plays.txt`.
+/// empty one runs the guard zero times. No other opening task may loop. The exception also skips
+/// the resolver's transport guard; that gap is held by `platform/tests/known_unguarded_bao_plays.txt`.
 ///
 /// Follow-up: Plane AC-998 moves harden-ssh.yml to the standard opening; delete this exception then.
 fn harden_ssh_opening(seq: &[Node]) -> bool {
@@ -318,10 +318,10 @@ fn harden_ssh_opening(seq: &[Node]) -> bool {
     let (Some(guard), Some(store)) = (block.first(), block.get(1)) else {
         return false;
     };
-    let mut guard_loops = loop_keys(guard);
+    let guard_loops: Vec<_> = loop_keys(guard).collect();
     let guard_loops_over_a_list = matches!(
-        (guard_loops.next(), guard_loops.next()),
-        (Some(("loop", list)), None) if list.as_seq().is_some_and(|l| !l.is_empty())
+        guard_loops.as_slice(),
+        [("loop", list)] if list.as_seq().is_some_and(|l| !l.is_empty())
     );
     !may_not_run(block_task)
         && includes(guard, CONTROLLER_ONLY_GUARD)
@@ -759,7 +759,7 @@ fn the_opening_check_accepts_only_the_resolver_or_the_guard_then_the_resolver() 
 }
 
 /// The harden-ssh exception with it on. Each play is the pinned block with at most one change. The
-/// test adds [`STORE_LOOKUP_REFUSALS`].
+/// test adds [`GUARD_LOOP_REFUSALS`] and [`STORE_LOOKUP_REFUSALS`].
 const HARDEN_SSH_CASES: &str = r#"
 - name: ok pinned harden-ssh opening
   tasks:
@@ -970,6 +970,10 @@ const GUARD_LOOP_REFUSALS: &[(&str, &str)] = &[
     ("guard loop is empty", "loop: []"),
     ("guard loops with with_items", "with_items: [a]"),
     ("guard has no loop", "# no loop"),
+    (
+        "guard has two loop keys",
+        "loop: [a]\n          with_items: [a]",
+    ),
 ];
 
 /// The store lookup the pinned block reads the password with.
