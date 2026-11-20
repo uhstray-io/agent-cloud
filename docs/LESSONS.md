@@ -63,3 +63,9 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1204 (AC-972).
 - **DERIVED:** A guard that recognises a whole template expression by regex anchors both ends and refuses, in any free-form tail, every character that could open another expression or call: `{`, `}`, `(` and `)`. Each refused character has a fixture that must fail.
 - **APPLIES TO:** regex-based checks in `platform/tests/suite/` that accept a templated value only when it is exactly one expression (store lookups, guard bindings).
+
+### L-011 · 2026-11-19 · tests
+
+- **ACCEPTED:** the strict-opening sudo-password check (AC-997).
+- **DERIVED:** `cargo fmt --check` does not format the modules under `platform/tests/suite/`: `build.rs` declares them through an `include!`, which `cargo fmt` does not follow, so it exits 0 on a misformatted suite module (checked 2026-11-19: one bad line appended, `cargo fmt --check` exit 0, `rustfmt --check --edition 2024` exit 1). A brief or a DONE WHEN that proves a suite module's formatting names `rustfmt --check --edition 2024 platform/tests/suite/<module>.rs`, the check `suite/rust_format.rs` runs.
+- **APPLIES TO:** briefs, DONE WHEN lines and local checks for any change under `platform/tests/suite/`.
