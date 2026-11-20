@@ -758,8 +758,9 @@ fn the_opening_check_accepts_only_the_resolver_or_the_guard_then_the_resolver() 
     assert_named_verdicts(&plays, &invalid);
 }
 
-/// The harden-ssh exception with it on. Each play is the pinned block with at most one change. The
-/// test adds [`GUARD_LOOP_REFUSALS`] and [`STORE_LOOKUP_REFUSALS`].
+/// The harden-ssh exception with it on. Each play is the pinned block with one change, except where
+/// a comment says why a row needs a second. The test adds [`GUARD_LOOP_REFUSALS`] and
+/// [`STORE_LOOKUP_REFUSALS`].
 const HARDEN_SSH_CASES: &str = r#"
 - name: ok pinned harden-ssh opening
   tasks:
@@ -963,6 +964,22 @@ const HARDEN_SSH_CASES: &str = r#"
             ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"
           become: false
           no_log: true
+      rescue:
+        - ansible.builtin.debug: {msg: hi}
+# The leading debug keeps the password at block[1], so only the guard's place differs: without
+# it, a check that looked for the guard anywhere in the block would still pass this table.
+- name: bad harden-ssh opening with the guard after the password
+  tasks:
+    - block:
+        - ansible.builtin.debug: {msg: hi}
+        - ansible.builtin.set_fact:
+            ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"
+          become: false
+          no_log: true
+        - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
+          loop: [a]
+          loop_control:
+            loop_var: _rvo_name
       rescue:
         - ansible.builtin.debug: {msg: hi}
 "#;
