@@ -1419,7 +1419,7 @@ fn cfg_dirs(settings: &[&str]) -> Result<Vec<String>, String> {
 }
 
 #[test]
-fn the_cfg_pin_ignores_column_0_comments_and_refuses_any_other_change() {
+fn the_cfg_pin_ignores_trailing_whitespace_and_column_0_comments_only() {
     // Arrange
     let real = text::read("ansible.cfg");
     let commented = format!("{real}# a note\n\n");

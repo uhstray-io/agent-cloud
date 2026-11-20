@@ -5770,7 +5770,7 @@ batch's later briefs; that is a brief convention, not a check.
 
 **The rule.** A brief that asks a test to know what a config file loads names where that knowledge is declared, and what fails when it is missing or stale. Here it is one table keyed by the pinned settings' own keys, exhaustive both ways: a key the table does not list fails, a table key the settings lack fails, and a directory value that is not one `./` path fails. The pin keeps leading whitespace, so an indented line fails without the test knowing continuation lines.
 
-**Enforced by.** Test: `lanes` suite (`cfg_dirs_classifies_every_pinned_key_and_refuses_the_rest`, `the_cfg_pin_ignores_column_0_comments_and_refuses_any_other_change`).
+**Enforced by.** Test: `lanes` suite (`cfg_dirs_classifies_every_pinned_key_and_refuses_the_rest`, `the_cfg_pin_ignores_trailing_whitespace_and_column_0_comments_only`).
 
 ## 6. Working from assumptions about files
 
