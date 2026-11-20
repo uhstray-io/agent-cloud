@@ -987,7 +987,8 @@ const HARDEN_SSH_CASES: &str = r#"
 "#;
 
 /// harden-ssh.yml's pinned opening block as a case play, with the guard's loop line and the password
-/// value given.
+/// value given. Built unchanged it is an `ok` row of the test, so a broken template cannot refuse the
+/// rows built from it for the wrong reason.
 fn pinned_play(name: &str, guard_loop: &str, password: &str) -> String {
     format!(
         r#"
@@ -1086,7 +1087,12 @@ fn the_harden_ssh_exception_accepts_only_its_pinned_block() {
             )
         })
         .collect();
-    let plays = case_plays(&format!("{HARDEN_SSH_CASES}{refusals}"));
+    let template = pinned_play(
+        "ok harden-ssh opening built by pinned_play",
+        PINNED_LOOP,
+        STORE_VALUE,
+    );
+    let plays = case_plays(&format!("{HARDEN_SSH_CASES}{template}{refusals}"));
     let invalid = escalating_plays_not_resolving_first(&plays, true);
     assert_named_verdicts(&plays, &invalid);
 }
