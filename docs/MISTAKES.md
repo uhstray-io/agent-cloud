@@ -177,7 +177,7 @@ and why.
 | 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 2 | Convention (per-agent scratch directory in every brief) |
 | 5.31 | A peer session allowed `SKIP_TESTS=1` for docs-only pushes; two owners retried a denied compound command as a standalone push | Process | 1 | Convention (deny rule for the skipped push proposed; operator's decision) |
 | 5.32 | Ran `git branch -D` on a scratch branch the brief said to keep if `git branch -d` refused; recreated from the reflog | Process | 1 | Convention (deny rule for forced branch deletes proposed; operator's decision) |
-| 5.33 | Refreshed a PR over a newly landed area rule and checked it only where the rule's own test looks; the playbook-tier area omitted the filter plugins `ansible.cfg` loads | Process | 1 | Convention until S9 (AC-977) part C lands |
+| 5.33 | Refreshed a PR over a newly landed area rule and checked it only where the rule's own test looks; the playbook-tier area omitted the filter plugins `ansible.cfg` loads | Process | 1 | Test: `lanes` suite (`every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes`) |
 | 5.34 | Fixed a destructive block's failure paths one review finding at a time on #1206; returns 4 and 5 found four more paths in the same block | Process | 1 | Convention (failure table accepted for later briefs, 2026-11-18) |
 | 5.35 | Skipped a skill-pass finding that a port test held wider rows than its original, on a comment saying the filter reads only tag and spec; carried as decided until the third return | Process | 1 | Convention |
 | 5.36 | One batch unit bundled eleven guard-test fixes across five test modules, a BATS test deletion and a plan cell; it went back nine times and was closed and cut into three | Process | 1 | Convention (three-returns rule; split past about three files) |
@@ -5682,7 +5682,7 @@ delta reviews on.
 
 **The rule.** After refreshing a branch over a rule that landed on `dev`, check the branch against every clause of the rule, not only the ones its test enforces. A module in the `playbook` tier loads the filter plugins through the root `ansible.cfg`, so a change to a filter plugin must select it in the push lane. While other areas claim the plugins, its own area lists `"platform/playbooks/filter_plugins/**"` in `paths` too.
 
-**Enforced by.** Convention until S9 (AC-977) part C lands. Part C fails the `lanes` suite when a change to `ansible.cfg` or under `platform/playbooks/filter_plugins/` does not select a playbook-tier module in the push lane, and its fixes add the path to the areas it names. On `dev` `4a0e3d49` the same gap is in three more areas: `areas.d/cloudflare_edge.yml` claims no filter plugin, `areas.d/firewall.yml` claims `filter_plugins/ufw_rules.py` alone, and `areas.d/support_forgeries.yml` has `paths: []`.
+**Enforced by.** Test: the `lanes` suite test `every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes` (AC-977) fails when a change to `ansible.cfg` or to any tracked file under `platform/playbooks/filter_plugins/` does not select a playbook-tier module in the push lane. It found the gap in four areas on `dev` `92922b7e` (`cloudflare_edge`, `firewall`, `support_forgeries`, `cleanup_backup_archives`), and each now claims `platform/playbooks/filter_plugins/**`.
 
 ### 5.34 Fixed a destructive block's failure paths one review finding at a time; two more returns found the rest
 
