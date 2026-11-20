@@ -1583,8 +1583,9 @@ fn chain_files(
             continue;
         };
         let dir = file.rsplit_once('/').map_or("", |(d, _)| d);
-        // (target, why it is refused, whether it is a playbook to walk)
-        let mut targets: Vec<(String, Option<&'static str>, bool)> = vec![];
+        // (target, why it is refused, whether it is a playbook to walk, whether it may be a
+        // directory: only a `{{ playbook_dir }}` path may, a directive loads one file)
+        let mut targets: Vec<(String, Option<&'static str>, bool, bool)> = vec![];
         for task in yaml::tasks(&doc) {
             for (key, value) in task.as_map().unwrap_or_default() {
                 let Some(key) = key.as_str() else { continue };
@@ -1596,10 +1597,13 @@ fn chain_files(
                     continue;
                 }
                 match value.as_str().or_else(|| value.get("file")?.as_str()) {
-                    Some(t) => targets.push((t.to_owned(), None, short == "import_playbook")),
+                    Some(t) => {
+                        targets.push((t.to_owned(), None, short == "import_playbook", false))
+                    }
                     None => targets.push((
                         key.to_owned(),
                         Some("not a string or a mapping with a string file"),
+                        false,
                         false,
                     )),
                 }
@@ -1610,18 +1614,19 @@ fn chain_files(
                 let why = tail
                     .contains(['{', '}', '(', ')'])
                     .then_some("a templated or computed path");
-                targets.push((tail, why, false));
+                targets.push((tail, why, false, true));
             }
         }
-        for (target, why, walk) in targets {
+        for (target, why, walk, dir_ok) in targets {
             let why = why
                 .or_else(|| target.contains("{{").then_some("a templated path"))
                 .or_else(|| target.starts_with('/').then_some("an absolute path"));
             let resolved = normalise(dir, &target);
-            let found = resolved
+            let mut found = resolved
                 .as_deref()
                 .map(|r| tracked_at(r, tracked))
                 .unwrap_or_default();
+            found.retain(|f| dir_ok || Some(f) == resolved.as_ref());
             let why = why.or(match (&resolved, found.is_empty()) {
                 (None, _) => Some("above the repository root"),
                 (_, true) => Some("not tracked"),
@@ -1684,11 +1689,12 @@ fn chain_repo(files: &[(&str, &str)]) -> (TempDir, BTreeSet<String>) {
 #[test]
 fn chain_files_follows_imports_includes_and_playbook_dir_paths() {
     // Arrange: a imports b, b imports c; a commented import is not followed, nor a path with
-    // more lines after it.
+    // more lines after it, and a directive naming a directory is refused.
     let a = r#"# - import_playbook: z.yml
 - ansible.builtin.import_playbook: b.yml
 - hosts: all
   tasks:
+    - include_tasks: tasks
     - include_tasks: tasks/t.yml
     - ansible.builtin.import_tasks: {file: tasks/u.yml}
     - ansible.legacy.include_tasks: tasks/v.yml
@@ -1726,7 +1732,8 @@ fn chain_files_follows_imports_includes_and_playbook_dir_paths() {
         "p/tasks/v.yml",
     ];
     assert_eq!(files, expected.map(str::to_owned).into());
-    assert!(refusals.is_empty(), "{refusals:?}");
+    let refused = refusals.iter().map(|r| (r.target.as_str(), r.why));
+    assert!(refused.eq([("tasks", "not tracked")]), "{refusals:?}");
 }
 
 #[test]
@@ -1804,6 +1811,34 @@ fn an_exception_accepts_its_refusal_and_a_stale_one_is_reported() {
     );
 }
 
+/// The playbooks `src` reads by fixed path, where its chains start: tracked `.yml`/`.yaml` under
+/// platform/playbooks or platform/semaphore, not a task file, resolved as fixed-path reads are.
+fn chain_starts(src: &str, tracked: &BTreeSet<String>) -> BTreeSet<String> {
+    path_reads(src)
+        .into_iter()
+        .flat_map(|(_, literals)| literals)
+        .filter(|l| !l.starts_with('/'))
+        .filter_map(|l| normalise("", &l))
+        .filter(|f| {
+            tracked.contains(f)
+                && (f.ends_with(".yml") || f.ends_with(".yaml"))
+                && (f.starts_with("platform/playbooks/") || f.starts_with("platform/semaphore/"))
+                && !f.starts_with("platform/playbooks/tasks/")
+        })
+        .collect()
+}
+
+#[test]
+fn chain_starts_resolve_a_dot_path_and_skip_a_rooted_one() {
+    // Arrange
+    let tracked = BTreeSet::from(["platform/playbooks/a.yml".to_owned()]);
+    let starts = |path: &str| chain_starts(&format!("fn t() {{ read(\"{path}\"); }}"), &tracked);
+
+    // Act and assert
+    assert_eq!(starts("./platform/playbooks/a.yml"), tracked);
+    assert!(starts("/platform/playbooks/a.yml").is_empty());
+}
+
 /// A playbook-tier module runs a playbook, and the run loads every file the playbook's chain
 /// names, so a change to any of them must select the module.
 #[test]
@@ -1819,18 +1854,7 @@ fn every_file_a_playbook_chain_loads_selects_its_module() {
     let mut problems = vec![];
     for module in playbook_modules(&main, &area_files) {
         let src = text::read(&format!("platform/tests/suite/{module}.rs"));
-        let starts: BTreeSet<String> = path_reads(&src)
-            .into_iter()
-            .flat_map(|(_, literals)| literals)
-            .filter(|f| {
-                tracked.contains(f)
-                    && (f.ends_with(".yml") || f.ends_with(".yaml"))
-                    && (f.starts_with("platform/playbooks/")
-                        || f.starts_with("platform/semaphore/"))
-                    && !f.starts_with("platform/playbooks/tasks/")
-            })
-            .collect();
-        for start in starts {
+        for start in chain_starts(&src, &tracked) {
             walked += 1;
             let (files, refused) = chain_files(repo::root(), &start, &tracked);
             refusals.extend(refused);
