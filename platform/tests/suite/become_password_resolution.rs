@@ -261,12 +261,17 @@ fn sequence<'a>(play: &'a Node, key: &str) -> Option<&'a [Node]> {
         .filter(|seq| !seq.is_empty())
 }
 
-/// Whether a task may not run: a `when` of any value (a constant is no different), a `never` tag
-/// (decided by the run's `--tags`), or a `loop` or `with_*` key (a loop may run zero times, and its
-/// list is decided at run time). An opening include that may not run leaves the resolver unproven,
-/// so it is refused.
+/// Whether a task may not run: it may be skipped ([`skippable`]), or it has a `loop` or `with_*` key
+/// (a loop may run zero times, and its list is decided at run time). An opening include that may
+/// not run leaves the resolver unproven, so it is refused.
 fn may_not_run(task: &Node) -> bool {
-    task.get("when").is_some() || tagged_never(task) || loop_keys(task).next().is_some()
+    skippable(task) || loop_keys(task).next().is_some()
+}
+
+/// Whether a task may be skipped: a `when` of any value (a constant is no different) or a `never`
+/// tag (decided by the run's `--tags`).
+fn skippable(task: &Node) -> bool {
+    task.get("when").is_some() || tagged_never(task)
 }
 
 /// The `loop` and `with_*` entries of a task.
@@ -293,12 +298,13 @@ fn opens_with_resolver(seq: &[Node]) -> bool {
 /// The pinned opening of harden-ssh.yml, and of no other play. Its first task is one block, whose
 /// first item is the guard include and whose second item sets the sudo password from the store
 /// ([`STORE_LOOKUP`]). The guard refuses extra-var overrides before the password is fetched. The
-/// block's other keys, the rest of the play and the names are not checked here.
+/// block's `when`, `never` tag and loop keys are checked; its `rescue` and `always`, the store task's
+/// `become` and `no_log`, the rest of the play and the names are not.
 ///
 /// Why it exists: harden-ssh.yml runs its whole hardening in one block, so that a failure anywhere
 /// is recorded as the step's result (harden-ssh.yml:51-54). The guard's loop over the play's
-/// internal names (harden-ssh.yml:69-72) is the one loop allowed, only here, and only as a
-/// non-empty `loop` list: an empty one runs the guard zero times. The exception also skips the
+/// internal names (harden-ssh.yml:69-72) is required, as exactly one non-empty `loop` list: an
+/// empty one runs the guard zero times. No other opening include may loop. The exception also skips the
 /// resolver's transport guard; that gap is held by `platform/tests/known_unguarded_bao_plays.txt`.
 ///
 /// Follow-up: Plane AC-998 moves harden-ssh.yml to the standard opening; delete this exception then.
@@ -312,13 +318,15 @@ fn harden_ssh_opening(seq: &[Node]) -> bool {
     let (Some(guard), Some(store)) = (block.first(), block.get(1)) else {
         return false;
     };
-    let guard_loop_runs = loop_keys(guard)
-        .all(|(key, list)| key == "loop" && list.as_seq().is_some_and(|l| !l.is_empty()));
+    let mut guard_loops = loop_keys(guard);
+    let guard_loops_over_a_list = matches!(
+        (guard_loops.next(), guard_loops.next()),
+        (Some(("loop", list)), None) if list.as_seq().is_some_and(|l| !l.is_empty())
+    );
     !may_not_run(block_task)
         && includes(guard, CONTROLLER_ONLY_GUARD)
-        && guard.get("when").is_none()
-        && !tagged_never(guard)
-        && guard_loop_runs
+        && !skippable(guard)
+        && guard_loops_over_a_list
         && sets_password_from_store(store)
         && !may_not_run(store)
 }
@@ -742,6 +750,7 @@ const OPENING_CASES: &str = r#"
 fn the_opening_check_accepts_only_the_resolver_or_the_guard_then_the_resolver() {
     let pinned = pinned_play(
         "bad harden-ssh block shape with the exception off",
+        PINNED_LOOP,
         STORE_VALUE,
     );
     let plays = case_plays(&format!("{OPENING_CASES}{pinned}"));
@@ -928,43 +937,18 @@ const HARDEN_SSH_CASES: &str = r#"
           loop: [1]
       rescue:
         - ansible.builtin.debug: {msg: hi}
-- name: bad harden-ssh opening whose guard loop is empty
-  tasks:
-    - block:
-        - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
-          loop: []
-          loop_control:
-            loop_var: _rvo_name
-        - ansible.builtin.set_fact:
-            ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"
-          become: false
-          no_log: true
-      rescue:
-        - ansible.builtin.debug: {msg: hi}
-- name: bad harden-ssh opening whose guard loops with with_items
-  tasks:
-    - block:
-        - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
-          with_items: [a]
-          loop_control:
-            loop_var: _rvo_name
-        - ansible.builtin.set_fact:
-            ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"
-          become: false
-          no_log: true
-      rescue:
-        - ansible.builtin.debug: {msg: hi}
 "#;
 
-/// harden-ssh.yml's pinned opening block as a case play, with the password value given.
-fn pinned_play(name: &str, password: &str) -> String {
+/// harden-ssh.yml's pinned opening block as a case play, with the guard's loop line and the password
+/// value given.
+fn pinned_play(name: &str, guard_loop: &str, password: &str) -> String {
     format!(
         r#"
 - name: {name}
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
-          loop: [a]
+          {guard_loop}
           loop_control:
             loop_var: _rvo_name
         - ansible.builtin.set_fact:
@@ -976,6 +960,17 @@ fn pinned_play(name: &str, password: &str) -> String {
 "#
     )
 }
+
+/// The guard's loop line in the pinned block.
+const PINNED_LOOP: &str = "loop: [a]";
+
+/// The guard-loop refusals: the pinned block with only the guard's loop line changed (a comment line
+/// drops the loop), each refused for that line alone. Named `bad harden-ssh opening whose <row name>`.
+const GUARD_LOOP_REFUSALS: &[(&str, &str)] = &[
+    ("guard loop is empty", "loop: []"),
+    ("guard loops with with_items", "with_items: [a]"),
+    ("guard has no loop", "# no loop"),
+];
 
 /// The store lookup the pinned block reads the password with.
 const STORE_VALUE: &str = r#"{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"#;
@@ -1023,9 +1018,21 @@ const STORE_LOOKUP_REFUSALS: &[(&str, &str)] = &[
 
 #[test]
 fn the_harden_ssh_exception_accepts_only_its_pinned_block() {
-    let refusals: String = STORE_LOOKUP_REFUSALS
+    let guard_loops = GUARD_LOOP_REFUSALS
         .iter()
-        .map(|(name, value)| pinned_play(&format!("bad harden-ssh opening whose {name}"), value))
+        .map(|(name, guard_loop)| (name, *guard_loop, STORE_VALUE));
+    let values = STORE_LOOKUP_REFUSALS
+        .iter()
+        .map(|(name, value)| (name, PINNED_LOOP, *value));
+    let refusals: String = guard_loops
+        .chain(values)
+        .map(|(name, guard_loop, value)| {
+            pinned_play(
+                &format!("bad harden-ssh opening whose {name}"),
+                guard_loop,
+                value,
+            )
+        })
         .collect();
     let plays = case_plays(&format!("{HARDEN_SSH_CASES}{refusals}"));
     let invalid = escalating_plays_not_resolving_first(&plays, true);
