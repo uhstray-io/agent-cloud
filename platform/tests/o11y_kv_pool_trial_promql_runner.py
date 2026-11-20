@@ -84,9 +84,17 @@ def _rule():
 def queries():
     """The rendered rule as a PromQL query with its Grafana threshold, plus both mutants."""
     rule = _rule()
-    evaluator = rule["data"][1]["model"]["conditions"][0]["evaluator"]
-    if evaluator != {"type": "gt", "params": [0]}:
-        raise native.RunnerError("rendered threshold is not gt 0; the PromQL encoding below would be wrong")
+    threshold = rule["data"][1]["model"]
+    condition = threshold["conditions"][0]
+    if (
+        rule["condition"] != "B"
+        or threshold["expression"] != "A"
+        or condition["reducer"]["type"] != "last"
+        or condition["evaluator"] != {"type": "gt", "params": [0]}
+    ):
+        raise native.RunnerError(
+            "rendered condition is not B = last(A) gt 0; the PromQL encoding below would be wrong"
+        )
     expression = rule["data"][0]["model"]["expr"]
     if not (expression.startswith("count(") and expression.endswith(")")):
         raise native.RunnerError("rendered expression is not wrapped in count()")
@@ -134,12 +142,13 @@ def main():
     deadline = started + native.TOTAL_SECONDS
     cleanup_deadline = deadline
     owner = uuid.uuid4().hex
-    names = [f"o11y-kvpool-promql-{owner[:16]}-{index}" for index in range(3)]
+    names = []
     engine = None
     cleanup_completed = False
     try:
         image = native._fallback_image()
         cases = build_cases()
+        names = [f"o11y-kvpool-promql-{owner[:16]}-{index}" for index in range(len(cases))]
         candidates = native._engine_candidates()
         if not candidates:
             raise native.RunnerError("no supported container engine executable is installed")
