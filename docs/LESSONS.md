@@ -64,7 +64,13 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **DERIVED:** A guard that recognises a whole template expression by regex anchors both ends and refuses, in any free-form tail, every character that could open another expression or call: `{`, `}`, `(` and `)`. Each refused character has a fixture that must fail.
 - **APPLIES TO:** regex-based checks in `platform/tests/suite/` that accept a templated value only when it is exactly one expression (store lookups, guard bindings).
 
-### L-011 · 2026-11-19 · tests
+### L-011 · 2026-11-19 · o11y
+
+- **ACCEPTED:** #1211 (AC-999).
+- **DERIVED:** A Grafana alert whose query joins branches with `or` (the macro `inference_rule` in `alerts.yml.j2`: query A, then a threshold on A with reducer `last`) wraps the whole union in `count()` and thresholds it `gt 0` when the branches return different kinds of value. Without the wrap, `gt 0` compares each branch's own value: a hit ratio of exactly 0 is a firing branch and fails `gt 0`, so the stop line is missed (checked with promtool 3.1.0 on 2026-11-19: the raw union returned 288, 0.95 and 0.5 for three firing cases, and its zero-ratio case returned 0, which `> 0` dropped). `count()` returns a positive count for a non-empty union and no sample for an empty one, so the `gt 0` threshold passes exactly when any branch returns a series; the empty result is then the rule's no-data state, which must be `OK`.
+- **APPLIES TO:** Grafana alert rules in `platform/services/o11y/deployment/templates/alerts.yml.j2` whose expression is an `or` of conditions that return different values (a count, a peak, a ratio). An `or` of indicators that each return 1 needs no wrap.
+
+### L-012 · 2026-11-19 · tests
 
 - **ACCEPTED:** #1212 (AC-997).
 - **DERIVED:** `cargo fmt --check` does not check the modules under `platform/tests/suite/`: `build.rs` writes their `mod` lines to `$OUT_DIR/suite_modules.rs`, which `suite/main.rs` pulls in with `include!`, and `cargo fmt` does not follow an `include!` (`platform/tests/build.rs:3-9`), so it passes a misformatted one. A brief or DONE WHEN that proves a suite module's formatting names `rustfmt --check --edition 2024 platform/tests/suite/<module>.rs`, the check `suite/rust_format.rs` runs.
