@@ -758,8 +758,8 @@ fn the_opening_check_accepts_only_the_resolver_or_the_guard_then_the_resolver() 
     assert_named_verdicts(&plays, &invalid);
 }
 
-/// The harden-ssh exception with it on. Each play is the pinned block with one change, except where
-/// a comment says why a row needs a second. The test adds [`GUARD_LOOP_REFUSALS`] and
+/// The harden-ssh exception with it on. Each play is the pinned block with at most one change,
+/// except where a comment says why a row needs a second. The test adds [`GUARD_LOOP_REFUSALS`] and
 /// [`STORE_LOOKUP_REFUSALS`].
 const HARDEN_SSH_CASES: &str = r#"
 - name: ok pinned harden-ssh opening
@@ -966,8 +966,9 @@ const HARDEN_SSH_CASES: &str = r#"
           no_log: true
       rescue:
         - ansible.builtin.debug: {msg: hi}
-# The leading debug keeps the password at block[1], so only the guard's place differs: without
-# it, a check that looked for the guard anywhere in the block would still pass this table.
+# The leading debug keeps the password at block[1], so against the password only the guard's place
+# differs. Without it this is "password before the guard" above, which a check that looked for
+# the guard anywhere in the block would still refuse, and that check would pass this table.
 - name: bad harden-ssh opening with the guard after the password
   tasks:
     - block:
