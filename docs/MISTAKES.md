@@ -181,6 +181,7 @@ and why.
 | 5.34 | Fixed a destructive block's failure paths one review finding at a time on #1206; returns 4 and 5 found four more paths in the same block | Process | 1 | Convention (failure table accepted for later briefs, 2026-11-18) |
 | 5.35 | Skipped a skill-pass finding that a port test held wider rows than its original, on a comment saying the filter reads only tag and spec; carried as decided until the third return | Process | 1 | Convention |
 | 5.36 | One batch unit bundled eleven guard-test fixes across five test modules, a BATS test deletion and a plan cell; it went back nine times and was closed and cut into three | Process | 1 | Convention (three-returns rule; split past about three files) |
+| 5.37 | Ran two rounds of four-agent `/simplify` plus security passes on S9 without totalling agent tokens, against a 450k stop never sized from a measured round; spend reached about six times the stop | Process | 1 | Convention (stop set per model class from a measured round; running total before each wave) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -5743,6 +5744,18 @@ batch's later briefs; that is a brief convention, not a check.
 **The rule.** Cut a unit by the files it changes, not by the review or ticket it came from: a unit past about three files, or past about five independent fixes, is split before dispatch. Modules that call each other's helpers stay in one unit, so that the split units carry no merge order between them.
 
 **Enforced by.** Convention (the split rule in the global instructions, and the three-returns rule, which caught this one only after the fact).
+
+### 5.37 Ran two rounds of four-agent passes without totalling agent tokens; the unit passed its spend stop about six times over
+
+**Occurrences: 1** — 2026-11-19
+
+**What happened.** The S9 brief (`handoffs-v0.17.0/25-lane-guard-s9.md:188-189`, AC-977) says to stop and report at 450k tokens for the unit, executors and passes together, and records that one `/simplify` reviewer on a 1,452-line range cost about 200k. The owner ran `/simplify` round 1 (four agents: about 227k, 254k, 266k and 260k), `/security-review` round 1 (about 184k), `/simplify` round 2 (about 280k, 301k, 260k and 280k) and `/security-review` round 2 (about 284k) on a range of 806 to 940 diff lines. Each agent's result reported its own token count. The owner added them up only after round 2, while re-reading the brief for the pull request body: about 2.6M for the passes alone, before the executor runs. Nothing was pushed past the stop; the owner reported to the coordinator before the push.
+
+**Root cause.** Two causes, one in the run and one in the plan. (1) The owner kept no running total against the stop before each wave: the summary carried "Stops: 450k tokens" as a line, and no step before a dispatch looked at it. (2) The coordinator set the 450k stop without sizing it from a measured round, and counted every model's tokens alike. The coordinator's read of the ten pass-agent transcripts put almost all of the spend on Haiku, the model those agents run on. One `/simplify` round here is four agents at about 1.0M to 1.1M Haiku tokens, and one `/security-review` about 0.2M to 0.3M. Two rounds of both passes, which the brief allowed (up to three), could never fit 450k.
+
+**The rule.** A brief's spend stop is set per model class from one measured round of the passes it allows. Before each wave of agents, the owner adds the token counts the earlier agents reported, plus the next wave's estimate, and compares the sum with the stop. Over the stop, the owner reports to the coordinator before dispatching, with what is done and what is left.
+
+**Enforced by.** Convention (a stop sized per model class from a measured round; a running total before each wave).
 
 ## 6. Working from assumptions about files
 
