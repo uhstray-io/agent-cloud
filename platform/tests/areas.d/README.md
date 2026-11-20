@@ -53,9 +53,9 @@ given the repository root, a call through a function value, or a directory walk.
   that the test harness drops; that over-selection is accepted.
 - `every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes`: `ansible.cfg` and every
   tracked path its `[defaults]` and `[DEFAULT]` values name (the filter and callback plugin
-  directories today) select every playbook-tier module. A line or a path in a form its reader does
-  not take, or a path that names no tracked file, fails the test; a value with no `/` is a setting
-  and is not read.
+  directories today) select every playbook-tier module. Its reader takes one grammar and fails the
+  test on any other line or entry, and on a path that names no tracked file; a bare word that names
+  nothing is a setting.
 
 Still not checked: a path built at run time, a read through a variable or a function value, a
 constant defined twice, `repo::playbook_files()`, a directory walk other than `repo::grep` and

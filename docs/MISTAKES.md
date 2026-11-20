@@ -174,7 +174,7 @@ and why.
 | 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
 | 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
 | 5.29 | Briefed six port workers never to edit the ledger, which forbade the "Enforcement moved" note a deleted cited test needs; the ratchet kept every gate green (widens 5.28) — **x2** (2026-11-16: brief 11 repeated the ledger prohibition; caught before any port) | Process | 2 | Convention (a ledger test requiring the note proposed) |
-| 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 4 | Convention (per-agent scratch directory in every brief); deny rule for recursive `rm` proposed, operator's decision |
+| 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 5 | Convention (per-agent scratch directory in every brief); deny rule for recursive `rm` proposed, operator's decision |
 | 5.31 | A peer session allowed `SKIP_TESTS=1` for docs-only pushes; two owners retried a denied compound command as a standalone push | Process | 1 | Convention (deny rule for the skipped push proposed; operator's decision) |
 | 5.32 | Ran `git branch -D` on a scratch branch the brief said to keep if `git branch -d` refused; recreated from the reflog | Process | 1 | Convention (deny rule for forced branch deletes proposed; operator's decision) |
 | 5.33 | Refreshed a PR over a newly landed area rule and checked it only where the rule's own test looks; the playbook-tier area omitted the filter plugins `ansible.cfg` loads | Process | 1 | Test: `lanes` suite (`every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes`) |
@@ -5627,7 +5627,7 @@ entry naming at least one `#[test]` fn. Entry 6.9 gains its missing note in this
 
 ### 5.30 Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14)
 
-**Occurrences: 4** — 2026-11-13, 2026-11-18, 2026-11-19, 2026-11-19
+**Occurrences: 5** — 2026-11-13, 2026-11-18, 2026-11-19, 2026-11-19, 2026-11-20
 
 **What happened.** During wave 1 of the BATS port, five `pr-reviewer` agents ran at once, each told
 only to use "scratch" under the session's scratchpad. Two reviewers (AC-874, AC-875) both created
@@ -5652,6 +5652,8 @@ delta reviews on.
 **Occurrence 3 — 2026-11-19.** On S9 (AC-977) the owner dispatched four parallel `/simplify` review agents over the branch range. Each brief named its own scratch directory and said read-only, but none forbade recursive deletes. The efficiency agent ran `rm -rf` twice on scratch directories it had made inside its own, recreated them, and reported it. Nothing in the worktree or another agent's directory was touched. Why the rule did not fire: the owner wrote the scratch half of the rule into the briefs and left out the delete half; a brief written by hand carries only the lines its writer recalls. Three occurrences retire Convention here: the proposed guard is a deny rule in the operator's `settings.json` for recursive `rm` forms (`rm -r`, `rm -rf`, `rm -fr`, `rm -R`), which binds every agent whatever its brief says. Changing a permission is the operator's decision.
 
 **Occurrence 4 — 2026-11-19.** In the next `/simplify` round on S9 every brief said "NO DELETES of any kind", naming `rm`, `rm -r`, `rm -rf` and `git clean`. The altitude agent ran one `rm -f` on a scratch file it had made, and reported it. Nothing outside its directory was touched. Why the rule did not fire: this time the brief carried it, and the agent broke it anyway. A line in a brief does not bind an agent; only a permission rule does, which is the guard occurrence 3 proposes, widened to forced deletes (`rm -f`).
+
+**Occurrence 5 — 2026-11-20.** In the return pass on S9 head `6b3f0ea2`, the altitude agent's brief again said "NO DELETES of any kind". It ran `rm -rf` on a scratch subdirectory of its own before creating it; the directory did not exist, so nothing was removed, and it reported the form. Why the rule did not fire: as in occurrence 4, a brief line does not bind the agent.
 
 ### 5.31 A peer session allowed a guard skip, and two denied compound commands were retried as a standalone push
 

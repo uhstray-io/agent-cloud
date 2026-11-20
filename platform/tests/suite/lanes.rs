@@ -1360,15 +1360,16 @@ fn a_playbook_module_unselected_by_a_loaded_file_is_reported() {
 }
 
 /// The tracked files the `[defaults]` and `[DEFAULT]` values of the ansible.cfg text `cfg` name
-/// (`:` between paths): a run loads what a value names, whatever its key (`*_plugins`, `library`,
-/// `roles_path`). A value holding no `/` and not `.` is a setting, not a path, and is not read. A
-/// line that is not blank, a comment, a section or `key = value` (no `:` in the key) is refused,
-/// and so is an absolute path or one that names no tracked file (a comment after it, `~`, `$`),
-/// so a form this reader does not take fails the test instead of dropping a path.
+/// (`:` between entries): a run loads what a value names, whatever its key (`*_plugins`,
+/// `library`, `roles_path`). The reader takes one grammar and refuses the rest, so a form it does
+/// not take fails the test instead of dropping a path. At column 0 a line is blank, a comment, a
+/// `[section]` or `key = value` (no `:` in the key, no `;` or `#` in the value); an indented line
+/// (a continuation for Ansible) is refused. Each entry resolves to tracked files, or is refused
+/// when it is empty, absolute, or holds a `/` or is `.`; a bare word naming nothing is a setting.
 fn cfg_paths(cfg: &str, tracked: &BTreeSet<String>) -> Vec<String> {
     let mut section = "";
     let mut paths = vec![];
-    for line in cfg.lines().map(str::trim) {
+    for line in cfg.lines().map(str::trim_end) {
         if line.is_empty() || line.starts_with(['#', ';']) {
             continue;
         }
@@ -1376,26 +1377,27 @@ fn cfg_paths(cfg: &str, tracked: &BTreeSet<String>) -> Vec<String> {
             section = name;
             continue;
         }
-        let Some((_, value)) = line.split_once('=').filter(|(key, _)| !key.contains(':')) else {
+        let Some((_, value)) = line.split_once('=').filter(|(key, value)| {
+            !line.starts_with(char::is_whitespace)
+                && !key.contains(':')
+                && !value.contains([';', '#'])
+        }) else {
             panic!("ansible.cfg: {line:?} is not `key = value`, the one form this reader takes");
         };
         if section != "defaults" && section != "DEFAULT" {
             continue;
         }
-        for path in value.split(':').map(str::trim) {
-            if !path.contains('/') && path != "." {
-                continue;
-            }
+        for entry in value.split(':').map(str::trim) {
             assert!(
-                !path.starts_with('/'),
-                "ansible.cfg: {path:?} is outside the repository"
+                !entry.is_empty() && !entry.starts_with('/'),
+                "ansible.cfg: {entry:?} is empty or outside the repository"
             );
-            let files = normalise("", path)
+            let files = normalise("", entry)
                 .map(|rel| tracked_at(&rel, tracked))
                 .unwrap_or_default();
             assert!(
-                !files.is_empty(),
-                "ansible.cfg: {path:?} names no tracked file"
+                !files.is_empty() || !(entry.contains('/') || entry == "."),
+                "ansible.cfg: {entry:?} names no tracked file"
             );
             paths.extend(files);
         }
@@ -1405,23 +1407,25 @@ fn cfg_paths(cfg: &str, tracked: &BTreeSet<String>) -> Vec<String> {
 
 #[test]
 fn cfg_paths_reads_defaults_values_and_refuses_other_forms() {
-    // Arrange: commented lines, paths under any key and spelling, a setting, another section's
-    // path, and [DEFAULT], which Ansible reads with [defaults].
-    let tracked: BTreeSet<String> = ["a/1.py", "b/2.py", "c/3.py", "d/4.py", "e/5.py"]
+    // Arrange: commented lines, paths under any key and spelling (a bare directory too), a
+    // setting, another section's path, and [DEFAULT], which Ansible reads with [defaults].
+    let tracked: BTreeSet<String> = ["a/1.py", "b/2.py", "c/3.py", "d/4.py", "e/5.py", "f/6.py"]
         .map(str::to_owned)
         .into();
-    let cfg = "[defaults]\n# x = ./d\n; x = ./d\nfilter_plugins = ./a/\nlibrary = b/:x/../c\nshow = True\n[colors]\nx = ./d\n[DEFAULT]\nroles_path = ./e\n";
+    let cfg = "[defaults]\n# x = ./d\n; x = ./d\nfilter_plugins = ./a/\nlibrary = b/:x/../c\nmodule_utils = f\nshow = True\n[colors]\nx = ./d\n[DEFAULT]\nroles_path = ./e\n";
 
     // Act
     let paths = cfg_paths(cfg, &tracked);
 
     // Assert
-    assert_eq!(paths, ["a/1.py", "b/2.py", "c/3.py", "e/5.py"]);
+    assert_eq!(paths, ["a/1.py", "b/2.py", "c/3.py", "f/6.py", "e/5.py"]);
     for line in [
         "filter_plugins: ./a",
         "filter_plugins: ./a=b",
-        "filter_plugins = ./a ; a note",
-        "filter_plugins = ./a # a note",
+        "filter_plugins = a ; a note",
+        "filter_plugins = a # a note",
+        "  filter_plugins = ./a",
+        "filter_plugins = ./a::./b",
         "filter_plugins = ./missing",
         "filter_plugins = .",
         "filter_plugins = /a",
