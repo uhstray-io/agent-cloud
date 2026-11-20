@@ -84,18 +84,22 @@ def _rule():
 def queries():
     """The rendered rule as a PromQL query with its Grafana threshold, plus both mutants."""
     rule = _rule()
+    query = rule["data"][0]["model"]
     threshold = rule["data"][1]["model"]
     condition = threshold["conditions"][0]
     if (
         rule["condition"] != "B"
+        or query.get("instant") is not True
+        or query.get("range") is not False
         or threshold["expression"] != "A"
+        or len(threshold["conditions"]) != 1
         or condition["reducer"]["type"] != "last"
         or condition["evaluator"] != {"type": "gt", "params": [0]}
     ):
         raise native.RunnerError(
-            "rendered condition is not B = last(A) gt 0; the PromQL encoding below would be wrong"
+            "rendered condition is not B = last(instant A) gt 0; the PromQL encoding below would be wrong"
         )
-    expression = rule["data"][0]["model"]["expr"]
+    expression = query["expr"]
     if not (expression.startswith("count(") and expression.endswith(")")):
         raise native.RunnerError("rendered expression is not wrapped in count()")
     if expression.count(TOKEN_CLAUSE) != 1:

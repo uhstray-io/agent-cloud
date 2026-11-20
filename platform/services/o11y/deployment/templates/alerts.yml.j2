@@ -962,7 +962,7 @@ groups:
      'count((sum(increase(vllm:num_preemptions_total{job="dgx-spark-vllm"}[1d])) > 0) or (max(max_over_time(vllm:kv_cache_usage_perc{job="dgx-spark-vllm"}[1d])) >= 0.90) or ((sum(increase(vllm:prefix_cache_hits_total{job="dgx-spark-vllm"}[1d])) / sum(increase(vllm:prefix_cache_queries_total{job="dgx-spark-vllm"}[1d])) < 0.75) and (sum(increase(vllm:prompt_tokens_total{job="dgx-spark-vllm"}[1d])) >= 1e6)))',
      'gt', 0, '15m', 'warning', 'vllm',
      '8 GiB KV pool trial stop line reached: a preemption, a pool peak of 0.90 or more, or a prefix-cache hit ratio under 0.75 on a day with at least 1 million prompt tokens.',
-     'Trial of dgx-spark PR 57. Do not restart serving. Tell Joseph the same day; the revert is prepared on branch trial/kv-pool-8g-revert.',
+     'Trial of dgx-spark PR 57. Do not restart serving. Tell the operator the same day; the revert is prepared on branch trial/kv-pool-8g-revert.',
      '/d/inference-latency-capacity') }}
 {% endif %}
 {# Expected-target retirement stays as a generic inert tombstone; it is never
