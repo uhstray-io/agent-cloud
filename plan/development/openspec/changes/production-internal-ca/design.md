@@ -625,24 +625,21 @@ open to review.
 6. **(f) Order against dgx-spark's tasks.** Code first (this repository's branches), then the
    declaration, then the CA's name policy, then issuance on all three hosts, then dgx-spark turns
    TLS on, then this side turns each switch on and proves it. The leaves must exist before
-   dgx-spark's TLS switch (its launchers refuse to start without the files). The gateway's
-   `https://` upstream, Caddy's `/health` transport, Rollback Inference Route's `direct` mode
-   transport and the o11y scrape scheme change in the same window as dgx-spark's Phase A restart
-   (its task 3.3), because a plain-HTTP caller fails the moment vLLM serves TLS only. Phase B
+   dgx-spark's TLS switch (its launchers refuse to start without the files). The inference-path
+   callers listed in gateway task 6.3's 2026-11-21 note change in the same window as dgx-spark's
+   Phase A restart (its task 3.3), because a plain-HTTP caller fails the moment vLLM serves TLS
+   only. Phase B
    (dgx-spark 4.1 to 4.3) follows only after every caller holds its leaf.
 
 7. **(g) Every production launch the build needs.** Each is lane C: the operator approves that exact
-   run, dry run included, in the acting session's chat. Manual launches go only on minutes no
-   declared schedule uses and should finish before the next slot (ledger 3.20, 3.22): re-derive the
-   free minutes from `templates.yml` at launch time, and never near `Renew Internal Certs (Dev)`'s
-   daily slot.
+   run, dry run included, in the acting session's chat. Manual launches follow ledger 3.20 and
+   3.22, with the free minutes re-derived from `templates.yml` at launch time.
    0. The operator-side inventory sync (`scripts/semaphore-sync-inventory.py`, preview, then
       `--apply`) after the site-config change of task 10.4: the CA, issuance and renewal read
       Semaphore's copy of the inventory. The same sync follows every later site-config change in
       this list (launches 7 and 10), before the run that reads it.
    1. `Deploy step-ca (Dev)`: dry run, then real run. Renders the authority name policy with the
-      five new names and `upstream.gateway` before any issuance (ledger 10.20); the run's name count
-      rises by six.
+      six new names before any issuance (ledger 10.20).
    2. `Issue Internal Leaf (Dev)` on spark-1's group, `leaf_name=vllm-server`: dry run, real run,
       then `leaf_action=inspect`.
    3. The same for `vllm-lifecycle` on spark-1.
