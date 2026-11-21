@@ -90,7 +90,9 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       request (decision 1 of 2026-09-28), with a Dev variant; it refuses a SAN that is not
       in the declared vLLM leaf and returns the certificate and bundle through the channel
       agreed with the dgx-spark session
-      2026-11-21: superseded by decision 1 of 2026-11-21 lead paragraph, not built.
+      2026-11-21: superseded, not built. The design's "Decisions recorded 2026-11-21" (its
+      opening paragraph) replaces decision 1 of 2026-09-28: each node is a certificates-only
+      consumer, and its key and request are made there by `Issue Internal Leaf (Dev)`.
 - [x] 2.5 BATS: the provisioner step is idempotent in shape (reads before it adds), the
       reset refuses without confirmation, production inventory values render the loopback
       bind and ACME off. Done 2026-09-29 as pytest (`test_step_ca_deploy.py`, 17 cases,
