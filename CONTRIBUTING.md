@@ -273,9 +273,11 @@ The Rust suite in `platform/tests/` is replacing pytest and BATS area by area
   test `every_suite_module_is_listed_exactly_once_in_areas_yml` fails a module listed nowhere or twice.
 - Format suite files with `rustfmt --edition 2024 platform/tests/suite/*.rs`: `cargo fmt` does not
   reach them, and the `rust_format` test checks them.
-- A port adds its ledger ratchet lines in `platform/tests/ledger_citation_ratchet.d/<group>.txt` and
-  does not edit `docs/MISTAKES.md` (plan 24, D10; provisional, pending the operator's decision on
-  `docs/MISTAKES.md` 5.29). Each line's reason names the replacing test as `suite/<module>.rs::<fn>`.
+- A port adds its ledger ratchet lines in `platform/tests/ledger_citation_ratchet.d/<group>.txt`.
+  Each line's reason names the replacing test as `suite/<module>.rs::<fn>`. In the same pull
+  request it appends an "Enforcement moved" note to each citing entry in `docs/MISTAKES.md`, naming
+  those tests (`docs/MISTAKES.md` 5.29, plan 24 D10). The test
+  `every_ratchet_line_for_a_deleted_test_has_an_enforcement_moved_note` fails a line without one.
 - Read repository YAML with `agent_cloud_tests::yaml`, never a string match. It resolves
   bare `yes`/`no` as YAML 1.1 booleans, as Ansible and podman-compose do, and applies
   anchors and `<<` merge keys. Select a task with `repo::tasks` and assert on that task.
