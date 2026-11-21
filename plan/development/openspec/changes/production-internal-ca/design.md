@@ -545,13 +545,11 @@ open to review.
    - `vllm-server` and `image-server` get one row each in `vars/renew-listener-servers.yml`, the
      class OPA, the launch gate and skynet already use: the leaf's own host connects to its listener
      and the served serial must equal the one issued. The rows differ from the existing three in two
-     ways. Their leaf directory is `<certificates directory>/<leaf>` under the consumer account, not
+     ways, each a field of the row, so the existing rows keep their behaviour. Their leaf directory is `<certificates directory>/<leaf>` under the consumer account, not
      `<deploy>/certs/<leaf>`. And their switch (`vllm_tls`, `image_server_tls`, inventory values in
      site-config, off by default) means "the listener serves TLS now", which dgx-spark controls:
      while it is off the leaf is renewed with its host and proven by the checks
-     `issue-internal-leaf.yml -e leaf_action=inspect` makes (key matches and is 0600, the
-     certificate verifies against the bundle for its profile and not the other); once it is on, by
-     the served serial. With `vllm_tls_require_client` on (Phase B), the `vllm-server` proof
+     `issue-internal-leaf.yml -e leaf_action=inspect` makes; once it is on, by the served serial. With `vllm_tls_require_client` on (Phase B), the `vllm-server` proof
      presents the host's own `vllm-lifecycle` leaf. Reload stays `none`: agent-cloud's account has
      no right to restart a dgx-spark service, and the served-serial proof fails the run if
      `--enable-ssl-refresh` does not follow the swap, which the rotation drill (dgx-spark task 3.4)
@@ -586,9 +584,8 @@ open to review.
    both nodes) and `service_conformance_tracked: false`. A host var names the OpenBao key it
    connects with (`secret/services/ssh/vllm-tls`); `issue-internal-leaf.yml`,
    `renew-internal-certs.yml` and the bundle step connect to such a host with that key through one
-   shared task, as the fault drill does: read from OpenBao, written by
-   `tasks/materialise-ssh-key.yml` to a runner-side 0600 file, set as `ansible_ssh_private_key_file`
-   for those hosts only, and removed by `tasks/remove-ssh-key.yml` in `always:`. The key is set per
+   shared task, as the fault drill does: `tasks/materialise-ssh-key.yml`, then
+   `ansible_ssh_private_key_file` for those hosts only, then `tasks/remove-ssh-key.yml` in `always:`. The key is set per
    host, never in play or block `vars:`, and the signing step delegated to the CA host still
    connects with the CA host's own credentials; the build's test settles how Ansible resolves the
    connection variables of a delegated task. Every play runs `become: false` there already. Any
@@ -622,14 +619,12 @@ open to review.
    scheduled. A hosts-file line on a node for dgx-spark's own local callers (as `tls-access.yml`
    writes on spark-1) is dgx-spark's choice.
 
-6. **(f) Order against dgx-spark's tasks.** Code first (this repository's branches), then the
-   declaration, then the CA's name policy, then issuance on all three hosts, then dgx-spark turns
-   TLS on, then this side turns each switch on and proves it. The leaves must exist before
-   dgx-spark's TLS switch (its launchers refuse to start without the files). The inference-path
-   callers listed in gateway task 6.3's 2026-11-21 note change in the same window as dgx-spark's
-   Phase A restart (its task 3.3), because a plain-HTTP caller fails the moment vLLM serves TLS
-   only. Phase B
-   (dgx-spark 4.1 to 4.3) follows only after every caller holds its leaf.
+6. **(f) Order against dgx-spark's tasks.** The sequence is decision 7's launches, after the code
+   of tasks 10.1 to 10.3. Three constraints set it. The leaves exist before dgx-spark's TLS switch,
+   because its launchers refuse to start without the files. The inference-path callers listed in
+   gateway task 6.3's 2026-11-21 note change in dgx-spark's Phase A window (its task 3.3), because a
+   plain-HTTP caller fails the moment vLLM serves TLS only. Phase B (dgx-spark 4.1 to 4.3) follows
+   only after every caller holds its leaf.
 
 7. **(g) Every production launch the build needs.** Each is lane C: the operator approves that exact
    run, dry run included, in the acting session's chat. Manual launches follow ledger 3.20 and
@@ -647,8 +642,9 @@ open to review.
    5. The same for `agw-upstream` on the gateway host's group.
    6. `Renew Internal Certs (Dev)` in check mode: every new leaf is classified and none is refused.
       The next scheduled run is the first real renewal.
-   7. After dgx-spark serves TLS on a node, one site-config change turns that node's switch on, the
-      inventory sync of launch 0, then `Renew Internal Certs (Dev)` with `--tags verify` proves the
+   7. After dgx-spark serves TLS on a node, one site-config change turns that node's switch on (both
+      nodes in one change when dgx-spark switches both in one window), the inventory sync of launch
+      0, then `Renew Internal Certs (Dev)` with `--tags verify` proves the
       served serial.
    8. The rotation drill with dgx-spark (its task 3.4): `Renew Internal Certs (Dev)` with
       `renew_threshold=1`.
@@ -656,7 +652,8 @@ open to review.
       (Dev)`, `Deploy o11y (Dev)`, each dry run first; and `Rollback Inference Route (Dev)`
       `gateway-config` as a dry run only, the read of the route task 6.2's run 5370 made.
    10. Phase B: after dgx-spark 4.1 to 4.3, the `vllm_tls_require_client` switch, the inventory sync
-       of launch 0, `Deploy agentgateway (Dev)` (loads the current `agw-upstream`), `Renew Internal
+       of launch 0, `Deploy agentgateway (Dev)` dry run, and its real run only when the dry run shows a
+       change (it loads the current `agw-upstream`), `Renew Internal
        Certs (Dev)` with `--tags verify`, and gateway task 6.4's remaining legs.
 
 ## Open Questions
