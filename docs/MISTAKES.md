@@ -97,7 +97,7 @@ and why.
 | 2.25 | The zero-hosts pre-flight rule named deploy playbooks only; 60 other group-targeting playbooks lack it (widens 2.21) | Wrong-reason pass | 1 | Test (`mount-caddy-certs.yml`); fleet-wide allow-list proposed |
 | 2.26 | A fixture placed an inventory variable where production does not; the planning play saw it in tests and nothing in prod (widens 2.22) | False-green fixture | 1 | Test (one playbook); class Convention |
 | 2.27 | A run that matched its hosts, found nothing to do, and reported success (widens 2.21) | Wrong-reason pass | 1 | Test (one playbook); class Convention, lint proposed |
-| 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints (widened by 2.38) | Wrong-reason pass | 2 | Test (`test_o11y_fault_drill.py`) |
+| 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints (widened by 2.38) | Wrong-reason pass | 1 | Test (`test_o11y_fault_drill.py`) |
 | 2.29 | A deploy proved rootless podman from a sudo session while every job, under a `NoNewPrivileges=true` unit, failed in `newuidmap`; a test had pinned the breaking directive | Wrong-reason pass | 1 | Playbook checks in the service context + test (`test_service_github_runner.bats`) |
 | 2.30 | A deploy task mapped template vars back to the defaulted copies defined from them; ansible-core failed the render with a recursive loop, and no test rendered the step | Unrunnable playbook, green suite | 1 | Test (`test_no_recursive_task_vars.py`) |
 | 2.31 | Production host configuration (podman short-name policy) was assumed from a local proof (widens 2.24) | Wrong-reason pass | 2 | Test (`test_compose_image_qualified.py`) for images; CI host-parity job proposed |
@@ -110,6 +110,7 @@ and why.
 | 2.38 | A mutation check swapped one character for another and restored the file within the same second; Python kept loading the mutant's cached bytecode, and the next test run tested the mutant (widens 2.28) | Wrong-reason result | 1 | Convention (a fresh `PYTHONPYCACHEPREFIX` per mutation run) |
 | 2.39 | A "no user is signed in after a refused callback" test asked with the pre-sign-in cookie, which could never show a user; a callback that stored the user and then refused stayed green | False-green test | 2 | Test (`callback_with_a_wrong_nonce_is_refused` and `callback_with_a_token_signed_by_another_key_is_refused` probe with the cookie the refusal sets; leak mutant red) |
 | 2.40 | A port PR (#1186) returned five times: checks copied from their originals that could not fail (an emptiness check that, on macOS, read a directory the hook never used; an overlap check that passed on a sequential hook; lock checks that read an unreadable directory as empty), and comparisons weaker than the originals (`trim_end` and `lines()` where BATS compared `$(cat)`; a skip turned into a panic) | False-green test | 1 | Convention (this instance: one mutant per ported test of `pre_push_uv.rs`, each red after strengthening) |
+| 2.41 | A stop-point test passed when the play died one task before the stop; its assertions held either way (widens 2.28) | Wrong-reason pass | 1 | Test (`cloudflare_dry_run_backend_playbook.rs`) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -205,7 +206,7 @@ and why.
 | 10.2 | Assumed a container runtime inherits the image CMD under an entrypoint override | Unverified claim | 1 | Test |
 | 10.3 | Wrote a probe whose own command was interpolated away, then read the empty result as a finding — **x2** | Unverified claim | 2 | Convention |
 | 10.4 | Revert timer could not be re-armed; only the 2nd run fails, which is the retry-after-revert path | Safety mechanism broken when needed | 1 | Test (mutation-proven) |
-| 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | 2 | CI (root-level pytest); the cloudflare HCL format check has no CI gate yet (AC-953) |
+| 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | 2 | CI (root-level pytest) |
 | 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | 1 | Test (6 grammar cases) |
 | 10.7 | Named the rollback hazard, then gated the restore on a condition an earlier failure skips | Live-state damage | 1 | Test (block/rescue, mutation-proven) |
 | 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference — **x2** (2026-10-02, found 2026-11-14: the closed rule's pattern missed `now(args)`; five `vars` entries got past it) | Half-finished run, credentials left in a clone | 2 | Test (closed rule, mutation-proven) |
@@ -402,7 +403,7 @@ line for a parity table after CodeRabbit's fifth return. Why the rule did not fi
 about a deleted file, which no grep of the tree finds, and a reviewer's agreement stood in for
 reading it (1.28). A claim about a deleted file is checked with `git show <parent>:<path>`.
 
-**Occurrence 10 — 2026-11-17.** (recorded 2026-11-21) The v0.17.0 batch coordinator told an owner that this repository has no `docs/LESSONS.md` rule, after searching only the repository. The rule was in the operator's global instructions, changed at 09:30 EST that day together with the lanes, the review returns, the three-returns rule and the scope check; the coordinator's session still held the older text until an owner pointed at it, and the change was applied from 12:06 EST (the v0.17.0 batch index, decision 24). The batch ran for about two and a half hours without those rules. Why the rule did not fire: the search was of the wrong artifact. The instructions a session runs under are loaded from more than one place, and the one that held the rule was read once at session start and never re-read. The rule covers it: establish which file the runtime loads before calling something absent.
+**Occurrence 10 — 2026-11-17.** The v0.17.0 batch coordinator told an owner that this repository has no `docs/LESSONS.md` rule, after searching only the repository. The rule was in the operator's global instructions, changed at 09:30 EST that day together with the lanes, the review returns, the three-returns rule and the scope check; the coordinator's session still held the older text until an owner pointed at it, and the change was applied from 12:06 EST (the v0.17.0 batch index, decision 24). The batch ran for about two and a half hours without those rules. Why the rule did not fire: the search was of the wrong artifact. The instructions a session runs under are loaded from more than one place, and the one that held the rule was read once at session start and never re-read. The rule covers it: establish which file the runtime loads before calling something absent.
 
 ### 1.3 A masked exit code reported as success
 
@@ -1252,7 +1253,7 @@ for this form: Plane AC-845, a Deploy OPA verify that asks the running server a 
 expected answer is computed from the placed data, so "the deploy passed" includes "the server
 loaded it".
 
-**Occurrence 6 — 2026-11-17.** (recorded 2026-11-21) The batch coordinator asked the operator to approve a production check-mode run of `Manage Cloudflare Records` as the way to see #1182's transport guard pass in production (the v0.17.0 batch index, decision 37, a lane C approval). The guard sits in the per-record task file (`platform/playbooks/tasks/manage-cloudflare-record.yml:56-60`), which runs only through the loop over the declared records (`platform/playbooks/manage-cloudflare-records.yml:59-67`, `loop: "{{ _records }}"`). Task 17708 succeeded and reached no record, so the guard never ran and stays unproven in production (AC-978). The same claim was in brief 30 and the index's owed-run line. Why the rule did not fire: the check was chosen by its template name, and what it selects (the declared records, possibly none) was not read before the approval was asked for.
+**Occurrence 6 — 2026-11-17.** The batch coordinator asked the operator to approve a production check-mode run of `Manage Cloudflare Records` as the way to see #1182's transport guard pass in production (the v0.17.0 batch index, decision 37, a lane C approval). The guard sits in the per-record task file (`platform/playbooks/tasks/manage-cloudflare-record.yml:56-60`), which runs only through the loop over the declared records (`platform/playbooks/manage-cloudflare-records.yml:59-67`, `loop: "{{ _records }}"`). Task 17708 succeeded and reached no record, so the guard never ran and stays unproven in production (AC-978). The same claim was in brief 30 and the index's owed-run line. Why the rule did not fire: the check was chosen by its template name, and what it selects (the declared records, possibly none) was not read before the approval was asked for.
 ### 1.22 A runner's tool version stated twice without reading the running system
 
 **What happened.** While diagnosing why a production dry run of `Rollback Inference Route (Dev)`
@@ -1955,9 +1956,9 @@ by measurement); this is the reverse, a capability assumed without the documenta
 
 **Root cause.** A refused command was treated as not having run, but its absence left the previous round's files in place under the same names, and nothing read the file content between writing and posting.
 
-**The rule.** After a refused or failed command, re-create its input files and read them before any retry. Read each reply body back from its file immediately before posting it.
+**The rule.** Check the exact bytes being sent, at send time, not the text meant. After a refused or failed command, re-create its input files and read them before any retry, and read each reply body back from its file immediately before posting it.
 
-**Enforced by.** Convention.
+**Enforced by.** Convention. A readback check belongs in the PreToolUse hook on PR comment commands proposed in 1.28.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -2655,7 +2656,7 @@ the include turns all three red; moving it after the login turns the first red. 
 repository-wide check to select by the request shape in every playbook and task file is Plane
 AC-937; that is this entry's guard proposal.
 
-**Occurrence 4 — 2026-11-17.** (recorded 2026-11-21) The guard test added for AC-936 in #1182 selects OpenBao requests through `uri()` in `platform/tests/suite/cloudflare_record_bao_transport.rs:20-22`, which reads `ansible.builtin.uri` and `uri` only. A request written as `ansible.legacy.uri` would not be selected, and the ordering check would pass on it with the guard removed (AC-939 comment of 2026-11-17 07:03 EST; still the base's code). The round 5 review on the same item adds that a URL or headers held in one variable are not selected either. Why the rule did not fire: the population was derived from the code, but through the module key, and the key has three spellings; the helpers in `suite/credential_leaks.rs` already accept all three. Fix and mutation are tracked on AC-939.
+**Occurrence 4 — 2026-11-17.** The guard test added for AC-936 in #1182 selects OpenBao requests through `uri()` in `platform/tests/suite/cloudflare_record_bao_transport.rs:20-22`, which reads `ansible.builtin.uri` and `uri` only. A request written as `ansible.legacy.uri` would not be selected, and the ordering check would pass on it with the guard removed (AC-939 comment of 2026-11-17 07:03 EST; still the base's code). The round 5 review on the same item adds that a URL or headers held in one variable are not selected either. Why the rule did not fire: the population was derived from the code, but through the module key, and the key has three spellings; the helpers in `suite/credential_leaks.rs` already accept all three. Fix and mutation are tracked on AC-939.
 
 ### 2.19 The healthcheck watched the frontend while the backend was dead
 
@@ -2970,8 +2971,6 @@ a lint requiring state-changing playbooks to assert a non-empty work set.
 
 ### 2.28 A clean-copy test passed only where the copy carried the workstation's bytecode caches
 
-**Occurrences: 2** — (first undated), 2026-11-17
-
 **What happened.** `test_o11y_fault_drill.py` ran the fault drill from a clean git copy of the
 tree. Ansible compiles the repository's plugins into `__pycache__` on first use, so after the
 first run in a copy the drill's own "Require a clean reviewed checkout" gate saw untracked files
@@ -2999,8 +2998,6 @@ itself. The refusal-path cases still assert only the shared "no fault was induce
 every-run assertion is what stops a clean-checkout refusal from passing them.
 
 Widened by 2.38 (2026-11-10): a mutation check that restores a file can leave stale bytecode in place too.
-
-**Occurrence 2 — 2026-11-17.** (recorded 2026-11-21) The stale and missing backend tests of the Cloudflare dry run (the pytest originals, deleted by #1194's port) were meant to stop at the playbook's `meta: end_play` task. They stopped one task earlier: the lifted harness ran in a scratch directory, the relative `include_tasks: tasks/emit-step-result.yml` found nothing, and the play died with a fatal error. The assertions held either way, so both passed with `end_play` disabled (AC-945 comment of 2026-11-17 09:49 EST). The port `platform/tests/suite/cloudflare_dry_run_backend_playbook.rs` points the include at the repository's file, and `assert_stopped` also requires the step result and no `fatal:`; disabling `end_play` now turns both red. Why the rule did not fire: it was not applied when the original tests were written; the port, written against it, caught it.
 
 ### 2.29 The rootless-podman check ran outside the context jobs run in
 
@@ -3409,6 +3406,18 @@ other 7 were strengthened; no check re-runs it. The
 return-3 fix, `bats_is_already_running_while_pytest_runs`, holds the fake bats until the fake
 pytest releases it (`FAKE_BATS_RELEASE`, `7fa584cc`). In that sweep a copy of the hook made
 sequential turned it red.
+
+### 2.41 A stop-point test passed when the play died one task before the stop (widens 2.28)
+
+**Occurrences: 1** — 2026-11-17
+
+**What happened.** The stale and missing backend tests of the Cloudflare dry run (the pytest originals, added 2026-09-24 and deleted by #1194's port) were meant to stop at the playbook's `meta: end_play` task. They stopped one task earlier: the lifted harness ran in a scratch directory, the relative `include_tasks: tasks/emit-step-result.yml` found nothing, and the play died with a fatal error. Their assertions held either way, so both passed with `end_play` disabled (AC-945 comment of 2026-11-17 09:49 EST). The tests predate 2.28 (2026-10-05), which covers a refusal from a different gate but not a stop point reached by an earlier failure.
+
+**Root cause.** The tests asserted what a stopped run lacks (no plan, no init), which an early failure lacks too, and nothing asserted that the run reached the stop itself.
+
+**The rule.** A test that a run stops at a given point asserts something only that point produces (its recorded step result, its own message) and asserts no failure (`fatal:`) happened before it. Disable the stop once and watch the test go red.
+
+**Enforced by.** Test, for this playbook: `platform/tests/suite/cloudflare_dry_run_backend_playbook.rs` (`assert_stopped`, used by `a_stale_backend_stops_the_dry_run` and `a_missing_backend_stops_the_dry_run`) requires the step result and no `fatal:`; disabling `end_play` turns both red. Other stop-point tests: Convention.
 
 ## 3. Acting on live state
 
@@ -5624,7 +5633,7 @@ a review. The instance: #1132 is to remove `_local` and `_rootless_podman`, and 
 `_ih_rootless` (they read `local_mode`; the facts derived from them are read across hosts through
 `hostvars`). #1136 corrects plan 24's Context.
 
-**Occurrence 2 — 2026-11-17.** (recorded 2026-11-21) Brief 20 (the common port brief) decision 3 said framework-bound Python tests stay Python. Plan 24 (`plan/development/24-rust-test-platform.md`, a different plan from the one above) D5 says the framework-bound product code stays Python and its tests are ported, through the tier that can load it. A port owner found it; the brief was corrected at 09:27 EST ("decision 3 corrected against plan 24 D5"), and AC-933's comment of 10:47 EST records that the first port brief said the opposite. Why the rule did not fire: the brief was written from the plan's phase list, and its decisions were not checked one by one against the Decision rows it implements.
+**Occurrence 2 — 2026-11-17.** Brief 20 (the common port brief) decision 3 said framework-bound Python tests stay Python. Plan 24 (`plan/development/24-rust-test-platform.md`, a different plan from the one above) D5 says the framework-bound product code stays Python and its tests are ported, through the tier that can load it. A port owner found it; the brief was corrected at 09:27 EST ("decision 3 corrected against plan 24 D5"), and AC-933's comment of 10:47 EST records that the first port brief said the opposite. Why the rule did not fire: the brief was written from the plan's phase list, and its decisions were not checked one by one against the Decision rows it implements.
 
 ### 5.29 Briefed six port workers never to edit the ledger, which forbade the note a deleted cited test needs (widens 5.28)
 
@@ -5808,7 +5817,7 @@ batch's later briefs; that is a brief convention, not a check.
 
 **Root cause.** Unconfirmed. The hook receives the refs and commits the push names when it starts; the suspicion is that the HTTPS transport resolves the branch again after the hook returns, so a commit made during the hook rides out with the push.
 
-**The rule.** Make no commit on a branch while its push is inside the pre-push hook. The hook should compare each pushed local ref with the commit it was given and fail the push on a mismatch.
+**The rule.** A gate's pass covers only the commit it ran on, so the commit pushed must be that commit. Make no commit on a branch while its push is inside the pre-push hook. The hook should compare each pushed local ref with the commit it was given and fail the push on a mismatch, beside the same hook's per-branch lock (5.11).
 
 **Enforced by.** Convention (the batch rule); a hook check that refuses a ref that moved during the run is proposed (AC-929).
 
@@ -6551,7 +6560,7 @@ root with no path argument, so `testpaths` is authoritative and adding a suite i
 one line in `pyproject.toml`. Verified by reproducing CI's invocation: 95
 collected, up from 79.
 
-**Occurrence 2 — 2026-11-17.** (recorded 2026-11-21) The BATS test "cloudflare mcp: the HCL is formatted (tofu fmt -check)" skipped when `tofu` was not installed. `tofu` is installed neither in CI (the Static Analysis job installs terraform and format-checks only the OpenBao HCL) nor on the workstations, so the check never ran anywhere (AC-953). The cloudflare-edge port (#1194) dropped it under the suite's never-skip rule; the CI replacement is AC-953. Why the rule did not fire: the test was never observed running through any gate, and a skip reads as a pass in a green run.
+**Occurrence 2 — 2026-11-17.** The BATS test "cloudflare mcp: the HCL is formatted (tofu fmt -check)" skipped when `tofu` was not installed. `tofu` is installed neither in CI (the Static Analysis job installs terraform and format-checks only the OpenBao HCL) nor on the workstations, so the check never ran anywhere (AC-953). The cloudflare-edge port (#1194) dropped it under the suite's never-skip rule (`platform/tests/src/lib.rs:720-723`). No CI gate format-checks the cloudflare HCL yet: the Static Analysis job checks `platform/services/openbao` only (`.github/workflows/lint-and-test.yml:89-91`), and the replacement is AC-953, still open. Why the rule did not fire: the test was never observed running through any gate, and a skip reads as a pass in a green run.
 
 ### 10.6 Wrote a parser from one example file instead of from the grammar
 
