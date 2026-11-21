@@ -79,5 +79,5 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 ### L-013 · 2026-11-21 · process
 
 - **ACCEPTED:** #1214 (AC-1026).
-- **DERIVED:** A ledger candidate is written down with the source that proves it: a PR comment or review id, a Plane comment's item and time, or a batch-index decision number. A candidate whose only record is a chat message or a session's memory cannot be written into `docs/MISTAKES.md` later, because the ledger writer must check every fact at its source.
+- **DERIVED:** A ledger candidate is written down with the source that proves it (a PR comment or review id, a Plane comment's item and time, or a batch-index decision number). The ledger writer checks every fact at its source, and a chat message or a session's memory cannot be checked later.
 - **APPLIES TO:** batch coordinators and owners keeping a ledger candidate list for a closing ledger pass.

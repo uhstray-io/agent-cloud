@@ -110,7 +110,7 @@ and why.
 | 2.38 | A mutation check swapped one character for another and restored the file within the same second; Python kept loading the mutant's cached bytecode, and the next test run tested the mutant (widens 2.28) | Wrong-reason result | 1 | Convention (a fresh `PYTHONPYCACHEPREFIX` per mutation run) |
 | 2.39 | A "no user is signed in after a refused callback" test asked with the pre-sign-in cookie, which could never show a user; a callback that stored the user and then refused stayed green | False-green test | 2 | Test (`callback_with_a_wrong_nonce_is_refused` and `callback_with_a_token_signed_by_another_key_is_refused` probe with the cookie the refusal sets; leak mutant red) |
 | 2.40 | A port PR (#1186) returned five times: checks copied from their originals that could not fail (an emptiness check that, on macOS, read a directory the hook never used; an overlap check that passed on a sequential hook; lock checks that read an unreadable directory as empty), and comparisons weaker than the originals (`trim_end` and `lines()` where BATS compared `$(cat)`; a skip turned into a panic) | False-green test | 1 | Convention (this instance: one mutant per ported test of `pre_push_uv.rs`, each red after strengthening) |
-| 2.41 | A stop-point test passed when the play died one task before the stop; its assertions held either way (widens 2.28) | Wrong-reason pass | 1 | Test (`cloudflare_dry_run_backend_playbook.rs`) |
+| 2.41 | A stop-point test passed when the play died one task before the stop; its assertions held either way (widens 2.28) | Wrong-reason pass | 1 | Test for one playbook (`cloudflare_dry_run_backend_playbook.rs`); other stop-point tests Convention |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -1254,6 +1254,7 @@ expected answer is computed from the placed data, so "the deploy passed" include
 loaded it".
 
 **Occurrence 6 — 2026-11-17.** The batch coordinator asked the operator to approve a production check-mode run of `Manage Cloudflare Records` as the way to see #1182's transport guard pass in production (the v0.17.0 batch index, decision 37, a lane C approval). The guard sits in the per-record task file (`platform/playbooks/tasks/manage-cloudflare-record.yml:56-60`), which runs only through the loop over the declared records (`platform/playbooks/manage-cloudflare-records.yml:59-67`, `loop: "{{ _records }}"`). Task 17708 succeeded and reached no record, so the guard never ran and stays unproven in production (AC-978). The same claim was in brief 30 and the index's owed-run line. Why the rule did not fire: the check was chosen by its template name, and what it selects (the declared records, possibly none) was not read before the approval was asked for.
+
 ### 1.22 A runner's tool version stated twice without reading the running system
 
 **What happened.** While diagnosing why a production dry run of `Rollback Inference Route (Dev)`
@@ -1956,9 +1957,9 @@ by measurement); this is the reverse, a capability assumed without the documenta
 
 **Root cause.** A refused command was treated as not having run, but its absence left the previous round's files in place under the same names, and nothing read the file content between writing and posting.
 
-**The rule.** Check the exact bytes being sent, at send time, not the text meant. After a refused or failed command, re-create its input files and read them before any retry, and read each reply body back from its file immediately before posting it.
+**The rule.** Check the bytes being sent, not the text meant: read each reply body back from its file immediately before posting it. A refused or failed command may leave older files under the same names, so re-create its inputs before any later command uses them (a refused command itself is not retried in another form, 5.31).
 
-**Enforced by.** Convention. A readback check belongs in the PreToolUse hook on PR comment commands proposed in 1.28.
+**Enforced by.** Convention. No hook compares a posted body with the file just written; 1.28's proposed hook checks a body's Evidence lines, not its bytes.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -2999,6 +3000,8 @@ every-run assertion is what stops a clean-checkout refusal from passing them.
 
 Widened by 2.38 (2026-11-10): a mutation check that restores a file can leave stale bytecode in place too.
 
+Widened by 2.41 (2026-11-21): a stop-point test must also prove the run reached the stop, not an earlier failure.
+
 ### 2.29 The rootless-podman check ran outside the context jobs run in
 
 **What happened.** Container jobs on the GitHub runners failed with `exec: "newuidmap":
@@ -3417,7 +3420,7 @@ sequential turned it red.
 
 **The rule.** A test that a run stops at a given point asserts something only that point produces (its recorded step result, its own message) and asserts no failure (`fatal:`) happened before it. Disable the stop once and watch the test go red.
 
-**Enforced by.** Test, for this playbook: `platform/tests/suite/cloudflare_dry_run_backend_playbook.rs` (`assert_stopped`, used by `a_stale_backend_stops_the_dry_run` and `a_missing_backend_stops_the_dry_run`) requires the step result and no `fatal:`; disabling `end_play` turns both red. Other stop-point tests: Convention.
+**Enforced by.** Test, for this playbook: `assert_stopped` in `platform/tests/suite/cloudflare_dry_run_backend_playbook.rs`, used by `a_stale_backend_stops_the_dry_run` and `a_missing_backend_stops_the_dry_run`; disabling `end_play` turns both red. Other stop-point tests: Convention.
 
 ## 3. Acting on live state
 
@@ -5819,7 +5822,7 @@ batch's later briefs; that is a brief convention, not a check.
 
 **The rule.** A gate's pass covers only the commit it ran on, so the commit pushed must be that commit. Make no commit on a branch while its push is inside the pre-push hook. The hook should compare each pushed local ref with the commit it was given and fail the push on a mismatch, beside the same hook's per-branch lock (5.11).
 
-**Enforced by.** Convention (the batch rule); a hook check that refuses a ref that moved during the run is proposed (AC-929).
+**Enforced by.** Convention (a v0.17.0 batch rule of 2026-11-17, quoted in AC-929); the hook check above is proposed in AC-929. Related: 5.20 (a merge binds to the head its review covered).
 
 ## 6. Working from assumptions about files
 
@@ -6560,7 +6563,7 @@ root with no path argument, so `testpaths` is authoritative and adding a suite i
 one line in `pyproject.toml`. Verified by reproducing CI's invocation: 95
 collected, up from 79.
 
-**Occurrence 2 — 2026-11-17.** The BATS test "cloudflare mcp: the HCL is formatted (tofu fmt -check)" skipped when `tofu` was not installed. `tofu` is installed neither in CI (the Static Analysis job installs terraform and format-checks only the OpenBao HCL) nor on the workstations, so the check never ran anywhere (AC-953). The cloudflare-edge port (#1194) dropped it under the suite's never-skip rule (`platform/tests/src/lib.rs:720-723`). No CI gate format-checks the cloudflare HCL yet: the Static Analysis job checks `platform/services/openbao` only (`.github/workflows/lint-and-test.yml:89-91`), and the replacement is AC-953, still open. Why the rule did not fire: the test was never observed running through any gate, and a skip reads as a pass in a green run.
+**Occurrence 2 — 2026-11-17.** The BATS test "cloudflare mcp: the HCL is formatted (tofu fmt -check)" skipped when `tofu` was not installed. `tofu` is installed neither in CI (the Static Analysis job installs terraform and format-checks only the OpenBao HCL) nor on the workstations, so the check never ran anywhere. The cloudflare-edge port (#1194) dropped it under the suite's never-skip rule (`platform/tests/src/lib.rs:720-723`). No CI gate format-checks the cloudflare HCL yet: the Static Analysis job checks `platform/services/openbao` only (`.github/workflows/lint-and-test.yml:89-91`), and its replacement is AC-953, still open. Why the rule did not fire: a skip reads as a pass in a green run, so nobody saw that no gate ran it.
 
 ### 10.6 Wrote a parser from one example file instead of from the grammar
 
