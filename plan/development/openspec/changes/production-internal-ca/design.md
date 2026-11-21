@@ -659,8 +659,9 @@ open to review.
    10. Phase B, in two steps. Before dgx-spark's mutual-TLS restart (its task 4.3), every caller
        presents its leaf (gateway task 6.3, piece 5): `Deploy agentgateway (Dev)`, `Manage Caddy
        Sites (Dev)` with the `caddy` leaf on the `/health` and `direct` transports, and `Deploy o11y
-       (Dev)` with o11y's probe leaf on the scrape, which is issued first, since this plan does not
-       issue it. Each runs dry first. The gateway's real run is needed only when its dry run shows a
+       (Dev)` with the scrape's client leaf. Which leaf the scrape presents is an open build
+       decision (task 10.9): a build task declares it, and launch 1 is re-run to add its name to the
+       policy before it is issued. Each runs dry first. The gateway's real run is needed only when its dry run shows a
        change: its change check covers `agw-upstream` (decision 2), so "unchanged" means the running
        gateway started with the current leaf. After dgx-spark's 4.3: the `vllm_tls_require_client`
        switch, the inventory sync of launch 0, `Renew Internal Certs (Dev)` with `--tags verify`,

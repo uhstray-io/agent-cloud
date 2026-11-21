@@ -470,3 +470,6 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
 - [ ] 10.8 Validation gate: each new leaf shows in the renewal's expiry lines in Loki, and a renewal
       of each host proves every leaf on it (served serial for the two server leaves once their
       switches are on).
+- [ ] 10.9 Build decision: which client leaf o11y's `dgx-spark-vllm` scrape presents in Phase B.
+      Declare it in `internal_leaves` (site-config), re-run launch 1 of decision 7 so the CA's name
+      policy carries its name, and issue it, all before launch 10.

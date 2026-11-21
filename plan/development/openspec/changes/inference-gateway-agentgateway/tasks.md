@@ -938,9 +938,9 @@
       recorded 2026-11-21", tasks group 10); the build waits for the operator's go, and no build
       pull request merges before v0.17.1 is promoted. That design's decision 3 answers the
       2026-10-26 additions (a) and (b). This list replaces the order of the 2026-10-16 list. This
-      task's own pieces, in order, all inside
-      dgx-spark's Phase A window (its task 3.3) and each behind an inventory value that keeps
-      today's plain path until then:
+      task's own pieces, in order: items 1 to 4 inside dgx-spark's Phase A window (its task 3.3),
+      each behind an inventory value that keeps today's plain path until then; item 5 in Phase B
+      (that design's launch 10):
       1. the model's `https://` base URL and `tls: {root, hostname, cert, key}` (hostname
          `vllm-primary.<site>.<zone>`, cert and key the `agw-upstream` leaf);
       2. Caddy's `/health` handler with an HTTPS transport (internal root, `tls_server_name`
