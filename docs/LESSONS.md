@@ -75,3 +75,9 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1212 (AC-997).
 - **DERIVED:** `cargo fmt --check` does not check the modules under `platform/tests/suite/`: `build.rs` writes their `mod` lines to `$OUT_DIR/suite_modules.rs`, which `suite/main.rs` pulls in with `include!`, and `cargo fmt` does not follow an `include!` (`platform/tests/build.rs:3-9`), so it passes a misformatted one. A brief or DONE WHEN that proves a suite module's formatting names `rustfmt --check --edition 2024 platform/tests/suite/<module>.rs`, the check `suite/rust_format.rs` runs.
 - **APPLIES TO:** briefs, DONE WHEN lines and local checks for any change under `platform/tests/suite/`.
+
+### L-013 · 2026-11-21 · platform
+
+- **ACCEPTED:** #1218 (AC-1025).
+- **DERIVED:** An internal-CA leaf for a listener that another repository starts must exist, and stay current, before that listener serves TLS, because its launcher refuses to start TLS without the files. The renewal's "not in use, left alone" rule for a leaf nothing uses yet (`platform/playbooks/renew-internal-certs.yml:70-72`) would let such a leaf expire before the other side switches. A plan for such a leaf gives it an inventory switch meaning "the listener serves TLS now": renewed with its host and proven by the inspect checks while the switch is off, and by the served serial once it is on.
+- **APPLIES TO:** planning any leaf in `internal_leaves` whose user is not deployed by this repository (the DGX Spark nodes today), and any change to the renewal's proof classes.
