@@ -31,7 +31,7 @@ and why.
 | # | Mistake | Class | Count | Enforced by |
 |---|---------|-------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file — **x9** (2026-11-18: called a port's weakened comparisons copied from deleted originals, unread) | Unverified claim | 9 | Convention + loader test; hook proposed (count ≥ 3) |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x10** (2026-11-18: called a port's weakened comparisons copied from deleted originals, unread) | Unverified claim | 10 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
 | 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
 | 1.5 | **x2** — Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 2 | Test (runner containerisation); Convention (occurrence 2, launch containment) |
@@ -50,7 +50,7 @@ and why.
 | 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6; widened by 1.35, 1.37) | Unverified claim | 1 | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
-| 1.21 | **x5** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe; x4: said production skynet launches through the launch gate from probes that only reached and authenticated to it) | Unverified claim | 5 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed; skynet-client launch probe proposed; OPA loaded-policy verify proposed (AC-845) |
+| 1.21 | **x6** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe; x4: said production skynet launches through the launch gate from probes that only reached and authenticated to it) | Unverified claim | 6 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed; skynet-client launch probe proposed; OPA loaded-policy verify proposed (AC-845) |
 | 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
 | 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
 | 1.24 | **x2** — Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB (x2: told the operator a backup retention fits a CephFS storage's total, which is used space plus what Ceph can still place) | Unverified claim | 2 | Convention |
@@ -69,6 +69,7 @@ and why.
 | 1.37 | Called a fix impossible ("a wrapper cannot repair" parallel's ignored SIGALRM) from a fact about shells, built a serial fallback on it; a perl job shell fixed it (widens 1.19) | Unverified claim | 1 | Instance: wrapper test with control; class Convention, no detector |
 | 1.38 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
 | 1.39 | Told the operator a paid plan would unlock a vendor role, from the code's flag name, without the vendor's plan matrix; Plane's Admin role is Business-only | Unverified claim | 1 | Convention |
+| 1.40 | Posted an earlier round's reply text in three review threads after a refused command left old files in place | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -86,7 +87,7 @@ and why.
 | 2.15 | Matched a substring/token instead of the anchored construct, three times — a commented guard passed; a port number matched inside another (2026-11-02, false red); a disabled `when:` still matched a BATS grep (2026-11-04) | **x4** False green | 4 | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | 1 | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | 1 | Test (closed rule, mutation-proven) |
-| 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) **x3** (selected by a `_bao_url` play var, so a task file building its URL inline was unseen) | Vacuous coverage | 3 | Test (derived population + ratchet) |
+| 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) **x3** (selected by a `_bao_url` play var, so a task file building its URL inline was unseen) **x4** (a selector reading two of three `uri` spellings) | Vacuous coverage | 4 | Test (derived population + ratchet) |
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | 1 | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | 1 | Test (adopted-state case + rc-guarded parse) |
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed — **x2** | Wrong-reason pass | 2 | Test (`test_deploy_playbooks_preflight.bats` + ratchet) |
@@ -96,7 +97,7 @@ and why.
 | 2.25 | The zero-hosts pre-flight rule named deploy playbooks only; 60 other group-targeting playbooks lack it (widens 2.21) | Wrong-reason pass | 1 | Test (`mount-caddy-certs.yml`); fleet-wide allow-list proposed |
 | 2.26 | A fixture placed an inventory variable where production does not; the planning play saw it in tests and nothing in prod (widens 2.22) | False-green fixture | 1 | Test (one playbook); class Convention |
 | 2.27 | A run that matched its hosts, found nothing to do, and reported success (widens 2.21) | Wrong-reason pass | 1 | Test (one playbook); class Convention, lint proposed |
-| 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints (widened by 2.38) | Wrong-reason pass | 1 | Test (`test_o11y_fault_drill.py`) |
+| 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints (widened by 2.38) | Wrong-reason pass | 2 | Test (`test_o11y_fault_drill.py`) |
 | 2.29 | A deploy proved rootless podman from a sudo session while every job, under a `NoNewPrivileges=true` unit, failed in `newuidmap`; a test had pinned the breaking directive | Wrong-reason pass | 1 | Playbook checks in the service context + test (`test_service_github_runner.bats`) |
 | 2.30 | A deploy task mapped template vars back to the defaulted copies defined from them; ansible-core failed the render with a recursive loop, and no test rendered the step | Unrunnable playbook, green suite | 1 | Test (`test_no_recursive_task_vars.py`) |
 | 2.31 | Production host configuration (podman short-name policy) was assumed from a local proof (widens 2.24) | Wrong-reason pass | 2 | Test (`test_compose_image_qualified.py`) for images; CI host-parity job proposed |
@@ -172,7 +173,7 @@ and why.
 | 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on — **x3** (2026-11-16 to 2026-11-17: statuses on merge-only and hand-checked heads across twelve PRs; four merged on them — **x4** (2026-11-18): #1206's statuses on `750f7000` came from agents dispatched by hand, not runs of the two skills) — **x5** (2026-11-17 to 2026-11-18: statuses from Agent dispatches, not Skill-tool runs, on five PRs; four merged) — **x6** (2026-11-17 to 2026-11-18: #1186 statuses on four heads no run of the two skills had covered) — **x7** (2026-11-17: #1204, #1205, #1207, the re-cut of #1185, statuses from Agent dispatches after a compaction; caught before merge) | Process | 7 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test; per-head pass receipt proposed (count 3) |
 | 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories (2026-11-16: also `--budget-acknowledged`) | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
 | 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
-| 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
+| 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 2 | Convention (a ratchet check on mode variables proposed, AC-865) |
 | 5.29 | Briefed six port workers never to edit the ledger, which forbade the "Enforcement moved" note a deleted cited test needs; the ratchet kept every gate green (widens 5.28) — **x2** (2026-11-16: brief 11 repeated the ledger prohibition; caught before any port) | Process | 2 | Convention (a ledger test requiring the note proposed) |
 | 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 5 | Convention (per-agent scratch directory in every brief); deny rule for recursive `rm` proposed, operator's decision |
 | 5.31 | A peer session allowed `SKIP_TESTS=1` for docs-only pushes; two owners retried a denied compound command as a standalone push | Process | 1 | Convention (deny rule for the skipped push proposed; operator's decision) |
@@ -183,6 +184,7 @@ and why.
 | 5.36 | One batch unit bundled eleven guard-test fixes across five test modules, a BATS test deletion and a plan cell; it went back nine times and was closed and cut into three | Process | 1 | Convention (three-returns rule; split past about three files) |
 | 5.37 | Ran two rounds of four-agent `/simplify` plus security passes on S9 without totalling agent tokens, against a 450k stop never sized from a measured round; spend reached about six times the stop | Process | 2 | Convention (stop set per model class from a measured round; running total before each wave) |
 | 5.38 | Three returns on S9's `ansible.cfg` check: a grammar reader, then a pin with a second unchecked list; no plan said where the fact "this setting loads a directory" was declared | Process | 1 | Test: `lanes` suite (`cfg_dirs_classifies_every_pinned_key_and_refuses_the_rest`) |
+| 5.39 | The pre-push hook tested one commit; a commit made during the hook was pushed untested | Process | 1 | Convention (hook check for a ref that moved during the run proposed, AC-929) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -203,7 +205,7 @@ and why.
 | 10.2 | Assumed a container runtime inherits the image CMD under an entrypoint override | Unverified claim | 1 | Test |
 | 10.3 | Wrote a probe whose own command was interpolated away, then read the empty result as a finding — **x2** | Unverified claim | 2 | Convention |
 | 10.4 | Revert timer could not be re-armed; only the 2nd run fails, which is the retry-after-revert path | Safety mechanism broken when needed | 1 | Test (mutation-proven) |
-| 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | 1 | CI (root-level pytest) |
+| 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | 2 | CI (root-level pytest) |
 | 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | 1 | Test (6 grammar cases) |
 | 10.7 | Named the rollback hazard, then gated the restore on a condition an earlier failure skips | Live-state damage | 1 | Test (block/rescue, mutation-proven) |
 | 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference — **x2** (2026-10-02, found 2026-11-14: the closed rule's pattern missed `now(args)`; five `vars` entries got past it) | Half-finished run, credentials left in a clone | 2 | Test (closed rule, mutation-proven) |
@@ -292,7 +294,7 @@ confirmed you searched the right artifact. When two files could plausibly be
 
 **Enforced by.** Convention.
 
-**Occurrences: 9** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03, 2026-11-07, 2026-11-12, 2026-11-18
+**Occurrences: 10** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03, 2026-11-07, 2026-11-12, 2026-11-18, 2026-11-17 (recorded late)
 
 **Repeat (2026-09-05).** Stale Postiz agent notes said the container sourced its
 configuration. Without checking the actual compose command, a change added shell
@@ -399,6 +401,8 @@ accepted: three of the four were port regressions. Found when the originals were
 line for a parity table after CodeRabbit's fifth return. Why the rule did not fire: the claim was
 about a deleted file, which no grep of the tree finds, and a reviewer's agreement stood in for
 reading it (1.28). A claim about a deleted file is checked with `git show <parent>:<path>`.
+
+**Occurrence 10 — 2026-11-17.** (recorded 2026-11-21) The v0.17.0 batch coordinator told an owner that this repository has no `docs/LESSONS.md` rule, after searching only the repository. The rule was in the operator's global instructions, changed at 09:30 EST that day together with the lanes, the review returns, the three-returns rule and the scope check; the coordinator's session still held the older text until an owner pointed at it, and the change was applied from 12:06 EST (the v0.17.0 batch index, decision 24). The batch ran for about two and a half hours without those rules. Why the rule did not fire: the search was of the wrong artifact. The instructions a session runs under are loaded from more than one place, and the one that held the rule was read once at session start and never re-read. The rule covers it: establish which file the runtime loads before calling something absent.
 
 ### 1.3 A masked exit code reported as success
 
@@ -1175,7 +1179,7 @@ live rule and contact state", "real deploy verifies every provisioned dashboard 
 renders the alert file with the inference scrape and probe enabled and fails when an
 `inference_*` rule is missing or unrouted live, or a dashboard file's uid is not live.
 
-**Occurrences: 5** — 2026-10-04, 2026-10-13, 2026-10-28, 2026-11-09, 2026-11-12
+**Occurrences: 6** — 2026-10-04, 2026-10-13, 2026-10-28, 2026-11-09, 2026-11-12, 2026-11-17
 
 **Occurrence 2 — 2026-10-13.** Verify o11y Service (Dev) tasks 5257 and 5262 passed with the
 agentgateway canary, and the operator was told the Loki line read back "is a span log", so
@@ -1247,6 +1251,8 @@ deployed the commit" read as "the server runs the commit". It cost a live probe 
 for this form: Plane AC-845, a Deploy OPA verify that asks the running server a decision whose
 expected answer is computed from the placed data, so "the deploy passed" includes "the server
 loaded it".
+
+**Occurrence 6 — 2026-11-17.** (recorded 2026-11-21) The batch coordinator asked the operator to approve a production check-mode run of `Manage Cloudflare Records` as the way to see #1182's transport guard pass in production (the v0.17.0 batch index, decision 37, a lane C approval). The guard sits in the per-record task file (`platform/playbooks/tasks/manage-cloudflare-record.yml:56-60`), which runs only through the loop over the declared records (`platform/playbooks/manage-cloudflare-records.yml:59-67`, `loop: "{{ _records }}"`). Task 17708 succeeded and reached no record, so the guard never ran and stays unproven in production (AC-978). The same claim was in brief 30 and the index's owed-run line. Why the rule did not fire: the check was chosen by its template name, and what it selects (the declared records, possibly none) was not read before the approval was asked for.
 ### 1.22 A runner's tool version stated twice without reading the running system
 
 **What happened.** While diagnosing why a production dry run of `Rollback Inference Route (Dev)`
@@ -1941,6 +1947,18 @@ member, not a pending invitation).
 **Enforced by.** Convention. Related: 1.5 (a control asserted from documentation and disproved
 by measurement); this is the reverse, a capability assumed without the documentation.
 
+### 1.40 Posted an earlier round's reply text in three review threads after a refused command
+
+**Occurrences: 1** — 2026-11-17
+
+**What happened.** On #1172 (AC-793), three replies posted at 10:22:19Z to 10:22:22Z (comments 4598224107, 4598224479, 4598224815) carried an earlier round's bodies, naming `a2e20ade`, `2e3396cf` and `77394853`, instead of the reply for `781bd27d`. The command that wrote the new reply files was refused by a pre-tool hook; the next attempt word-split in zsh and sent empty bodies (HTTP 422); the retry then posted the same-named old files still in the scratch directory. The claims had been re-checked against the text intended, not against the files posted. Corrected 10:42:59Z to 10:43:00Z by editing the three comments, with a new reply 4598452866 (AC-793 comment of 2026-11-17 05:45 EST).
+
+**Root cause.** A refused command was treated as not having run, but its absence left the previous round's files in place under the same names, and nothing read the file content between writing and posting.
+
+**The rule.** After a refused or failed command, re-create its input files and read them before any retry. Read each reply body back from its file immediately before posting it.
+
+**Enforced by.** Convention.
+
 ## 2. Tests that would have passed for the wrong reason
 
 ### 2.1 Compiling a pattern as file text rather than as the runtime sees it
@@ -2555,7 +2573,7 @@ its previous form required the very construct that broke the runtime.
 
 ### 2.18 "Every play that reaches OpenBao" — a hand-typed list of four
 
-**Occurrences: 3** — 2026-08-28, 2026-09-22, 2026-11-17
+**Occurrences: 4** — 2026-08-28, 2026-09-22, 2026-11-17, 2026-11-17
 
 **What happened.** `test_credential_leaks.bats` carried a test named *every play
 that resolves an OpenBao URL includes the transport guard*. Its body looped over
@@ -2636,6 +2654,8 @@ which select a request by its shape (a `/v1/` URL or an `X-Vault-Token` header).
 the include turns all three red; moving it after the login turns the first red. Widening the
 repository-wide check to select by the request shape in every playbook and task file is Plane
 AC-937; that is this entry's guard proposal.
+
+**Occurrence 4 — 2026-11-17.** (recorded 2026-11-21) The guard test added for AC-936 in #1182 selects OpenBao requests through `uri()` in `platform/tests/suite/cloudflare_record_bao_transport.rs:20-22`, which reads `ansible.builtin.uri` and `uri` only. A request written as `ansible.legacy.uri` would not be selected, and the ordering check would pass on it with the guard removed (AC-939 comment of 2026-11-17 07:03 EST; still the base's code). The round 5 review on the same item adds that a URL or headers held in one variable are not selected either. Why the rule did not fire: the population was derived from the code, but through the module key, and the key has three spellings; the helpers in `suite/credential_leaks.rs` already accept all three. Fix and mutation are tracked on AC-939.
 
 ### 2.19 The healthcheck watched the frontend while the backend was dead
 
@@ -2950,6 +2970,8 @@ a lint requiring state-changing playbooks to assert a non-empty work set.
 
 ### 2.28 A clean-copy test passed only where the copy carried the workstation's bytecode caches
 
+**Occurrences: 2** — (first undated), 2026-11-17
+
 **What happened.** `test_o11y_fault_drill.py` ran the fault drill from a clean git copy of the
 tree. Ansible compiles the repository's plugins into `__pycache__` on first use, so after the
 first run in a copy the drill's own "Require a clean reviewed checkout" gate saw untracked files
@@ -2977,6 +2999,8 @@ itself. The refusal-path cases still assert only the shared "no fault was induce
 every-run assertion is what stops a clean-checkout refusal from passing them.
 
 Widened by 2.38 (2026-11-10): a mutation check that restores a file can leave stale bytecode in place too.
+
+**Occurrence 2 — 2026-11-17.** (recorded 2026-11-21) The stale and missing backend tests of the Cloudflare dry run (the pytest originals, deleted by #1194's port) were meant to stop at the playbook's `meta: end_play` task. They stopped one task earlier: the lifted harness ran in a scratch directory, the relative `include_tasks: tasks/emit-step-result.yml` found nothing, and the play died with a fatal error. The assertions held either way, so both passed with `end_play` disabled (AC-945 comment of 2026-11-17 09:49 EST). The port `platform/tests/suite/cloudflare_dry_run_backend_playbook.rs` points the include at the repository's file, and `assert_stopped` also requires the step result and no `fatal:`; disabling `end_play` now turns both red. Why the rule did not fire: it was not applied when the original tests were written; the port, written against it, caught it.
 
 ### 2.29 The rootless-podman check ran outside the context jobs run in
 
@@ -5569,7 +5593,7 @@ that decision first.
 
 ### 5.28 Wrote a design rule into a plan, then briefed and described code that broke it
 
-**Occurrences: 1** — 2026-11-12
+**Occurrences: 2** — 2026-11-12, 2026-11-17
 
 **What happened.** Plan 24 (`plan/development/24-local-mode-from-inventory.md`, merged in #1131) decides
 that every reader takes local-dev mode inline from `(groups['all'] | local_dev_inventory)`, "with no
@@ -5599,6 +5623,8 @@ a review. The instance: #1132 is to remove `_local` and `_rootless_podman`, and 
 `_skynet_local`, `_launch_gate_local_mode` and `instrument-host-o11y.yml`'s `_ih_spec` and
 `_ih_rootless` (they read `local_mode`; the facts derived from them are read across hosts through
 `hostvars`). #1136 corrects plan 24's Context.
+
+**Occurrence 2 — 2026-11-17.** (recorded 2026-11-21) Brief 20 (the common port brief) decision 3 said framework-bound Python tests stay Python. Plan 24 D5 says the framework-bound product code stays Python and its tests are ported, through the tier that can load it. A port owner found it; the brief was corrected at 09:27 EST ("decision 3 corrected against plan 24 D5"), and AC-933's comment of 10:47 EST records that the first port brief said the opposite. Why the rule did not fire: the brief was written from the plan's phase list, and its decisions were not checked one by one against the Decision rows it implements.
 
 ### 5.29 Briefed six port workers never to edit the ledger, which forbade the note a deleted cited test needs (widens 5.28)
 
@@ -5773,6 +5799,18 @@ batch's later briefs; that is a brief convention, not a check.
 **The rule.** A brief that asks a test to know what a config file loads names where that knowledge is declared, and what fails when it is missing or stale. Here it is one table keyed by the pinned settings' own keys, exhaustive both ways: a key the table does not list fails, a table key the settings lack fails, and a directory value that is not one `./` path fails. The pin keeps leading whitespace, so an indented line fails without the test knowing continuation lines.
 
 **Enforced by.** Test: `lanes` suite (`cfg_dirs_classifies_every_pinned_key_and_refuses_the_rest`, `the_cfg_pin_ignores_trailing_whitespace_and_column_0_comments_only`).
+
+### 5.39 The pre-push hook tested one commit and the push delivered a newer one
+
+**Occurrences: 1** — 2026-11-17
+
+**What happened.** On #1172 a push was started for `e3f6b1b6`. The pre-push hook ran for about six and a half minutes, and commit `5267080e` was made on the same branch meanwhile. GitHub's branch activity shows one push, `2ba50506` to `5267080e`, at 2026-11-17T07:55:03Z; the hook's log names `e3f6b1b6`. So `5267080e` reached GitHub without the hook having tested it (AC-929).
+
+**Root cause.** Unconfirmed. The hook receives the refs and commits the push names when it starts; the suspicion is that the HTTPS transport resolves the branch again after the hook returns, so a commit made during the hook rides out with the push.
+
+**The rule.** Make no commit on a branch while its push is inside the pre-push hook. The hook should compare each pushed local ref with the commit it was given and fail the push on a mismatch.
+
+**Enforced by.** Convention (the batch rule); a hook check that refuses a ref that moved during the run is proposed (AC-929).
 
 ## 6. Working from assumptions about files
 
@@ -6483,6 +6521,8 @@ original one-unit form.
 
 ### 10.5 Added a test suite to a config key nothing reads
 
+**Occurrences: 2** — (first undated), 2026-11-17
+
 **What happened.** A new pytest suite was added under
 `platform/services/caddy/deployment/tests/`, and its directory was added to
 `testpaths` in `pyproject.toml`. That was reported as wiring the tests into CI.
@@ -6510,6 +6550,8 @@ work; only reproducing CI's own invocation proves they are covered.
 root with no path argument, so `testpaths` is authoritative and adding a suite is
 one line in `pyproject.toml`. Verified by reproducing CI's invocation: 95
 collected, up from 79.
+
+**Occurrence 2 — 2026-11-17.** (recorded 2026-11-21) The BATS test "cloudflare mcp: the HCL is formatted (tofu fmt -check)" skipped when `tofu` was not installed. `tofu` is installed neither in CI (the Static Analysis job installs terraform and format-checks only the OpenBao HCL) nor on the workstations, so the check never ran anywhere (AC-953). The cloudflare-edge port (#1194) dropped it under the suite's never-skip rule; the CI replacement is AC-953. Why the rule did not fire: the test was never observed running through any gate, and a skip reads as a pass in a green run.
 
 ### 10.6 Wrote a parser from one example file instead of from the grammar
 
