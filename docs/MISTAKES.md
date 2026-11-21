@@ -173,7 +173,7 @@ and why.
 | 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories (2026-11-16: also `--budget-acknowledged`) | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
 | 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
 | 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
-| 5.29 | Briefed six port workers never to edit the ledger, which forbade the "Enforcement moved" note a deleted cited test needs; the ratchet kept every gate green (widens 5.28) — **x2** (2026-11-16: brief 11 repeated the ledger prohibition; caught before any port) | Process | 2 | Convention (a ledger test requiring the note proposed) |
+| 5.29 | Briefed six port workers never to edit the ledger, which forbade the "Enforcement moved" note a deleted cited test needs; the ratchet kept every gate green (widens 5.28) — **x2** (2026-11-16: brief 11 repeated the ledger prohibition; caught before any port) | Process | 2 | Test (`platform/tests/suite/ledger.rs::every_ratchet_line_for_a_deleted_test_has_an_enforcement_moved_note`) |
 | 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 5 | Convention (per-agent scratch directory in every brief); deny rule for recursive `rm` proposed, operator's decision |
 | 5.31 | A peer session allowed `SKIP_TESTS=1` for docs-only pushes; two owners retried a denied compound command as a standalone push | Process | 1 | Convention (deny rule for the skipped push proposed; operator's decision) |
 | 5.32 | Ran `git branch -D` on a scratch branch the brief said to keep if `git branch -d` refused; recreated from the reflog | Process | 1 | Convention (deny rule for forced branch deletes proposed; operator's decision) |
@@ -1520,6 +1520,8 @@ check this rule asks for. The v0.16.0 handoffs now state the quirk and the remov
 
 **Occurrence 9 — 2026-11-17.** The batch coordinator told the operator that the permission layer blocks `SKIP_TESTS=1 git push`, taken from two owners' reports. Three owners' reports then showed that the layer denies that push chained with other commands and allows the push alone. The claim was corrected after the third report. Why the rule did not fire: reports of a denial were generalised into a rule about which part of the command was denied.
 
+**Enforcement moved — 2026-11-21.** The BATS file this entry cites was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/service_opa.rs::both_command_lists_pass_authorization_basic_directly_before_bundle` is its replacement. It pins the flag order this entry describes: each compose command list holds the authorization flag once, directly before the bundle flag.
+
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
 **Occurrences: 18** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10, 2026-11-11, 2026-11-12, 2026-11-12, 2026-11-16, 2026-11-16, 2026-11-16, 2026-11-20
@@ -1886,6 +1888,8 @@ exactly that ("a shell cannot reset it"), never widened to every mechanism.
 started with SIGALRM ignored runs with it at default" proves the wrapper, with a control that the job
 really starts with SIGALRM ignored. The class: Convention, with no detector.
 
+**Enforcement moved — 2026-11-21.** The BATS file this entry cites was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/pre_push_parallel_sigalrm.rs::a_job_started_with_sigalrm_ignored_runs_with_it_at_default` is its replacement.
+
 ### 1.38 "Never overridden" checked in the caller, not in the library that overrides it
 
 **Occurrences: 1** — 2026-11-12
@@ -1986,6 +1990,8 @@ delegate to it rather than restate fragments of the pattern.
 guard` (`platform/tests/test_service_postiz.bats`) now asserts only that the
 playbook delegates to the shared guard; the behavioural table lives in one place.
 
+**Enforcement moved — 2026-11-21.** The BATS file this entry cites was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/service_postiz.rs::seed_playbook_uses_the_shared_cleartext_guard` is its replacement.
+
 ### 2.3 A no-match grep aborting its own passing case
 
 **What happened.** A BATS assertion of the form
@@ -2044,6 +2050,8 @@ against accepted and rejected declaration shapes, rather than only grepping for 
 presence, and pins the predicate text so the two cannot drift apart. (That case arrives
 with the self-hosted-runner change on `feat/github-actions-runners`; until it merges the
 reference is forward-looking, which per 8.2 is worth saying rather than implying.)
+
+**Enforcement moved — 2026-11-21.** The BATS file this entry cites was ported to the Rust suite (plan 24) and deleted. Three Rust tests replace it. `platform/tests/suite/apply_firewall.rs::every_egress_denial_is_judged_by_ufw_egress_problems` pins that the playbook asserts the guard over the declared denials and the SSH CIDRs. `platform/tests/suite/apply_firewall_convergence_playbook.rs::an_egress_denial_that_is_not_scoped_is_refused_before_any_rule_is_added` pins that a denial the guard refuses (a missing or out-of-range port, ICMP, a supernet of the SSH CIDR) is refused before any rule is added. `platform/tests/suite/ufw_rules_filter_playbook.rs::ufw_filters_give_the_results_their_tests_expect` runs the guard's accepted and refused declaration shapes.
 
 
 ### 2.6 Test windows sized by line count instead of by construct
@@ -2659,6 +2667,8 @@ and a 502 proves it did not.
 
 **Enforced by.** Test — `platform/tests/test_service_postiz.bats` pins the probe
 to `/api/` and refutes the bare-`/` form (mutation-proven).
+
+**Enforcement moved — 2026-11-21.** The BATS file this entry cites was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/service_postiz.rs::app_healthcheck_probes_the_backend_path` is its replacement.
 
 ### 2.20 Idempotency proven on the wrong steady state, and the failure that revealed it was censored by its own `changed_when`
 
@@ -3576,6 +3586,8 @@ related variables after resolving the repository root.
 `platform/tests/test_pre_push_git_env.bats` runs the hook the way git does, pointed at a
 victim repository, with a fake `bats` that repeats the offending commands, and asserts the
 victim's config is unchanged. Mutation: removing the unset turns it red.
+
+**Enforcement moved — 2026-11-21.** The BATS files this entry cites were ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/pre_push_git_env.rs::a_suites_git_commands_cannot_reach_the_pushing_repository` is the replacement that enforces the rule they cite.
 
 ### 3.8 A "dry run" that the orchestrator silently ran for real
 
@@ -4602,6 +4614,8 @@ tested by `platform/tests/test_machine_path_hook.bats`): it refuses an added lin
 `/Users/<name>` or `/home/<name>` is not a placeholder or an allowlisted service account.
 Fails closed, like the secret gates.
 
+**Enforcement moved — 2026-11-21.** The BATS file this entry cites was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/machine_path_hook.rs::a_macos_home_directory_is_refused` is its replacement.
+
 ## 5. Duplication and process
 
 ### 5.1 A security rule copied per caller
@@ -4922,6 +4936,8 @@ push of the same branch while one holds it.
 
 **Status 2026-10-02.** `.githooks/pre-push` now takes a per-branch lock under the shared git dir and refuses a second push of the same branch while the first holds it; a lock whose owner process is gone is reclaimed. Tested by `platform/tests/test_pre_push_branch_lock.bats` (PR #394).
 
+**Enforcement moved — 2026-11-21.** The BATS file this entry cites was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/pre_push_branch_lock.rs::a_second_push_of_the_same_branch_is_refused_while_the_first_runs` is its replacement.
+
 ---
 
 ### 5.9 AI attribution trailers added to commits against the repo rule
@@ -4957,6 +4973,8 @@ ended in the "Generated with" footer and a session link. No hook reads a PR body
 one was published, then removed by editing the body. Why the rule did not fire: it is
 worded for commits, and the reminder arrived after the session's conventions had been read,
 so nothing prompted a re-check. The rule does not reach a PR body at all; 5.15 widens it.
+
+**Enforcement moved — 2026-11-21.** The BATS file this entry cites was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/commit_msg_hook.rs::an_assistant_co_author_trailer_is_refused` is its replacement.
 
 ### 5.12 A bulk retrofit trusted `changed_when: false`, and a dry run removed a running container
 
@@ -5628,6 +5646,8 @@ entry naming at least one `#[test]` fn. Entry 6.9 gains its missing note in this
 
 **Occurrence 2 — 2026-11-16.** Brief 11 (AC-918, the Rust port mechanism) said that port pull requests never edit `docs/MISTAKES.md`, three days after 5.29 recorded that prohibition. Its owner caught it before any port started. Why the rule did not fire: the brief was written from the port plan, not from 5.29's rule.
 
+**Enforcement update 2026-11-21.** The operator decided on 2026-11-17 at 08:40 EST, "Defer as you've proposed": a port pull request adds a ratchet line in `platform/tests/ledger_citation_ratchet.d/<group>.txt` that names the replacing Rust test, and leaves the ledger alone; one closing change writes each citing entry's "Enforcement moved" note. That closing change (AC-1029) wrote the notes for the twelve entries the ratchet directory cites, which had none. `platform/tests/suite/ledger.rs::every_ratchet_line_for_a_deleted_test_has_an_enforcement_moved_note` now refuses a ratchet line whose entry has no such note, or whose notes leave out a test the line names. It enforces the check this entry proposed under "Enforced by".
+
 ### 5.30 Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14)
 
 **Occurrences: 5** — 2026-11-13, 2026-11-18, 2026-11-19, 2026-11-19, 2026-11-20
@@ -5984,6 +6004,8 @@ had carried the same set since 2026-09-18. The independent review of that head c
 merge, and `d5dddd0` untracked them. The rule did not fire because "stage named paths" sits in
 occurrence 2's note, not in the rule, and the graph gate covers only the graph pair. Widened in
 5.13.
+
+**Enforcement moved — 2026-11-21.** The BATS file this entry cites was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/graph_artifact_guard.rs::refuses_a_path_derived_project_id` and `platform/tests/suite/graph_artifact_guard.rs::refuses_the_graph_staged_for_deletion` are its replacements.
 
 ### 6.7 Task-local variable shadowing broke a lazy play expression
 
@@ -6387,6 +6409,8 @@ loaded" are different claims.
 
 **Enforced by.** `postiz: the mounted app config is actually loaded into the
 container` (`platform/tests/test_service_postiz.bats`).
+
+**Enforcement moved — 2026-11-21.** The BATS file this entry cites was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/service_postiz.rs::mounted_app_config_is_actually_loaded` is its replacement.
 
 ### 10.2 Assuming the runtime inherits the image CMD
 
@@ -7508,6 +7532,8 @@ command lists; the verify tasks require exactly 400 on the plain and the TLS pat
 itself: every `Deploy OPA` sends `PUT /v1/data/agentcloud_write_probe`, a path no rule reads, and
 fails unless OPA refuses it. The deploy runs `opa test --bundle`, so its tests load the tree the
 way the server does, and a test refuses any data file in the tree that bundle mode would skip.
+
+**Enforcement moved — 2026-11-21.** The BATS file this entry cites was ported to the Rust suite (plan 24) and deleted. Its replacements are `platform/tests/suite/service_opa.rs::both_command_lists_pass_authorization_basic_directly_before_bundle`, `platform/tests/suite/service_opa.rs::verify_probes_one_list_of_three_refusals`, `platform/tests/suite/service_opa.rs::both_refusal_tasks_loop_over_the_one_probe_list`, `platform/tests/suite/service_opa.rs::plain_refusal_fails_on_any_status_but_401_unauthorized`, `platform/tests/suite/service_opa.rs::tls_refusal_drops_fail_and_passes_only_on_a_last_line_401`, `platform/tests/suite/service_opa.rs::verify_runs_the_rego_tests_as_a_bundle`, `platform/tests/suite/service_opa.rs::every_data_file_in_the_policy_tree_is_one_bundle_mode_loads` and `platform/tests/suite/service_opa.rs::authz_admits_exactly_the_decision_post_and_the_health_get`. The verify now requires 401 with code `unauthorized` on the plain and the TLS path, not the 400 this entry records.
 
 ### 10.34 A liveness watcher blamed Prometheus for a Grafana-side error, and paged on one sample
 
