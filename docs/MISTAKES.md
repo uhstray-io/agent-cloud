@@ -205,7 +205,7 @@ and why.
 | 10.2 | Assumed a container runtime inherits the image CMD under an entrypoint override | Unverified claim | 1 | Test |
 | 10.3 | Wrote a probe whose own command was interpolated away, then read the empty result as a finding — **x2** | Unverified claim | 2 | Convention |
 | 10.4 | Revert timer could not be re-armed; only the 2nd run fails, which is the retry-after-revert path | Safety mechanism broken when needed | 1 | Test (mutation-proven) |
-| 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | 2 | CI (root-level pytest) |
+| 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | 2 | CI (root-level pytest); the cloudflare HCL format check has no CI gate yet (AC-953) |
 | 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | 1 | Test (6 grammar cases) |
 | 10.7 | Named the rollback hazard, then gated the restore on a condition an earlier failure skips | Live-state damage | 1 | Test (block/rescue, mutation-proven) |
 | 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference — **x2** (2026-10-02, found 2026-11-14: the closed rule's pattern missed `now(args)`; five `vars` entries got past it) | Half-finished run, credentials left in a clone | 2 | Test (closed rule, mutation-proven) |
@@ -5624,7 +5624,7 @@ a review. The instance: #1132 is to remove `_local` and `_rootless_podman`, and 
 `_ih_rootless` (they read `local_mode`; the facts derived from them are read across hosts through
 `hostvars`). #1136 corrects plan 24's Context.
 
-**Occurrence 2 — 2026-11-17.** (recorded 2026-11-21) Brief 20 (the common port brief) decision 3 said framework-bound Python tests stay Python. Plan 24 D5 says the framework-bound product code stays Python and its tests are ported, through the tier that can load it. A port owner found it; the brief was corrected at 09:27 EST ("decision 3 corrected against plan 24 D5"), and AC-933's comment of 10:47 EST records that the first port brief said the opposite. Why the rule did not fire: the brief was written from the plan's phase list, and its decisions were not checked one by one against the Decision rows it implements.
+**Occurrence 2 — 2026-11-17.** (recorded 2026-11-21) Brief 20 (the common port brief) decision 3 said framework-bound Python tests stay Python. Plan 24 (`plan/development/24-rust-test-platform.md`, a different plan from the one above) D5 says the framework-bound product code stays Python and its tests are ported, through the tier that can load it. A port owner found it; the brief was corrected at 09:27 EST ("decision 3 corrected against plan 24 D5"), and AC-933's comment of 10:47 EST records that the first port brief said the opposite. Why the rule did not fire: the brief was written from the plan's phase list, and its decisions were not checked one by one against the Decision rows it implements.
 
 ### 5.29 Briefed six port workers never to edit the ledger, which forbade the note a deleted cited test needs (widens 5.28)
 
