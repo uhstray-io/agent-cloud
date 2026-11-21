@@ -1408,32 +1408,12 @@ def _run_nocert(script, url, bundle, timeout=30):
                           check=False, capture_output=True, text=True, timeout=timeout)
 
 
-def _after_a_pause(script):
-    """The same probe with a 0.5 s pause before its request, so the listener acts first."""
-    paused = script.replace('    conn.request("GET", "/v1/models")',
-                            '    import time\n    time.sleep(0.5)\n    conn.request("GET", "/v1/models")', 1)
-    assert paused != script
-    return paused
-
-
 def test_a_refusal_from_a_client_certificate_listener_is_refused(tmp_path):
     ca = _ca(tmp_path)
     leaf = {"dir": str(tmp_path / "gw"), "sans": ["localhost"], "profile": "server"}
     _place(ca, leaf, FRESH)
     with _thread(_gateway(ca, leaf, [], tmp_path)) as server:
         result = _run_nocert(_nocert_script(), f"https://localhost:{server.server_port}",
-                             Path(leaf["dir"]).parent / "step-ca-bundle.crt")
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.startswith("REFUSED "), result.stdout
-
-
-def test_a_refusal_that_arrives_after_a_pause_is_still_refused(tmp_path):
-    ca = _ca(tmp_path)
-    leaf = {"dir": str(tmp_path / "gw"), "sans": ["localhost"], "profile": "server"}
-    _place(ca, leaf, FRESH)
-    paused = _after_a_pause(_nocert_script())
-    with _thread(_gateway(ca, leaf, [], tmp_path)) as server:
-        result = _run_nocert(paused, f"https://localhost:{server.server_port}",
                              Path(leaf["dir"]).parent / "step-ca-bundle.crt")
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.startswith("REFUSED "), result.stdout
@@ -1487,14 +1467,16 @@ def test_a_listener_that_closes_after_the_handshake_is_an_error_not_a_refusal(tm
                 pass
 
     server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     server_ctx.load_cert_chain(Path(leaf["dir"]) / "current/cert.pem", Path(leaf["dir"]) / "current/key.pem")
     with serve(Closes, ssl_context=server_ctx) as url:
         result = _run_nocert(_nocert_script(), f"https://localhost:{urlsplit(url).port}", ca["dir"] / "bundle.crt")
     assert result.returncode == 1, result.stdout + result.stderr
-    assert result.stdout.strip() == "ERROR after handshake: RemoteDisconnected", result.stdout
+    assert result.stdout.strip() == "ERROR after request: RemoteDisconnected", result.stdout
 
 
-def test_a_reset_under_tls_1_2_after_the_handshake_is_an_error_not_a_refusal(tmp_path):
+@pytest.mark.parametrize("version", [ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_3])
+def test_a_reset_after_the_handshake_is_an_error_not_a_refusal(tmp_path, version):
     ca = _ca(tmp_path)
     leaf = {"dir": str(tmp_path / "gw"), "sans": ["localhost"], "profile": "server"}
     _place(ca, leaf, FRESH)
@@ -1506,16 +1488,16 @@ def test_a_reset_under_tls_1_2_after_the_handshake_is_an_error_not_a_refusal(tmp
             self.request.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
             self.request.close()
 
-    # TLS 1.2 and no client certificate demanded: the handshake completes, then the reset lands
-    # before the client's write, so the broken pipe is the one the TLS 1.3 check must not refuse.
+    # No client certificate demanded: the handshake completes, then the listener resets with no
+    # alert. A reset says nothing about why, under either version, so it is never a refusal.
     server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    server_ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+    server_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    server_ctx.maximum_version = version
     server_ctx.load_cert_chain(Path(leaf["dir"]) / "current/cert.pem", Path(leaf["dir"]) / "current/key.pem")
     server_ctx.verify_mode = ssl.CERT_OPTIONAL
     server_ctx.load_verify_locations(cadata=ca["bundle"])
     with serve(ResetsAtOnce, ssl_context=server_ctx) as url:
-        result = _run_nocert(_after_a_pause(_nocert_script()), f"https://localhost:{urlsplit(url).port}",
-                             ca["dir"] / "bundle.crt")
+        result = _run_nocert(_nocert_script(), f"https://localhost:{urlsplit(url).port}", ca["dir"] / "bundle.crt")
     assert result.returncode == 1, result.stdout + result.stderr
     assert result.stdout.startswith("ERROR after handshake: "), result.stdout
 

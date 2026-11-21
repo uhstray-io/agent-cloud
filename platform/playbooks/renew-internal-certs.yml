@@ -561,21 +561,21 @@
           print("ERROR " + type(e).__name__ + ": " + str(e))
           sys.exit(1)
     # The probe URL again, presenting NO client certificate while still verifying the server
-    # against the bundle. REFUSED is printed only for what a listener that demands a client
-    # certificate raises: the TLS 1.3 certificate-required alert, which arrives after the
-    # handshake and surfaces on the first write or read (the TLS version is read at once, since
-    # it reads as None after the alert, and a broken pipe counts only under TLS 1.3), and the
-    # TLS 1.2 handshake failure the same listener sends. Those reasons were captured from a
-    # Python ssl server with CERT_REQUIRED under OpenSSL 3.5; rustls sends the same
-    # certificate_required alert when client authentication is mandatory and no certificate is
-    # presented. Everything else is an ERROR and exits 1: plain HTTP, a port that does not
-    # answer, a bundle that cannot be read, a server that fails verification, a connection that
-    # closes for any other reason. SERVED <status> means the listener answered a request that
-    # carried no client certificate.
+    # against the bundle. REFUSED is printed only for the alert a listener that demands a client
+    # certificate sends: certificate_required after a TLS 1.3 handshake, read before any request
+    # is written, or a handshake failure during a TLS 1.2 handshake. Those forms were captured
+    # from a Python ssl server with CERT_REQUIRED under OpenSSL 3.5 on macOS and Linux; rustls
+    # sends the same certificate_required alert when client authentication is mandatory and no
+    # certificate is presented. Everything else is an ERROR and exits 1: plain HTTP, a port that
+    # does not answer, a bundle that cannot be read, a server that fails verification, and a
+    # connection that closes or resets without that alert. A listener that sends nothing within
+    # READ_FIRST_SECONDS is waiting for a request; it gets one, and SERVED <status> means it
+    # answered a request that carried no client certificate.
     _renew_nocert_prover: |
       import http.client, socket, ssl, sys, urllib.parse
       # The reasons a listener that demands a client certificate gives for a request without one.
       CERT_REQUIRED_ALERTS = {"TLSV13_ALERT_CERTIFICATE_REQUIRED", "SSLV3_ALERT_HANDSHAKE_FAILURE"}
+      READ_FIRST_SECONDS = 3
       u = urllib.parse.urlsplit(sys.argv[1])
       if u.scheme != "https":
           print("ERROR not an https URL")
@@ -605,8 +605,27 @@
       except OSError as e:
           print("ERROR handshake: " + type(e).__name__)
           sys.exit(1)
-      version = tls.version()
+      # Read before writing: a request written after the listener has refused and closed meets a
+      # reset (Linux) or a broken pipe (macOS) instead of the alert, which says nothing about why.
+      tls.settimeout(READ_FIRST_SECONDS)
       try:
+          early = tls.recv(1)
+          print("ERROR after handshake: " + ("data before any request" if early else "closed without an alert"))
+          sys.exit(1)
+      except ssl.SSLError as e:
+          reason = getattr(e, "reason", None)
+          if reason in CERT_REQUIRED_ALERTS:
+              print("REFUSED " + reason)
+              sys.exit(0)
+          print("ERROR after handshake: " + type(e).__name__)
+          sys.exit(1)
+      except TimeoutError:
+          pass  # the listener is waiting for a request: it did not refuse the handshake
+      except OSError as e:
+          print("ERROR after handshake: " + type(e).__name__)
+          sys.exit(1)
+      try:
+          tls.settimeout(10)
           conn = http.client.HTTPConnection(u.hostname, u.port or 443, timeout=10)
           conn.sock = tls
           conn.request("GET", "/v1/models")
@@ -616,20 +635,10 @@
           if reason in CERT_REQUIRED_ALERTS:
               print("REFUSED " + reason)
               sys.exit(0)
-          print("ERROR after handshake: " + type(e).__name__)
+          print("ERROR after request: " + type(e).__name__)
           sys.exit(1)
-      except http.client.HTTPException as e:
-          # RemoteDisconnected is also a ConnectionResetError, so it is named here, before the reset clause.
-          print("ERROR after handshake: " + type(e).__name__)
-          sys.exit(1)
-      except (BrokenPipeError, ConnectionResetError) as e:
-          if version == "TLSv1.3":
-              print("REFUSED " + type(e).__name__)
-              sys.exit(0)
-          print("ERROR after handshake: " + type(e).__name__)
-          sys.exit(1)
-      except OSError as e:
-          print("ERROR after handshake: " + type(e).__name__)
+      except (OSError, http.client.HTTPException) as e:
+          print("ERROR after request: " + type(e).__name__)
           sys.exit(1)
   tasks:
     # Tagged `verify` (plan/architecture/08, standard 3): `--tags verify` reads every leaf and
