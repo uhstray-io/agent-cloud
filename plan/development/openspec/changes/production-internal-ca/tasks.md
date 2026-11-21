@@ -282,12 +282,12 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       `tls.hostname` will use and the flags dgx-spark owns (`--ssl-certfile`,
       `--ssl-keyfile`, `--enable-ssl-refresh`, and for mutual TLS `--ssl-cert-reqs` with
       `--ssl-ca-certs` set to the internal root); nothing on the nodes is changed from here
-      2026-11-21: delivered through group 10, not a channel.
+      2026-11-21: to be delivered through group 10, not a channel.
 - [ ] 5.4a The `agw-upstream` client leaf on the gateway host (decision 3 of 2026-09-28),
       issued like `agw-verifier`; rendered into the model's `tls.cert`/`tls.key`.
       unverified: whether agentgateway v1.5.0 reloads model-side TLS files on change;
       record it from the local drill and choose reload or restart in the renewal action
-      2026-11-21: issued through group 10's launch 5, its reload drill still owed.
+      2026-11-21: to be issued through group 10's launch 5; its reload drill is still owed.
 - [ ] 5.5 Validation gate: scenario "A client leaf authenticates"; the gateway-side
       scenarios (no client certificate refused, another client leaf refused, allowlisted
       verifier served, undeclared entry refused at render) are proven by the companion's

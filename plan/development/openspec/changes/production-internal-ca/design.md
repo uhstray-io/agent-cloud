@@ -563,11 +563,16 @@ open to review.
      to establish.
    - `agw-upstream` gets a gateway upstream class. With `vllm_tls_require_client` off, vLLM asks for
      no client certificate, so the gateway never sends the leaf and an old copy held in memory costs
-     nothing: reload `none`, proven by the inspect checks. Phase B's own gateway deploy loads the
-     current files. From then on its reload is the gateway container's restart, run once per host
-     per decision 8, until the drill in task 5.4a shows agentgateway reloads model-side TLS files,
-     then `none`; proven by the gateway's readiness after the restart and a handshake from the
-     gateway host to vLLM presenting the new files and verifying `vllm-primary`. Accepted cost: from
+     nothing: reload `none`, proven by the inspect checks. Its directory is under the gateway
+     deploy's `certs/`, which the deploy's change check hashes
+     (`platform/services/agentgateway/deployment/deploy.sh:101-122`), so Phase B's gateway deploy
+     loads the current files. From then on its reload is the gateway container's restart, run once
+     per host per decision 8; proven by the gateway's readiness after the restart and a handshake
+     from the gateway host to vLLM presenting the new files and verifying
+     `vllm-primary.<site>.<zone>`. Reload `none` replaces the restart only when the drill in task
+     5.4a shows agentgateway reloads model-side TLS files and the renewal also checks the leaf the
+     gateway process itself presents to vLLM; a handshake from another client on the host does not
+     show which leaf the process holds. Accepted cost: from
      Phase B, unless the gateway server leaf already restarts the gateway or the drill shows a
      reload, each renewal of the gateway host (about every 20 days) restarts it and drops open
      streams. Alternatives rejected: *the gateway's rule, "not in use, left alone", while a listener
@@ -651,10 +656,15 @@ open to review.
    9. In dgx-spark's Phase A window (its task 3.3): `Deploy agentgateway (Dev)`, `Manage Caddy Sites
       (Dev)`, `Deploy o11y (Dev)`, each dry run first; and `Rollback Inference Route (Dev)`
       `gateway-config` as a dry run only, the read of the route task 6.2's run 5370 made.
-   10. Phase B: after dgx-spark 4.1 to 4.3, the `vllm_tls_require_client` switch, the inventory sync
-       of launch 0, `Deploy agentgateway (Dev)` dry run, and its real run only when the dry run shows a
-       change (it loads the current `agw-upstream`), `Renew Internal
-       Certs (Dev)` with `--tags verify`, and gateway task 6.4's remaining legs.
+   10. Phase B, in two steps. Before dgx-spark's mutual-TLS restart (its task 4.3), every caller
+       presents its leaf (gateway task 6.3, piece 5): `Deploy agentgateway (Dev)`, `Manage Caddy
+       Sites (Dev)` with the `caddy` leaf on the `/health` and `direct` transports, and `Deploy o11y
+       (Dev)` with o11y's probe leaf on the scrape, which is issued first, since this plan does not
+       issue it. Each runs dry first. The gateway's real run is needed only when its dry run shows a
+       change: its change check covers `agw-upstream` (decision 2), so "unchanged" means the running
+       gateway started with the current leaf. After dgx-spark's 4.3: the `vllm_tls_require_client`
+       switch, the inventory sync of launch 0, `Renew Internal Certs (Dev)` with `--tags verify`,
+       and gateway task 6.4's remaining legs.
 
 ## Open Questions
 

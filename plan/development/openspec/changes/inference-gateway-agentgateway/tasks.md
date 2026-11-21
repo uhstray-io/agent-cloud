@@ -944,7 +944,7 @@
       1. the model's `https://` base URL and `tls: {root, hostname, cert, key}` (hostname
          `vllm-primary.<site>.<zone>`, cert and key the `agw-upstream` leaf);
       2. Caddy's `/health` handler with an HTTPS transport (internal root, `tls_server_name`
-         `vllm-primary`);
+         `vllm-primary.<site>.<zone>`);
       3. Rollback Inference Route's `direct` mode with the same transport;
       4. the o11y `dgx-spark-vllm` scrape with `scheme: https` and `tls_config`;
       5. Phase B: the same callers presenting their client leaves (`agw-upstream`, `caddy`, o11y's
