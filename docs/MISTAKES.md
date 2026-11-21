@@ -31,7 +31,7 @@ and why.
 | # | Mistake | Class | Count | Enforced by |
 |---|---------|-------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file — **x10** (2026-11-18: called a port's weakened comparisons copied from deleted originals, unread) | Unverified claim | 10 | Convention + loader test; hook proposed (count ≥ 3) |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x10** (2026-11-18: called a port's weakened comparisons copied from deleted originals, unread; 2026-11-17, recorded late: said a rule was absent after searching only the repository) | Unverified claim | 10 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
 | 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
 | 1.5 | **x2** — Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 2 | Test (runner containerisation); Convention (occurrence 2, launch containment) |
@@ -97,7 +97,7 @@ and why.
 | 2.25 | The zero-hosts pre-flight rule named deploy playbooks only; 60 other group-targeting playbooks lack it (widens 2.21) | Wrong-reason pass | 1 | Test (`mount-caddy-certs.yml`); fleet-wide allow-list proposed |
 | 2.26 | A fixture placed an inventory variable where production does not; the planning play saw it in tests and nothing in prod (widens 2.22) | False-green fixture | 1 | Test (one playbook); class Convention |
 | 2.27 | A run that matched its hosts, found nothing to do, and reported success (widens 2.21) | Wrong-reason pass | 1 | Test (one playbook); class Convention, lint proposed |
-| 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints (widened by 2.38) | Wrong-reason pass | 1 | Test (`test_o11y_fault_drill.py`) |
+| 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints (widened by 2.38, 2.41) | Wrong-reason pass | 1 | Test (`test_o11y_fault_drill.py`) |
 | 2.29 | A deploy proved rootless podman from a sudo session while every job, under a `NoNewPrivileges=true` unit, failed in `newuidmap`; a test had pinned the breaking directive | Wrong-reason pass | 1 | Playbook checks in the service context + test (`test_service_github_runner.bats`) |
 | 2.30 | A deploy task mapped template vars back to the defaulted copies defined from them; ansible-core failed the render with a recursive loop, and no test rendered the step | Unrunnable playbook, green suite | 1 | Test (`test_no_recursive_task_vars.py`) |
 | 2.31 | Production host configuration (podman short-name policy) was assumed from a local proof (widens 2.24) | Wrong-reason pass | 2 | Test (`test_compose_image_qualified.py`) for images; CI host-parity job proposed |
@@ -206,7 +206,7 @@ and why.
 | 10.2 | Assumed a container runtime inherits the image CMD under an entrypoint override | Unverified claim | 1 | Test |
 | 10.3 | Wrote a probe whose own command was interpolated away, then read the empty result as a finding — **x2** | Unverified claim | 2 | Convention |
 | 10.4 | Revert timer could not be re-armed; only the 2nd run fails, which is the retry-after-revert path | Safety mechanism broken when needed | 1 | Test (mutation-proven) |
-| 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | 2 | CI (root-level pytest) |
+| 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | 2 | CI (root-level pytest) for pytest suites; a BATS test that skips for a missing tool is not caught (occurrence 2) |
 | 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | 1 | Test (6 grammar cases) |
 | 10.7 | Named the rollback hazard, then gated the restore on a condition an earlier failure skips | Live-state damage | 1 | Test (block/rescue, mutation-proven) |
 | 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference — **x2** (2026-10-02, found 2026-11-14: the closed rule's pattern missed `now(args)`; five `vars` entries got past it) | Half-finished run, credentials left in a clone | 2 | Test (closed rule, mutation-proven) |
@@ -6563,7 +6563,7 @@ root with no path argument, so `testpaths` is authoritative and adding a suite i
 one line in `pyproject.toml`. Verified by reproducing CI's invocation: 95
 collected, up from 79.
 
-**Occurrence 2 — 2026-11-17.** The BATS test "cloudflare mcp: the HCL is formatted (tofu fmt -check)" skipped when `tofu` was not installed. `tofu` is installed neither in CI (the Static Analysis job installs terraform and format-checks only the OpenBao HCL) nor on the workstations, so the check never ran anywhere. The cloudflare-edge port (#1194) dropped it under the suite's never-skip rule (`platform/tests/src/lib.rs:720-723`). No CI gate format-checks the cloudflare HCL yet: the Static Analysis job checks `platform/services/openbao` only (`.github/workflows/lint-and-test.yml:89-91`), and its replacement is AC-953, still open. Why the rule did not fire: a skip reads as a pass in a green run, so nobody saw that no gate ran it.
+**Occurrence 2 — 2026-11-17.** The BATS test "cloudflare mcp: the HCL is formatted (tofu fmt -check)" skipped when `tofu` was not installed. `tofu` is installed neither in CI (the Static Analysis job installs terraform and format-checks only the OpenBao HCL) nor on the workstations, so the check never ran anywhere. The cloudflare-edge port (#1194) dropped it because it never ran anywhere (`platform/tests/suite/cloudflare_mcp_edge.rs:26`). No CI gate format-checks the cloudflare HCL yet: the Static Analysis job checks `platform/services/openbao` only (`.github/workflows/lint-and-test.yml:89-91`), and its replacement is AC-953, still open. Why the rule did not fire: a skip reads as a pass in a green run, so nobody saw that no gate ran it.
 
 ### 10.6 Wrote a parser from one example file instead of from the grammar
 
