@@ -933,6 +933,23 @@
       from OpenBao, the way the fault drill does, because Semaphore's own key is not
       authorized for that account. The build itself still waits on the operator's go. Not
       ticked.
+      `2026-11-21 (AC-1022):` the operator lifted the hold for planning on 2026-11-20. Leaf
+      issuance, renewal and every launch are planned in `production-internal-ca` (design "Decisions
+      recorded 2026-11-21", tasks group 10); the build waits for the operator's go, and no build
+      pull request merges before v0.17.1 is promoted. Answers to this note's 2026-10-26 additions:
+      (a) each node gets its own inventory name and group; (b) the connection uses the `vllm-tls`
+      key from OpenBao, as the fault drill does. This task's own pieces, in order, all inside
+      dgx-spark's Phase A window (its task 3.3) and each behind an inventory value that keeps
+      today's plain path until then:
+      1. the model's `https://` base URL and `tls: {root, hostname, cert, key}` (hostname
+         `vllm-primary.<site>.<zone>`, cert and key the `agw-upstream` leaf);
+      2. Caddy's `/health` handler with an HTTPS transport (internal root, `tls_server_name`
+         `vllm-primary`);
+      3. Rollback Inference Route's `direct` mode with the same transport;
+      4. the o11y `dgx-spark-vllm` scrape with `scheme: https` and `tls_config`;
+      5. Phase B: the same callers presenting their client leaves (`agw-upstream`, `caddy`, o11y's
+         probe leaf).
+      Not started; not ticked.
 - [ ] 6.4 Validation gate: a request without a client certificate is refused at the
       gateway, proving scenario "A request without a client certificate is refused"; a
       throwaway client-profile leaf declared with a SAN on no allowlist entry (issued as in
