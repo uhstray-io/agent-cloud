@@ -15,6 +15,7 @@
 //! | BATS @test | Rust fn |
 //! |---|---|
 //! | manage-secrets: the store-back is a sibling-preserving merge, never a whole-document write | `the_store_back_goes_through_the_shared_merge_task`, with `no_task_writes_to_the_service_secret_path_directly`, with `no_task_runs_the_bao_or_vault_cli` and its self-check `a_store_cli_call_is_detected` |
+//! | manage-secrets: a hex secret is drawn from lowercase hex digits only | `a_hex_secret_is_drawn_from_lowercase_hex_digits_only` |
 
 use std::sync::LazyLock;
 
@@ -364,4 +365,43 @@ fn a_store_cli_call_is_detected() {
     assert!(runs_store_cli(&task(
         "ansible.builtin.shell: echo $(vault kv put secret/x a=b)\n"
     )));
+}
+
+#[test]
+fn a_hex_secret_is_drawn_from_lowercase_hex_digits_only() {
+    // weft's front door parses its signing key as 64 hex digits and refuses anything else at
+    // start, so a generated key with one letter outside a-f is a front door that never comes up.
+    // The deterministic property is the alphabet the generator is given, so that is what is
+    // asserted, never a sample.
+    //
+    // Arrange
+    let tasks = repo::tasks(MANAGE);
+    let resolve = tasks
+        .iter()
+        .find(|task| {
+            task.get("name")
+                .and_then(Node::as_str)
+                .is_some_and(|name| name.starts_with("Resolve secrets"))
+        })
+        .unwrap_or_else(|| panic!("{MANAGE} has no \"Resolve secrets\" task"));
+    let expression = module(resolve, "set_fact")
+        .and_then(|fact| fact.get("_resolved"))
+        .and_then(Node::as_str)
+        .unwrap_or_else(|| panic!("{MANAGE}: \"Resolve secrets\" sets no _resolved string"));
+
+    // Act: the expression is a chain of `lookup(...) if item.type == '<type>' else (...)`, so the
+    // condition that selects a lookup is the first type test after it.
+    let hex_lookup = "chars=digits,abcdef'";
+    let selected_by_hex = expression.find(hex_lookup).is_some_and(|at| {
+        let rest = &expression[at + hex_lookup.len()..];
+        rest.find("if item.type")
+            .is_some_and(|test| rest[test..].starts_with("if item.type == 'hex'"))
+    });
+
+    // Assert
+    assert!(
+        selected_by_hex,
+        "{MANAGE}: the lowercase-hex lookup ({hex_lookup}) must be the one `type: hex` selects; \
+         a hex key drawn from any other alphabet is one weft's front door refuses at start"
+    );
 }
