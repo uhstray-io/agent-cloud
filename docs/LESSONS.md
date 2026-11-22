@@ -75,3 +75,9 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1212 (AC-997).
 - **DERIVED:** `cargo fmt --check` does not check the modules under `platform/tests/suite/`: `build.rs` writes their `mod` lines to `$OUT_DIR/suite_modules.rs`, which `suite/main.rs` pulls in with `include!`, and `cargo fmt` does not follow an `include!` (`platform/tests/build.rs:3-9`), so it passes a misformatted one. A brief or DONE WHEN that proves a suite module's formatting names `rustfmt --check --edition 2024 platform/tests/suite/<module>.rs`, the check `suite/rust_format.rs` runs.
 - **APPLIES TO:** briefs, DONE WHEN lines and local checks for any change under `platform/tests/suite/`.
+
+### L-013 · 2026-11-21 · process
+
+- **ACCEPTED:** #1214 (AC-1026).
+- **DERIVED:** A ledger candidate is written down with the source that proves it (a PR comment or review id, a Plane comment's item and time, or a batch-index decision number). The ledger writer checks every fact at its source, and a chat message or a session's memory cannot be checked later.
+- **APPLIES TO:** batch coordinators and owners keeping a ledger candidate list for a closing ledger pass.
