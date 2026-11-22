@@ -98,7 +98,7 @@ The public hostnames SHALL route through the central reverse proxy. The Cloudfla
 #### Scenario: Host firewall denies inbound except from the reverse proxy
 
 - **WHEN** the firewall is applied to the Plane VM
-- **THEN** inbound traffic is denied except from the reverse proxy, and the declared egress is the only outbound path opened
+- **THEN** inbound traffic is denied except from the reverse proxy, and the declared egress is the only outbound path opened. The host firewall matches ports and addresses, not names, so the declaration is a port allowlist (`firewall_allow_egress`), measured in audit mode before it is enforced (Joseph, 2026-11-09)
 
 #### Scenario: Telemetry reaches the observability stack
 
@@ -140,12 +140,12 @@ Interactive users SHALL sign in to Plane through the Authentik OIDC client. Self
 
 ### Requirement: Plane roles follow identity-provider groups
 
-Plane roles SHALL follow Authentik group membership under decision D3. Members of `platform-admins` MUST hold the Admin role, Plane's top workspace role. Members of `platform-developers` and `platform-business` MUST hold the Member role. Members of `platform-user` MUST be denied. The reconcile playbook SHALL be read-only unless it is run with `apply=true`, and a member who has left every member group MUST lose access on apply. The reconcile schedule SHALL be registered only after an apply run has succeeded.
+Plane roles SHALL follow Authentik group membership under decision D3. Members of `platform-admins` MUST hold the workspace's top role the licensed plan offers: Owner on the Pro plan, where Plane's Admin role is not available (amended 2026-11-09). Members of `platform-developers` and `platform-business` MUST hold the Member role. Members of `platform-user` MUST be denied. The reconcile playbook SHALL be read-only unless it is run with `apply=true`, and a member who has left every member group MUST lose access on apply, except a workspace Owner: the reconcile never demotes or removes an Owner, and MUST name each Owner other than the automation account that the groups no longer make one, so an operator offboards them by hand. The reconcile schedule SHALL be registered only after an apply run has succeeded.
 
-#### Scenario: Administrator receives Admin
+#### Scenario: Administrator receives the top role
 
 - **WHEN** the reconcile playbook applies with `apply=true` for a member of `platform-admins`
-- **THEN** that member holds the Admin role in Plane
+- **THEN** that member holds the Owner role in Plane, the top role on the Pro plan
 
 #### Scenario: Developer and business user receive Member
 
@@ -159,8 +159,13 @@ Plane roles SHALL follow Authentik group membership under decision D3. Members o
 
 #### Scenario: Removed member loses access on apply
 
-- **WHEN** a Plane member is no longer in any member group, and the reconcile playbook applies with `apply=true`
+- **WHEN** a Plane member who is not an Owner is no longer in any member group, and the reconcile playbook applies with `apply=true`
 - **THEN** that member is removed from Plane
+
+#### Scenario: Owner who left the groups is kept and named
+
+- **WHEN** a Plane Owner other than the automation account is no longer desired as an Owner, and the reconcile playbook runs
+- **THEN** that Owner keeps its role and membership, and the reconcile names it under `owners_unmanaged` for an operator to offboard by hand
 
 #### Scenario: Reconcile is read-only without apply
 

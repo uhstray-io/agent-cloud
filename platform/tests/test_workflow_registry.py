@@ -369,7 +369,7 @@ def test_production_conformance_uses_the_exact_private_otlp_receiver():
     assert not re.match(pattern, "172.32.1.2")
     guard = next(t for t in tasks if t.get("name") ==
                  "Require the exact private Alloy OTLP/HTTP destination in production")
-    assert guard["when"] == "not (local_mode | default(false) | bool)"
+    assert guard["when"] == "not (groups['all'] | local_dev_inventory)"
     assert "hostvars.get(_semaphore_host, {}).get('collector_otlp_url', '')" in collector["vars"]["_collector_otlp_url"]
     assert any("_collector_otlp_url == 'http://' ~ _o11y_bind ~ ':4318/v1/logs'" in item
                for item in guard["ansible.builtin.assert"]["that"])
@@ -386,9 +386,9 @@ def test_production_conformance_uses_the_exact_private_otlp_receiver():
     assert push["ansible.builtin.uri"]["body"] == "{{ _agg.otlp_payload }}"
     assert push["failed_when"] is False
     assert "retries" not in push
-    assert "not (local_mode | default(false) | bool)" in push["when"]
+    assert "not (groups['all'] | local_dev_inventory)" in push["when"]
     local = next(t for t in tasks if t.get("name") == "Local Loki: one line per step result")
-    assert "local_mode | default(false) | bool" in local["when"]
+    assert "(groups['all'] | local_dev_inventory)" in local["when"]
     assert "collector_loki_url is defined" in local["when"]
     assert local["vars"]["push_loki_streams"] == "{{ _agg.loki_streams }}"
     assert not any("delivery batch" in (task.get("name") or "").lower() for task in tasks)
@@ -460,8 +460,7 @@ def test_production_collector_refuses_missing_or_mismatched_host_destination(tmp
         env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
                    ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
         result = subprocess.run(
-            ["ansible-playbook", "-i", str(inventory_path), str(playbook),
-             "-e", json.dumps({"local_mode": False})],
+            ["ansible-playbook", "-i", str(inventory_path), str(playbook)],
             cwd=REPO, env=env, capture_output=True, text=True, timeout=30,
         )
         output = result.stdout + result.stderr
@@ -496,19 +495,20 @@ UNPARSED = "The inventory could not be parsed or contained no hosts"
 def test_production_collector_names_an_unparsed_inventory(tmp_path):
     """Task 2858: an unreadable inventory emptied every group and surfaced as an OTLP mismatch."""
     rc, output = _run_with_broken_inventory(
-        tmp_path, "platform/playbooks/collect-service-conformance.yml", {"local_mode": False})
+        tmp_path, "platform/playbooks/collect-service-conformance.yml")
     assert rc != 0
     assert UNPARSED in output
     assert "Production conformance delivery requires collector_otlp_url" not in output
 
 
-def test_local_collector_skips_the_parsed_inventory_guard_in_local_mode():
-    # A local inventory always holds localhost (bootstrap-local-dev.yml), so the guard is
-    # unnecessary there; production, where an empty inventory is an error, keeps it.
+def test_the_parsed_inventory_guard_runs_only_on_production():
+    # A local-dev inventory always holds localhost (bootstrap-local-dev.yml), so the guard is
+    # unnecessary there; production, where an empty inventory is an error, keeps it. The inventory decides
+    # (plan 24), not local_mode.
     collector = playbook_yaml.plays(REPO / "platform/playbooks/collect-service-conformance.yml")[0]
     guard = next(t for t in collector["tasks"] if t.get("name") == "Require the inventory to have parsed")
     assert guard["ansible.builtin.include_tasks"] == "tasks/require-parsed-inventory.yml"
-    assert guard["when"] == "not (local_mode | default(false) | bool)"
+    assert guard["when"] == "not (groups['all'] | local_dev_inventory)"
     assert collector["tasks"].index(guard) < next(
         i for i, t in enumerate(collector["tasks"])
         if t.get("name") == "Require the exact private Alloy OTLP/HTTP destination in production")
@@ -621,7 +621,6 @@ def test_otlp_delivery_is_reported_before_a_generic_failure(tmp_path, response, 
         "connection": "local",
         "gather_facts": False,
         "vars": {
-            "local_mode": False,
             "_otlp": response,
             "_completion_ready": True,
             "_completion_publish_ready": False,

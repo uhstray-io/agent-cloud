@@ -45,9 +45,23 @@
   when: _cf_api is not defined
 
 # ── Token: fetched once from OpenBao, cached across a record loop ────────────
+# The address is resolved once and the transport guard checks that same value, so the guard
+# and the two requests below cannot disagree. The guard is here, in the shared task file, so
+# every caller is covered (AC-936: it had none, and the login sends the AppRole secret_id).
+- name: "Resolve the OpenBao address for the Cloudflare token"
+  ansible.builtin.set_fact:
+    _cf_bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+  when: _cf_token is not defined
+
+- name: "Refuse a cleartext OpenBao endpoint before the AppRole login"
+  ansible.builtin.include_tasks: assert-bao-transport.yml
+  vars:
+    _assert_bao_url: "{{ _cf_bao_url }}"
+  when: _cf_token is not defined
+
 - name: "Authenticate to OpenBao (AppRole) for the Cloudflare token"
   ansible.builtin.uri:
-    url: "{{ (openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true)) }}/v1/auth/approle/login"
+    url: "{{ _cf_bao_url }}/v1/auth/approle/login"
     method: POST
     body_format: json
     body:
@@ -63,7 +77,7 @@
 
 - name: "Fetch the Cloudflare token from OpenBao (secret/services/caddy)"
   ansible.builtin.uri:
-    url: "{{ (openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true)) }}/v1/secret/data/services/caddy"
+    url: "{{ _cf_bao_url }}/v1/secret/data/services/caddy"
     method: GET
     headers:
       X-Vault-Token: "{{ _cf_bao_auth.json.auth.client_token }}"

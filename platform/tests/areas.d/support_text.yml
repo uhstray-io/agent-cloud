@@ -1,0 +1,6 @@
+# The shared text helpers' own tests (src/text.rs, suite/support_text.rs). A change under
+# platform/tests/ hits `full`, which is checked before any area, so this area names no paths:
+# it only gives the module its one listing (areas.yml, test_platform).
+paths: []
+tiers:
+  static: [support_text]
