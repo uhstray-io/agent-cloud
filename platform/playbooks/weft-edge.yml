@@ -12,7 +12,7 @@
 # The fragment goes to central Caddy through tasks/distribute-caddy-site.yml, the flat layout
 # manage-caddy-sites.yml manages (openspec add-weft-service, design.md, C4).
 
-- name: "weft: the edge for this environment"
+- name: "The weft edge for this environment"
   hosts: "{{ weft_door_hosts | default('weft_door') }}"
   gather_facts: false
   become: false
