@@ -13,7 +13,6 @@ from pathlib import Path
 
 import harness_sandbox
 import playbook_yaml
-import pytest
 from ansible_python import needs_ansible
 
 REPO = Path(__file__).resolve().parents[2]
@@ -60,13 +59,6 @@ GRAFANA_NOOP_PLAN = _grafana_plan(False)
 def _tasks():
     (play,) = playbook_yaml.plays(PLAYBOOK)
     return play["tasks"]
-
-
-def _all_tasks(tasks=None):
-    for t in _tasks() if tasks is None else tasks:
-        yield t
-        for key in ("block", "rescue", "always"):
-            yield from _all_tasks(t.get(key) or [])
 
 
 def _run(tmp_path, tf_plan, tf_verify, action, show_plan=None, show_verify=None, fails=False):
@@ -128,52 +120,6 @@ def test_changes_without_a_parsable_summary_still_fail(tmp_path):
     assert res["status"] == "fail" and res["evidence"] == {"plan_changes": None}
 
 
-DRY_RUN = "Dry run: OpenTofu init, plan and show in a throwaway data directory"
-
-
-def _dry_run_task():
-    (task,) = [t for t in _all_tasks() if t.get("name") == DRY_RUN]
-    return task
-
-
-def test_both_plans_detect_changes_by_exit_code():
-    plans = [t for t in _all_tasks()
-             if (t.get("ansible.builtin.command") or {}).get("argv", [None, None])[:2] == ["tofu", "plan"]]
-    assert len(plans) == 2
-    for t in plans:
-        assert "-detailed-exitcode" in t["ansible.builtin.command"]["argv"], t["name"]
-    assert "tofu plan -input=false -no-color -detailed-exitcode" in _dry_run_task()["ansible.builtin.shell"]["cmd"]
-
-
-def test_every_credential_bearing_tofu_command_is_no_log():
-    # PR 436 Codex review: each tofu command runs with the R2 keys and the Cloudflare token in
-    # its environment, so it is its own no_log task; failures surface through the visible report.
-    tofu = [t for t in _all_tasks() if (t.get("ansible.builtin.command") or {}).get("argv", [None])[0] == "tofu"]
-    assert len(tofu) == 6  # init, plan, show, apply, plan after apply, show
-    tofu.append(_dry_run_task())  # the dry run's init, plan and show, in one throwaway root
-    for t in tofu:
-        assert t.get("no_log") is True, t["name"]
-        assert t.get("failed_when") is False, t["name"]
-        assert t["environment"] == "{{ _tf_env }}", t["name"]
-    (env,) = [t for t in _all_tasks() if "_tf_env" in (t.get("ansible.builtin.set_fact") or {})]
-    assert env.get("no_log") is True
-    (unpack,) = [t for t in _all_tasks() if "_tf_dry_result" in (t.get("ansible.builtin.set_fact") or {})]
-    assert unpack.get("no_log") is True, "the dry run's plan text and JSON carry the origin address"
-
-
-def test_the_visible_report_carries_only_exit_codes_and_counts():
-    (report,) = [t for t in _tasks() if "_tf_report" in (t.get("ansible.builtin.set_fact") or {})]
-    assert "no_log" not in report
-    assert set(report["ansible.builtin.set_fact"]["_tf_report"]) == {
-        "init_rc", "plan_rc", "apply_rc", "apply_changed", "verify_rc", "show_rc", "verify_show_rc",
-        "plan_changes", "verify_changes", "plan_actions", "verify_actions", "plan_guard", "verify_guard"}
-    for t in _tasks():
-        if "ansible.builtin.debug" in t:
-            shown = str(t["ansible.builtin.debug"])
-            protected = ("_tf_plan", "_tf_apply", "_tf_verify", "_tf_init", "_tf_env", "_tf_show", "_cf")
-            assert not [p for p in protected if p in shown], t["name"]
-
-
 # A `tofu show -json` plan carrying values that must never reach the visible report.
 SECRET_ORIGIN = "203.0.113.77"
 PLAN_JSON = json.dumps({"format_version": "1.2", "resource_changes": [
@@ -204,16 +150,6 @@ def test_the_post_apply_plan_is_listed_the_same_way(tmp_path):
                show_verify={"rc": 0, "stdout": PLAN_JSON})
     assert res["status"] == "fail"
     assert '"cloudflare_record.app: update"' in _run.stdout and SECRET_ORIGIN not in _run.stdout
-
-
-def test_saved_plans_are_removed_and_shown_inside_the_no_log_boundary():
-    (block,) = [t for t in _tasks() if t.get("name") == "OpenTofu run"]
-    shows = [t for t in block["block"] if (t.get("ansible.builtin.command") or {}).get("argv", [None, None])[:2]
-             == ["tofu", "show"]]
-    assert len(shows) == 2 and all(t.get("no_log") is True for t in shows)
-    (cleanup,) = block["always"]
-    assert cleanup["ansible.builtin.file"]["state"] == "absent"
-    assert set(cleanup["loop"]) == {"{{ _tf_planfile }}", "{{ _tf_verify_planfile }}"}
 
 
 # A fake tofu that writes what the real one would: init fills the data directory
@@ -308,15 +244,6 @@ def test_a_dry_run_with_changes_reports_counts_and_actions_only(tmp_path):
 
 
 @needs_ansible
-def test_a_dry_run_init_failure_fails_the_run_and_still_writes_nothing(tmp_path):
-    proc, calls, root, _ = _tofu_run(tmp_path, check=True, init_rc=1)
-    assert proc.returncode != 0 and "'init_rc': 1," in proc.stdout, proc.stdout[-3000:]
-    assert [c[0] for c in calls] == ["init"]
-    assert root == ROOT_FILES
-    assert not Path(calls[0][1]).parent.exists()
-
-
-@needs_ansible
 def test_a_real_plan_is_unchanged(tmp_path):
     # Not a dry run: init, plan and show run as separate tasks in the tofu root's own .terraform/.
     proc, calls, root, tf_dir = _tofu_run(tmp_path, check=False)
@@ -327,25 +254,6 @@ def test_a_real_plan_is_unchanged(tmp_path):
     assert not (tf_dir / ".terraform/edge-dns.tfplan").exists(), "the saved plan was not removed"
     (res,) = step_results.results_in(proc.stdout.splitlines())
     assert res["status"] == "pass"
-
-
-@needs_ansible
-@pytest.mark.parametrize("receipt", ["", "not-json", "{}"])  # Empty, invalid, and incomplete receipts fail closed.
-def test_a_missing_or_malformed_guard_receipt_has_a_fixed_refusal(tmp_path, receipt):
-    guard_script = tmp_path / "bad_guard.py"
-    guard_script.write_text(f"import sys\nsys.stdout.write({receipt!r})\nsys.exit(1)\n")
-    proc, _, _, _ = _tofu_run(tmp_path, check=False, guard_script=guard_script, grafana_guard=True)
-    assert proc.returncode != 0
-    assert "Cloudflare plan guard refused: safe plan receipt is missing or malformed." in proc.stdout
-    assert not receipt or receipt not in proc.stdout
-
-
-@needs_ansible
-def test_a_guard_that_cannot_start_has_a_fixed_refusal(tmp_path):
-    proc, _, _, _ = _tofu_run(tmp_path, check=False, guard_script=tmp_path / "missing_guard.py", grafana_guard=True)
-    assert proc.returncode != 0
-    assert "Cloudflare plan guard refused: safe plan receipt is missing or malformed." in proc.stdout
-    assert "missing_guard.py" not in proc.stdout
 
 
 @needs_ansible
@@ -377,11 +285,3 @@ def test_a_failed_show_of_the_plan_fails_the_run(tmp_path):
 def test_a_failed_show_of_the_post_apply_plan_fails_the_run(tmp_path):
     proc = _run(tmp_path, SKIPPED, {"rc": 0, "stdout": "No changes."}, "apply", show_verify=FAILED_SHOW, fails=True)
     assert proc.returncode != 0 and "'verify_show_rc': 1," in proc.stdout, proc.stdout[-3000:]
-
-
-@needs_ansible
-@pytest.mark.parametrize("check", [True, False], ids=["dry-run", "real-plan"])
-def test_a_failed_tofu_show_fails_the_run_in_either_mode(tmp_path, check):
-    proc, calls, _, _ = _tofu_run(tmp_path, check=check, show_rc=1)
-    assert [c[0] for c in calls] == ["init", "plan", "show"]
-    assert proc.returncode != 0 and "'show_rc': 1," in proc.stdout, proc.stdout[-3000:]

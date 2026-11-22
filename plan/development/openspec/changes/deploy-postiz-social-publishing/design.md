@@ -28,6 +28,8 @@ One further constraint is environmental: the target host currently accepts only 
 bootstrap password, and the platform's rule is to verify before hardening. The ordering
 in the migration plan is therefore load-bearing, not stylistic.
 
+**Scope (2026-11-12, AC-762).** X and LinkedIn first; YouTube and Discord deferred. Plan 14, "Scope update", records the scope, the automation client and why Postiz keeps its own Temporal.
+
 ## Goals / Non-Goals
 
 **Goals.** Establish the service on the platform's composable pattern so that it is
@@ -45,7 +47,7 @@ Kubernetes path; this service targets the Compose/Podman single-site tier like i
 
 Upstream's reference deployment runs eight containers: the application, its datastore
 and cache, a workflow engine, a *second* datastore for that engine, an Elasticsearch
-node, a workflow UI, and admin tooling. We run five — application, datastore, cache,
+node, a workflow UI, and admin tooling. We planned five (superseded in part; see "Search node restored (2026-08-30)" below) — application, datastore, cache,
 workflow engine, and the engine's datastore — with the search node, the workflow UI, and
 the admin tooling removed.
 
@@ -72,6 +74,8 @@ touched, and the add-back is scoped in advance to a single inventory-gated block
 We also decline to set the engine's dynamic-configuration path. Leaving it unset selects
 the engine's built-in defaults, which means no configuration file to ship or maintain.
 Upstream mounts a file whose contents are explicitly labelled development-only.
+
+**Search node restored (2026-08-30).** The search node is back, as an inventory-gated overlay in `compose.search.yml`, applied by default (`COMPOSE_OVERLAYS` in `platform/playbooks/deploy-postiz.yml`); an inventory can opt out with `postiz_temporal_search: false`. As of Postiz v2.23.0 the backend registers more than three `Text` search attributes at startup, and SQL visibility refuses that, so the backend never binds (measured 2026-08-30). Every working deployment therefore runs six containers: the five in the base compose and the search node. The base compose keeps `ENABLE_ES=false`, so the trim stays inspectable, and the workflow UI and admin tooling stay out. The [service README](../../../../../platform/services/postiz/deployment/README.md) records the stack and the reason.
 
 ### Configure the application through a mounted config file, not compose environment
 
@@ -150,7 +154,8 @@ Writing it once as a capability makes the next host a re-use rather than a re-de
 - **The trimmed workflow engine may not execute scheduled work without the search
   node** → Gated behind observing a real scheduled post publish on the local instance
   before production is touched. The add-back is one inventory-gated block, scoped in
-  advance, so the recovery is a configuration change rather than a redesign.
+  advance, so the recovery is a configuration change rather than a redesign. This risk
+  fired on 2026-08-30 and the add-back is now required (see "Trim the workflow engine").
 - **Removing password authentication is effectively one-way** → Key authentication is
   proven from two independent directions first, with password authentication explicitly
   refused during the proof so a silent fallback cannot masquerade as success; privilege
@@ -161,8 +166,8 @@ Writing it once as a capability makes the next host a re-use rather than a re-de
   survival. The firewall is applied twice by design — once before the service exists
   (administrative access only) and once after (adding the now-published service port) —
   which is safe because every step is idempotent.
-- **Social account connection will fail until redirect URIs are updated at four
-  providers** → Not automatable from here; called out as an explicit operator step
+- **Social account connection will fail until redirect URIs are updated at the first-rollout
+  providers (X and LinkedIn; YouTube and Discord deferred)** → Not automatable from here; called out as an explicit operator step
   before first use, with account connection as the visible symptom if skipped.
 - **The public URL must match the browser's URL exactly, and locally that includes a
   non-standard port** unless the port-forwarding helper is running → The URL is an
@@ -175,7 +180,7 @@ Writing it once as a capability makes the next host a re-use rather than a re-de
 - **Adding a workflow engine and a second datastore roughly doubles the host's resident
   footprint** versus the three-container shape that ran on the developer machine →
   Accepted as the cost of scheduled publishing actually working; the trim above is what
-  keeps it to five containers rather than eight.
+  keeps it to six containers (five plus the required search node) rather than eight.
 
 ## Migration Plan
 
@@ -197,8 +202,8 @@ gate that must pass before the next begins.
    with a key and refuses without one.
 3. **Promote.** Feature branch to the integration branch by pull request with all checks
    green, then a promotion pull request to production so the orchestrator deploys from
-   there. Operator-performed prerequisites — the DNS record and the four redirect-URI
-   updates — land in this phase.
+   there. Operator-performed prerequisites — the DNS record and the redirect-URI
+   updates for the first-rollout platforms — land in this phase.
 4. **Production run.** Seed secrets, verify them, apply the identity-provider client,
    deploy the service, verify health, publish the route, then re-apply the firewall so it
    picks up the now-published service port. Re-verify both the public URL and

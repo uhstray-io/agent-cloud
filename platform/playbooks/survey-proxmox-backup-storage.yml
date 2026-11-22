@@ -1,0 +1,268 @@
+---
+# survey-proxmox-backup-storage.yml — read-only survey of every backup-capable Proxmox storage.
+#
+# Why: the nightly vzdump jobs fail with "No space left on device" and "Broken pipe" once
+# their shared backup storage is full, and a backup job whose archive for a guest fails never
+# prunes that guest's archives. Before any space is freed, this answers where the space went, per storage:
+#   - capacity (total, used, available);
+#   - archives per guest (count, size, oldest and newest), flagging guests that no longer exist;
+#   - what a prune at each enabled job's own retention would remove (Proxmox's prune preview);
+#   - the space a job's retention needs, estimated at the newest archive size plus protected
+#     archives, reported as unknown when the retention keeps everything, a storage default is
+#     not set, a job protects every archive, or the guest has no archive there yet; the
+#     storage total sums only the guests whose need is known;
+#   - bytes on the storage that no listed volume explains (partial files, foreign data);
+#   - for a PBS storage, sizes_are_logical: its snapshot sizes share chunks, so its unexplained
+#     and prunable bytes are reported as unknown (null);
+#   - storage IDs that look like the same filesystem (same server and export, same path, one
+#     path inside the other, identical total and used bytes, or the same CephFS filesystem; two
+#     CephFS storages are paired by filesystem name only, never by bytes), whose usage must be read together;
+#   - every backup job's schedule, node, storage, retention and guests it names that no longer exist;
+#   - the newest archive per guest on each storage, so a guest's last backup is visible across storages;
+#   - whether each CephFS storage shares a filesystem on this cluster's Ceph with another (an external
+#     one shares none here), decided by filesystem name (its
+#     fs-name, or the cluster's only filesystem; unknown, and listed as no one's sharer, when neither
+#     resolves), and that filesystem's data pools: Ceph's used bytes and percent used, under Ceph's
+#     names (what they count depends on the Ceph release and on whether every OSD reports per-pool
+#     stats, which Proxmox does not say, so neither compares with a storage's used bytes), type and size
+#     (replicas, or data plus coding chunks when erasure-coded) (a CephFS with a monitor list names an
+#     external cluster and is not read);
+#   - the pool percent is right from Ceph 13 on; Ceph 12 sent it already multiplied by 100, so on a
+#     Ceph 12 cluster it reads 100 times too high (a value over 100 shows it; 100 or less cannot);
+#   - a Proxmox release from before pve-manager's 2026-05 change lists only a filesystem's first data
+#     pool; its rows then say data_pools_complete false, since more pools may exist than are named;
+#   - a disabled storage of any type is left out of every storage and CephFS figure, whatever its
+#     status row says; a backup job that names it still lists it as that job's storage;
+#   - per online node, the installed disks: device path, size, model, vendor, serial, Proxmox's `used`
+#     tag and the in-use flag it implies (a disk is in use when its `used` field is set), and OSD id;
+#   - on this cluster's own Ceph, each OSD's fill (used and total bytes, percent used, device class, status,
+#     in and version) with each host's totals, and the cluster's health status and check codes with their
+#     severity (never a check's message, nor the monitor or manager maps). A usage Ceph did not report is
+#     unknown (null), and a host's totals are null when any of its OSDs reports none.
+#
+# It writes nothing to Proxmox: every Proxmox request is a GET, and it runs identically under
+# --check. The token-bearing requests are no_log. On success only the summarizer's receipt is
+# printed, which names storages, guests, CephFS filesystems and pools, Ceph OSDs and hosts, and node
+# disks, but never a server, export, mount path, volume ID, note, WWN, token or Ceph health message.
+# A storage the token may not read (403) is refused by the planner or summarizer with a one-line
+# reason. A node's disk list that the token may not read (403), and a Ceph listing that answers 403
+# or 500 (the OSD tree and health read also 404 or 501), are reported as unavailable, not refused.
+# Any other failed read fails its no_log task without detail.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# The run reads the Proxmox token and executes the helper from the Dev checkout, so it runs only
+# at the exact commit a review approved (expected_repository_sha), as survey-pbs-provisioning-candidates.yml does.
+- name: Require the exact reviewed checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/survey-proxmox-backup-storage.yml
+      - platform/playbooks/files/survey_backup_storage.py
+      - platform/semaphore/templates.yml
+
+- name: Survey Proxmox backup storage
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+      follow_redirects: none
+      method: GET
+      status_code: [200, 403]
+  vars:
+    _survey: "{{ playbook_dir }}/files/survey_backup_storage.py"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+  tasks:
+    - name: Refuse public cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Read Proxmox API credentials from OpenBao
+      ansible.builtin.set_fact:
+        _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/proxmox', url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+      no_log: true
+
+    - name: Derive Proxmox API connection values
+      ansible.builtin.set_fact:
+        _pve_host: "{{ _pve_data.url | default('') }}"
+        _pve_token_id: "{{ _pve_data.token_id | default('') }}"
+        _pve_secret: "{{ _pve_data.api_token }}"
+      no_log: true
+
+    - name: Require Proxmox API over HTTPS
+      ansible.builtin.assert:
+        that: _pve_host is match('^https://')
+        fail_msg: "The Proxmox API URL from OpenBao must use HTTPS."
+
+    # The token id names a real Proxmox user, so it comes from the store, never a default.
+    - name: Require the stored Proxmox token id
+      ansible.builtin.assert:
+        that: _pve_token_id | length > 0
+        fail_msg: >-
+          secret/services/proxmox has no token_id. Store the Proxmox API token id
+          (<user>@<realm>!<token-name>) beside api_token; there is no built-in default.
+
+    - name: Read the cluster's nodes, storage configuration, backup jobs and guests
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/{{ item }}"
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: [nodes, storage, cluster/backup, "cluster/resources?type=vm"]
+      register: _cluster_reads
+      no_log: true
+      check_mode: false
+
+    - name: Select the online nodes
+      ansible.builtin.set_fact:
+        _online_nodes: "{{ _cluster_reads.results[0].json.data | selectattr('status', 'equalto', 'online')
+          | map(attribute='node') | list }}"
+      no_log: true
+
+    - name: Require well-formed node names before building storage URLs
+      ansible.builtin.assert:
+        that:
+          - _online_nodes | length > 0
+          - _online_nodes | reject('match', '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') | list | length == 0
+        fail_msg: "Proxmox reported no online node, or a malformed node name; nothing else was read."
+
+    - name: Read each online node's storage status
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ item }}/storage"
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _online_nodes }}"
+      register: _node_storage_reads
+      no_log: true
+      check_mode: false
+
+    # A node's disk list is read on every online node. Proxmox checks Sys.Audit on / or on that node's
+    # path (apidoc: /nodes/{node}/disks/list), so a token may read some nodes' disks and not others. A 403
+    # is reported by the summarizer, not refused.
+    - name: Read each online node's disks
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ item }}/disks/list?skipsmart=1"
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _online_nodes }}"
+      register: _disk_reads
+      no_log: true
+      check_mode: false
+
+    - name: Plan which backup storages to read and which retentions to preview
+      ansible.builtin.command:
+        argv: [python3, "{{ _survey }}", plan]
+        stdin: >-
+          {{ {'nodes': _cluster_reads.results[0].json.data,
+              'storage_config': _cluster_reads.results[1].json.data,
+              'jobs': _cluster_reads.results[2].json.data,
+              'storage_listings': _node_storage_reads.results} | to_json }}
+      register: _plan_run
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require a valid survey plan
+      ansible.builtin.assert:
+        that: _plan_run.rc == 0
+        fail_msg: "Survey refused: {{ (_plan_run.stdout | from_json).refusal | default('the planner failed') }}"
+
+    - name: Keep the survey plan
+      ansible.builtin.set_fact:
+        _plan: "{{ _plan_run.stdout | from_json }}"
+
+    # The Ceph listing is read only when the plan's `ceph` flag is set (plan() in the helper: a CephFS storage
+    # on this cluster's own Ceph, enabled, with no monitor list), through one online node. A 403 or 500 is
+    # accepted here and reported by the summarizer as unavailable with its status, not as a failed survey.
+    - name: Read the Ceph filesystems and pools
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _online_nodes[0] }}/ceph/{{ item }}"
+        status_code: [200, 403, 500]
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: [fs, pool]
+      register: _ceph_reads
+      when: _plan.ceph
+      no_log: true
+      check_mode: false
+
+    # The OSD tree (each OSD's fill, per host) and the cluster's health status, on the same gate and through
+    # the same node. Each is read on this cluster's own Ceph only, as the CephFS listing is. A 403, 404, 500 or
+    # 501 is reported by the summarizer as unavailable, not refused.
+    - name: Read the Ceph OSD tree and health
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/{{ item }}"
+        status_code: [200, 403, 404, 500, 501]
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: ["nodes/{{ _online_nodes[0] }}/ceph/osd", "cluster/ceph/status"]
+      register: _ceph_capacity_reads
+      when: _plan.ceph
+      no_log: true
+      check_mode: false
+
+    - name: Read every volume on each backup storage
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ item.node }}/storage/{{ item.storage | urlencode }}/content"
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _plan.reads }}"
+      loop_control:
+        label: "{{ item.storage }}"
+      register: _content_reads
+      no_log: true
+      check_mode: false
+
+    # GET prunebackups is Proxmox's preview: it marks what a prune would remove and removes nothing.
+    - name: Preview what each job's retention would prune
+      ansible.builtin.uri:
+        url: >-
+          {{ _pve_host }}/api2/json/nodes/{{ item.0.node }}/storage/{{ item.0.storage | urlencode
+          }}/prunebackups{{ '' if item.1 == 'storage-default' else '?prune-backups=' + (item.1 | urlencode) }}
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _plan.reads | subelements('retentions') }}"
+      loop_control:
+        label: "{{ item.0.storage }} {{ item.1 }}"
+      register: _prune_reads
+      no_log: true
+      check_mode: false
+
+    - name: Summarize the backup storage
+      ansible.builtin.command:
+        argv: [python3, "{{ _survey }}", summarize]
+        stdin: >-
+          {{ {'plan': _plan,
+              'storage_config': _cluster_reads.results[1].json.data,
+              'jobs': _cluster_reads.results[2].json.data,
+              'vms': _cluster_reads.results[3].json.data,
+              'content_reads': _content_reads.results,
+              'prune_reads': _prune_reads.results,
+              'disk_reads': _disk_reads.results,
+              'ceph_reads': _ceph_reads.results | default([]),
+              'ceph_capacity_reads': _ceph_capacity_reads.results | default([])} | to_json }}
+      register: _summary_run
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require a valid survey summary
+      ansible.builtin.assert:
+        that: _summary_run.rc == 0
+        fail_msg: "Survey refused: {{ (_summary_run.stdout | from_json).refusal | default('the summarizer failed') }}"
+
+    - name: Report the backup storage survey
+      ansible.builtin.debug:
+        msg: "{{ _summary_run.stdout | from_json }}"
