@@ -328,17 +328,20 @@ PY
   assert_grep -qF 'known_as = "{{ weft_workspace_id }}"' "$WS_DIR/templates/weft.toml.j2"
 }
 
-@test "weft: staging's mail catcher is checked before anything stops, by digest, and never named on the rack" {
+@test "weft: the mail catcher is checked before anything stops, by digest, and never reaches a customer" {
   # weft #541: the front door refuses to start without mail, and there is no provider yet. Staging's
-  # door hands every message to Mailpit, which sends none. The rule that only staging runs it is in
-  # weft-release.yml, which every deploy and every rollback reaches before the stop, so a refusal
-  # leaves a running door untouched (test_weft_deploy_runs.py runs the check itself).
+  # door, and the rack's until its first customer (weft #332), hand every message to Mailpit, which
+  # sends none. The rule is in weft-release.yml, which every deploy and every rollback of BOTH roles
+  # reaches before the stop, so a refusal leaves the running host untouched: the door is refused once
+  # a workspace is a customer's, and a customer's workspace while the door has the catcher
+  # (test_weft_deploy_runs.py runs the checks themselves).
   local inc
   inc=$(sed -n '/weft-door-mail.yml/,/^$/p' "$PB/tasks/weft-release.yml")
-  assert_grep -qF "when: _weft_role == 'door'" <<<"$inc"
+  refute_grep -qF "when:" <<<"$inc"
   [ "$(grep -n 'weft-door-mail.yml' "$PB/tasks/weft-release.yml" | cut -d: -f1)" -lt \
     "$(grep -n 'Pull the verified images' "$PB/tasks/weft-release.yml" | cut -d: -f1)" ]
-  assert_grep -qF "weft_environment | default('') == 'staging'" "$PB/tasks/weft-door-mail.yml"
+  # Fail closed: only a workspace marked as the operator's own is not a customer's.
+  assert_grep -qF "weft_workspace_owner | default('customer') == 'operator'" "$PB/tasks/weft-door-mail.yml"
   # By digest, as every image a weft host runs, with no default in compose: any default is a tag.
   assert_grep -qE "_weft_mailpit_image: .*@sha256:[0-9a-f]{64}'" "$PB/vars/weft.yml"
   assert_grep -qE '^\s+image: \$\{WEFT_DOOR_MAILPIT_IMAGE:\?[^}]+\}$' "$DOOR_DIR/compose.mailpit.yml"

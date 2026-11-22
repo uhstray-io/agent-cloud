@@ -14,7 +14,7 @@ Every weft deploy is launched by a person. Nothing is scheduled, and nothing rol
 | Container (image `weft-door`, by digest) | On the VM's own disk |
 |---|---|
 | `weft-door` | `/srv/weft-door/`: `front-door.db` and its backup sets |
-| `weft-door-mailpit` (staging only, `docker.io/axllent/mailpit`, by digest) | nothing: its messages are lost on every deploy |
+| `weft-door-mailpit` (staging, and the rack while no workspace is a customer's; `docker.io/axllent/mailpit`, by digest) | nothing: its messages are lost on every deploy |
 
 `door.key` and `.env` are rendered beside `compose.yml`.
 
@@ -40,11 +40,14 @@ Every weft deploy is launched by a person. Nothing is scheduled, and nothing rol
   content (`../../agentgateway/context/agent-practices.md`, "Secrets boundary"). The front door
   writes process logs to stdout, which reach Loki like every service's; no text a person wrote and
   no credential is ever a log line, a metric label or a span attribute.
-- **Staging's mail goes to Mailpit, and the rack's never does.** The front door refuses to start
-  without mail (weft #541). `weft_door_mailpit` loads `compose.mailpit.yml`, which shares the door's
-  network namespace because the door allows plain SMTP to its own loopback only; the two stop and
-  start together. `tasks/weft-door-mail.yml` refuses it outside staging before anything stops. Its
-  UI is on the VM's loopback, reached by SSH tunnel (`README.md`, "Staging mail").
+- **Mail goes to Mailpit on staging, and on the rack only until a customer workspace exists.** The
+  front door refuses to start without mail (weft #541). `weft_door_mailpit` loads
+  `compose.mailpit.yml`, which shares the door's network namespace because the door allows plain
+  SMTP to its own loopback only; the two stop and start together. `tasks/weft-door-mail.yml`
+  refuses it, before anything stops, outside staging and the rack; on the rack it refuses the door
+  once any host in `weft_workspaces` is not marked `weft_workspace_owner: operator` (unmarked counts
+  as a customer's), and refuses a customer's workspace while the door has it. Its UI is on the VM's
+  loopback, reached by SSH tunnel (`README.md`, "The mail catcher").
 - **`deploy.sh` is container lifecycle only, for this one role.** It never reads OpenBao, never
   generates a secret and never chooses a version.
 - **Health is the binary's own:** `front-door health` asks every workspace on the records whether

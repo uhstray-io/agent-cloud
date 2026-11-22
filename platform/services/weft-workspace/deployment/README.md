@@ -10,13 +10,17 @@ also holds the site-config shape for both roles.
 ```text
 browser ──> Caddy (edge: TLS, hostname routing) ─┬─ <domain>        ──> front door VM  :8081  weft-door
                                                  └─ <name>.<domain> ──> workspace VM   :8080  weft-board
-browser ──(UDP, calls)──> rack firewall ──────────────────────────────> workspace VM   :<udp> weft-board (weft-voice)
 
 workspace VM:  weft-board ─┐
                weft-orchestrator ─┼─ /srv/weft/<id>/ (weft.db, seal.key, models, checkouts)
                weft-capture ─┘     │
                weft-orchestrator ──┴─ podman socket ──> agent + egress-proxy containers (never the directory)
 ```
+
+**Live calls are off on the rack** until a media route is chosen (weft D578, weft #332). Every weft
+name is proxied by Cloudflare, which carries no UDP, so a workspace's `weft.toml` has no `[voice]`,
+its board binds no UDP port, and no firewall allow or forward is made for one. Recordings and
+everything else work.
 
 ## How a version reaches a VM
 
@@ -124,10 +128,8 @@ The front door's own variables are in its README; the shared ones are here.
 | `weft_domain` | each group | the rack's weft domain, or staging's |
 | `weft_secret_root` | each group | `weft` (rack) or `weft-staging` |
 | `weft_release` | each rack host | `<version>@sha256:<64 hex>`: a version (`vX.Y.Z`) and the digest of its signed `weft-release` artifact. Staging has none: it takes the survey value |
-| `weft_public_address` | workspace groups | the rack's public IP (an address, never a name): browsers send call audio there |
 | `weft_workspace_id` | each workspace host | the id the front door minted, a DNS label: sign-in claims are bound to it; it names the VM's directory |
 | `weft_workspace_name` | each workspace host | the company name its admin chose, a DNS label: the subdomain, `<name>.<domain>` (weft D540) |
-| `weft_voice_udp` | each workspace host | its own UDP port; the rack forwards the same number |
 | `weft_providers` | each workspace host | a dict of `[providers.*]` tables: `name`, `endpoint`, `wire`, `budget`, `models` (`economy`, `standard`, `frontier`). No key and no key variable |
 | `weft_default_provider` | each workspace host | one of the keys of `weft_providers` |
 | `weft_daily_tokens` | each workspace host | an integer; weft has no default |
@@ -138,6 +140,7 @@ The front door's own variables are in its README; the shared ones are here.
 | Variable | Default | Form |
 |---|---|---|
 | `weft_clones` | `{}` | `{"<org>/<repo>": "<name>"}`, cloned under `<workspace dir>/repos/` |
+| `weft_workspace_owner` | `customer` | `operator` for a workspace the platform's operator runs for its own people, anything else a customer's. While any host in `weft_workspaces` is a customer's, the rack's front door may not run the mail catcher (`weft_door_mailpit`, the front door's README); unset counts as a customer's, so a workspace nobody marked closes it. Set it on each workspace host, never on the group: a group value would mark a customer's workspace too |
 | `weft_board_bind`, `weft_board_port` | `ansible_host`, `8080` | where the board is published, an IP address (IPv4 or IPv6) the Caddy host must reach. A host name, a wildcard or a loopback address is refused before anything stops (`tasks/weft-bind.yml`), outside local mode |
 | `weft_board_trusted_proxies` | `[]` | CIDR list for `[board] trusted_proxies`: the edge Caddy host alone, as a `/32`, never a range. The board is on pasta (compose.yml), so it sees Caddy's own address, and anything on this VM, a container included, as the VM's default gateway (podman 4.9.3) or `169.254.1.2` (podman 5.3 on); a range holding either would believe `CF-Connecting-IP` from every process on the VM. A deploy refuses an entry wider than one address, or holding either, before anything stops (`tasks/weft-bind.yml`), outside local mode |
 | `weft_board_ingest_from` | `[]` | CIDR list for `[board] ingest_from`. `127.0.0.1/32` and `::1/128` are always added, once: the board's healthcheck asks from inside its container, and weft's gate admits no address the list does not name. Never the VM's default gateway or `169.254.1.2`, for the reason above; a deploy refuses an entry holding either before anything stops |

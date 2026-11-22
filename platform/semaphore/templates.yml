@@ -1930,7 +1930,8 @@ templates:
 
   - name: Reconcile Plane Members
     playbook: platform/playbooks/reconcile-plane-members.yml
-    # Plane workspace membership follows the Authentik groups: platform-admins -> Admin,
+    # Plane workspace membership follows the Authentik groups: platform-admins -> plane_admin_role
+    # (Owner in production; Plane's Admin role is Business and Enterprise only),
     # developers and business users -> Member, everyone else removed. READ-ONLY unless apply is
     # true (the survey default is false, so a UI launch only reports the plan).
     dev_variant: true
@@ -2450,6 +2451,41 @@ templates:
         description: "The exact dev commit the grow was reviewed at; any other checkout is refused"
         type: string
         required: true
+
+  - name: Survey Proxmox Backup Storage (Dev)
+    playbook: platform/playbooks/survey-proxmox-backup-storage.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only backup-storage survey"
+        type: string
+        required: true
+    # Read-only: every backup-capable storage's capacity, archives per guest, what a prune at
+    # each enabled job's own retention would remove, unexplained bytes, storages that share a
+    # filesystem, and every backup job's schedule and retention. It also reports the newest archive per
+    # guest on each storage, each CephFS storage's filesystem and pools (which storages share one is decided
+    # by filesystem name; pool usage is Ceph's own figure, not comparable with a storage's), and each online node's disks and whether Proxmox marks each one in use, and each Ceph OSD's fill per host and the cluster's health check codes. It reads the whole cluster,
+    # so the only input is the reviewed commit. Proxmox requests are GET only; a dry run reports the same.
+
+  # DESTRUCTIVE: deletes Proxmox backup archives of guests that no longer exist, and of the
+  # (vmid, storage) pairs declared in site-config's proxmox_backup_cleanup_pairs. Dry run first: it
+  # prints the list and its sha256 and deletes nothing; the real run deletes only when confirm_delete
+  # equals that sha256.
+  - name: Clean Up Proxmox Backup Archives (Dev)
+    playbook: platform/playbooks/cleanup-proxmox-backup-archives.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the backup-archive cleanup"
+        type: string
+        required: true
+      - name: confirm_delete
+        title: "Confirm delete (sha256)"
+        description: "Leave empty with Semaphore's Dry run on for the first run. For the real run (Dry run off): the sha256 the dry run printed."
+        type: string
+        required: false
 
   - name: Survey o11y Backup Readiness (Dev)
     playbook: platform/playbooks/survey-o11y-backup-readiness.yml

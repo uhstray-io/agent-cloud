@@ -2,16 +2,22 @@
 //!
 //! The cases run over inline configurations, so an edit to the repository's `areas.yml` cannot
 //! change what they prove. The tests that read the repository itself are the invariant that
-//! every suite module is listed once, the pre-commit hook that runs the commit lane, and the
-//! `testsel` and `lane.sh` runs.
+//! every suite module is listed once, the guard that every repo-wide scan outside the security
+//! set runs when a file it reads changes, the pre-commit hook that runs the commit lane, and the
+//! `testsel` and `lane.sh` runs. This module is in the security set (`areas.yml`), so the guard
+//! runs in every lane.
 
 use std::collections::BTreeSet;
+use std::path::Path;
+use std::sync::LazyLock;
 
 use agent_cloud_tests::lanes::{Config, Lane, Selection, select};
 use agent_cloud_tests::process;
 use agent_cloud_tests::repo;
+use agent_cloud_tests::text;
 use agent_cloud_tests::yaml::{self, Node};
 use proptest::prelude::*;
+use regex::Regex;
 use tempfile::TempDir;
 
 /// Three areas: a static module, a cli module, and one area with a module in each tier.
@@ -34,6 +40,11 @@ areas:
 
 fn config(text: &str) -> Config {
     Config::parse(text, "inline").expect("the inline configuration parses")
+}
+
+/// The repository's own configuration: areas.yml and areas.d/.
+fn repo_config() -> Config {
+    Config::load(&repo::path("platform/tests/areas.yml")).expect("areas.yml and areas.d/ load")
 }
 
 fn secured() -> Config {
@@ -245,40 +256,149 @@ fn a_selection_renders_as_all_none_or_a_sorted_alternation() {
 
 #[test]
 fn every_suite_module_is_listed_exactly_once_in_areas_yml() {
-    let config = Config::load(&repo::path("platform/tests/areas.yml")).expect("areas.yml loads");
-    let main_rs = std::fs::read_to_string(repo::path("platform/tests/suite/main.rs"))
-        .expect("suite/main.rs reads");
-    // `mod x;`, `pub mod x;` and `pub(crate) mod x;`, indented or not: any form declares a module.
-    let declaration = regex::Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;")
-        .expect("valid pattern");
-    let declared: Vec<&str> = declaration
-        .captures_iter(&main_rs)
-        .map(|c| c.get(1).expect("a module name").as_str())
-        .collect();
-    assert!(!declared.is_empty(), "suite/main.rs declares no module");
+    let config = repo_config();
+    // build.rs declares one module per suite/<name>.rs and records the names it compiled.
+    let declared = crate::SUITE_MODULES;
 
     let listed = config.listed_modules();
     let mut problems = Vec::new();
-    for module in &declared {
+    for module in declared {
         let count = listed
             .iter()
             .filter(|name| name.as_str() == *module)
             .count();
         if count != 1 {
             problems.push(format!(
-                "`mod {module};` is listed {count} times in areas.yml, expected once"
+                "suite/{module}.rs is listed {count} times in areas.yml and areas.d/, expected once"
             ));
         }
     }
-    let declared: BTreeSet<&str> = declared.into_iter().collect();
+    let declared: BTreeSet<&str> = declared.iter().copied().collect();
     for name in listed.iter().collect::<BTreeSet<_>>() {
         if !declared.contains(name.as_str()) {
             problems.push(format!(
-                "areas.yml lists `{name}`, which suite/main.rs does not declare"
+                "areas.yml or areas.d/ lists `{name}`, which has no suite/{name}.rs"
             ));
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// `areas.yml` holding [`BASE`] in a fresh directory, with each `(name, text)` written under
+/// `areas.d/` (none, and the directory is not created).
+fn layout(files: &[(&str, &str)]) -> TempDir {
+    let dir = TempDir::new().expect("a temporary directory");
+    std::fs::write(dir.path().join("areas.yml"), BASE).expect("areas.yml writes");
+    if !files.is_empty() {
+        let areas_d = dir.path().join("areas.d");
+        std::fs::create_dir(&areas_d).expect("areas.d creates");
+        for (name, text) in files {
+            std::fs::write(areas_d.join(name), text).expect("an area file writes");
+        }
+    }
+    dir
+}
+
+fn load(dir: &TempDir) -> Result<Config, String> {
+    Config::load(&dir.path().join("areas.yml"))
+}
+
+#[test]
+fn an_area_file_adds_its_area_and_its_always_modules() {
+    let dir = layout(&[
+        (
+            "ported.yml",
+            "paths: [\"platform/ported/**\"]\ntiers: {unit: [ported]}\nalways: {static: [ported_guard]}\n",
+        ),
+        ("README.md", "not an area: ignored\n"),
+    ]);
+
+    let config = load(&dir).expect("the layout loads");
+
+    assert_eq!(
+        run(&config, Lane::Push, "platform/ported/x.sh"),
+        mods(&["ported", "ported_guard"])
+    );
+    assert_eq!(
+        run(&config, Lane::Commit, "docs/guide.md"),
+        mods(&["ported_guard"]),
+        "a file's `always` joins the security set"
+    );
+}
+
+#[test]
+fn a_missing_areas_d_adds_nothing() {
+    let dir = layout(&[]);
+
+    let loaded = load(&dir).expect("areas.yml alone loads");
+
+    assert_eq!(
+        loaded.listed_modules().len(),
+        config(BASE).listed_modules().len()
+    );
+}
+
+/// A refusal case: why, the area files (name, text), and a phrase the error must hold.
+type Refusal<'a> = (&'a str, Vec<(&'a str, String)>, &'a str);
+
+#[test]
+fn an_area_file_that_collides_or_is_malformed_is_refused() {
+    let area = |module: &str| format!("paths: []\ntiers: {{static: [{module}]}}\n");
+    // Each row names its phrase, so it fails for its own reason, not a neighbour's.
+    let cases: Vec<Refusal> = vec![
+        (
+            "an area of areas.yml defined again",
+            vec![("multi.yml", area("other"))],
+            "is already defined",
+        ),
+        (
+            "a module of areas.yml listed again",
+            vec![("other.yml", area("restart_policy"))],
+            "is listed twice",
+        ),
+        (
+            "a module listed in two files",
+            vec![("one.yml", area("shared")), ("two.yml", area("shared"))],
+            "is listed twice",
+        ),
+        (
+            "a module in a file's area and its always",
+            vec![(
+                "one.yml",
+                "paths: []\ntiers: {static: [x]}\nalways: {unit: [x]}\n".to_owned(),
+            )],
+            "is listed twice",
+        ),
+        (
+            "an unknown key",
+            vec![("one.yml", "paths: []\ntiers: {}\npath: []\n".to_owned())],
+            "unknown key",
+        ),
+        (
+            "a missing key",
+            vec![("one.yml", "paths: []\n".to_owned())],
+            "is missing `tiers`",
+        ),
+        (
+            "a stem that is not a module name",
+            vec![("bad-name.yml", area("x"))],
+            "is not a module name",
+        ),
+    ];
+    for (why, files, phrase) in cases {
+        let files: Vec<(&str, &str)> = files.iter().map(|(n, t)| (*n, t.as_str())).collect();
+        let dir = layout(&files);
+
+        let result = load(&dir);
+
+        match result {
+            Ok(_) => panic!("{why}: loaded"),
+            Err(error) => assert!(
+                error.contains(phrase),
+                "{why}: refused for another reason: {error}"
+            ),
+        }
+    }
 }
 
 /// Every path the property draws from: each area's, each one none matches, and a full hit.
@@ -443,28 +563,50 @@ fn testsel_reads_the_change_from_git_and_fails_open() {
 
 #[test]
 fn lane_sh_skips_a_workstation_lane_without_nextest_and_refuses_a_ci_lane() {
-    // Arrange: a PATH with no cargo on it
+    // Arrange: a fake cargo first on PATH that records its arguments and fails every call, the
+    // version probe included, so a cargo installed under /usr/bin or /bin on the host cannot answer
+    // in its place, and a lane that never asks cargo is caught (#1152 review)
     let home = TempDir::new().expect("a temporary home");
+    let bin = home.path().join("bin");
+    std::fs::create_dir(&bin).expect("a bin directory");
+    let calls = home.path().join("cargo-calls");
+    let cargo = bin.join("cargo");
+    std::fs::write(
+        &cargo,
+        format!("#!/bin/sh\necho \"$*\" >> '{}'\nexit 1\n", calls.display()),
+    )
+    .expect("write the fake cargo");
+    std::fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("make the fake cargo executable");
+    let path = format!("{}:/usr/bin:/bin", bin.display());
     let lane_sh = repo::path("platform/tests/lane.sh").display().to_string();
-    let without_cargo = |lane: &str| {
+    let with_failing_cargo = |lane: &str| {
         let mut cmd = process::scrubbed("bash", home.path());
-        cmd.env("PATH", "/usr/bin:/bin").arg(&lane_sh).arg(lane);
+        cmd.env("PATH", &path).arg(&lane_sh).arg(lane);
         cmd
+    };
+
+    let probed = || {
+        let text = std::fs::read_to_string(&calls).unwrap_or_default();
+        let _ = std::fs::remove_file(&calls);
+        text.lines().any(|line| line == "nextest --version")
     };
 
     // Act / Assert: a hook's lane says why it did not run, and lets the commit or push go on
     for lane in ["commit", "push"] {
-        without_cargo(lane)
+        with_failing_cargo(lane)
             .assert()
             .success()
             .stderr(predicates::str::contains("cargo-nextest is not installed"));
+        assert!(probed(), "the {lane} lane never asked cargo for nextest");
     }
     // Act / Assert: CI and the full lane never pass without running the suite
     for lane in ["ci", "full"] {
-        without_cargo(lane)
+        with_failing_cargo(lane)
             .assert()
             .code(1)
             .stderr(predicates::str::contains("needs cargo and cargo-nextest"));
+        assert!(probed(), "the {lane} lane never asked cargo for nextest");
     }
 }
 
@@ -544,4 +686,1192 @@ fn the_pre_commit_configuration_runs_the_commit_lane() {
         field("stages"),
         Some(Node::Seq(vec![Node::Str("pre-commit".to_owned())]))
     );
+}
+
+/// The string literal starting at byte `i` of `src` (`"…"`, or a raw `r"…"` / `r#"…"#`), as
+/// its text and the index after it; `None` when no literal starts there. A plain literal's `\\`
+/// and `\"` are unescaped; a pathspec holds no other escape.
+fn literal_at(src: &str, i: usize) -> Option<(String, usize)> {
+    let rest = &src[i..];
+    if let Some(body) = rest.strip_prefix('"') {
+        let mut text = String::new();
+        let mut chars = body.char_indices();
+        while let Some((at, c)) = chars.next() {
+            match c {
+                '"' => return Some((text, i + 1 + at + 1)),
+                '\\' => text.extend(chars.next().map(|(_, e)| e)),
+                _ => text.push(c),
+            }
+        }
+        panic!("an unterminated string literal at byte {i}");
+    }
+    let hashes = rest
+        .strip_prefix('r')?
+        .bytes()
+        .take_while(|b| *b == b'#')
+        .count();
+    let open = 1 + hashes;
+    if rest.as_bytes().get(open) != Some(&b'"') {
+        return None;
+    }
+    let close = format!("\"{}", "#".repeat(hashes));
+    let end = rest[open + 1..]
+        .find(&close)
+        .unwrap_or_else(|| panic!("an unterminated raw string at byte {i}"));
+    Some((
+        rest[open + 1..open + 1 + end].to_owned(),
+        i + open + 1 + end + close.len(),
+    ))
+}
+
+/// The index after the comment starting at byte `i`, or `None` when none starts there. Block
+/// comments nest, as in Rust: an inner `*/` does not end the outer one.
+fn comment_end(src: &str, i: usize) -> Option<usize> {
+    let rest = &src[i..];
+    if rest.starts_with("//") {
+        return Some(rest.find('\n').map_or(src.len(), |n| i + n));
+    }
+    if !rest.starts_with("/*") {
+        return None;
+    }
+    let (mut depth, mut j) = (0, 0);
+    while j < rest.len() {
+        if rest[j..].starts_with("/*") {
+            depth += 1;
+            j += 2;
+        } else if rest[j..].starts_with("*/") {
+            depth -= 1;
+            j += 2;
+            if depth == 0 {
+                return Some(i + j);
+            }
+        } else {
+            j += rest[j..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    panic!("an unclosed block comment at byte {i}");
+}
+
+/// The index after the char literal starting at byte `i` (`'"'`, `'\''`), or `None` when none
+/// starts there; a lifetime (`'a`) is not one.
+fn char_end(src: &str, i: usize) -> Option<usize> {
+    let rest = src[i..].strip_prefix('\'')?;
+    if rest.starts_with('\\') {
+        return Some(i + 3 + rest[2..].find('\'')? + 1);
+    }
+    let c = rest.chars().next()?;
+    rest[c.len_utf8()..]
+        .starts_with('\'')
+        .then(|| i + 1 + c.len_utf8() + 1)
+}
+
+/// The index after the comment, char literal or string literal starting at byte `i`, or
+/// `None` when none starts there.
+fn skip_at(src: &str, i: usize) -> Option<usize> {
+    comment_end(src, i)
+        .or_else(|| char_end(src, i))
+        .or_else(|| literal_at(src, i).map(|(_, end)| end))
+}
+
+/// The top-level arguments of the call whose `(` is at byte `open`, as source slices.
+fn call_args(src: &str, open: usize) -> Vec<&str> {
+    let (mut depth, mut start, mut i) = (0, open + 1, open + 1);
+    let mut args = vec![];
+    while i < src.len() {
+        if let Some(end) = skip_at(src, i) {
+            i = end;
+            continue;
+        }
+        match src.as_bytes()[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' if depth == 0 => {
+                args.push(&src[start..i]);
+                return args;
+            }
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => {
+                args.push(&src[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += src[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    panic!("an unclosed call at byte {open}");
+}
+
+/// The byte where `const NAME:` or `static NAME:` starts in the code of `src` (comments and
+/// literals skipped, so a doc comment quoting it does not count). A name defined twice, in two
+/// scopes, cannot be told apart without parsing them, so it is an error, as is no definition.
+fn definition(src: &str, name: &str) -> Result<usize, String> {
+    let heads = [format!("const {name}:"), format!("static {name}:")];
+    let mut found = None;
+    let mut i = 0;
+    while i < src.len() {
+        if let Some(end) = skip_at(src, i) {
+            i = end;
+            continue;
+        }
+        if !src[..i].ends_with(is_ident)
+            && heads.iter().any(|head| src[i..].starts_with(head.as_str()))
+            && found.replace(i).is_some()
+        {
+            return Err(format!("`{name}` is defined twice in this file"));
+        }
+        i += src[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    found.ok_or_else(|| format!("`{name}` is not a const or static of this file"))
+}
+
+/// The string literals of `expr`, which may hold only literals, constants defined in `src`,
+/// `&`, `[`, `]`, `,`, whitespace and comments. Anything else (a variable, a call, a macro)
+/// cannot be read without running the code, so it is an error.
+fn literals_of(expr: &str, src: &str) -> Result<Vec<String>, String> {
+    let mut out = vec![];
+    let mut i = 0;
+    while i < expr.len() {
+        if let Some(end) = comment_end(expr, i) {
+            i = end;
+        } else if let Some((text, end)) = literal_at(expr, i) {
+            out.push(text);
+            i = end;
+        } else if expr[i..].starts_with(|c: char| c.is_ascii_uppercase()) {
+            let name: String = expr[i..]
+                .chars()
+                .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_')
+                .collect();
+            i += name.len();
+            let def = definition(src, &name)?;
+            let eq = def + src[def..].find('=').ok_or("a constant without `=`")?;
+            let mut end = eq + 1;
+            while !src[end..].starts_with(';') {
+                end = skip_at(src, end)
+                    .unwrap_or_else(|| end + src[end..].chars().next().map_or(1, char::len_utf8));
+            }
+            out.extend(literals_of(&src[eq + 1..end], src)?);
+        } else if expr[i..].starts_with(|c: char| c.is_whitespace() || "&[],".contains(c)) {
+            i += expr[i..].chars().next().map_or(1, char::len_utf8);
+        } else {
+            return Err(format!("`{}` is not a literal or a constant", expr.trim()));
+        }
+    }
+    Ok(out)
+}
+
+/// A character that continues an identifier.
+fn is_ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// The first byte at or after `i` that is neither whitespace nor in a comment.
+fn skip_trivia(src: &str, mut i: usize) -> usize {
+    loop {
+        if let Some(end) = comment_end(src, i) {
+            i = end;
+        } else if let Some(c) = src[i..].chars().next().filter(|c| c.is_whitespace()) {
+            i += c.len_utf8();
+        } else {
+            return i;
+        }
+    }
+}
+
+/// When a call to `repo::grep` or `repo::ls_files` starts at byte `i`, its name, the index of
+/// the argument holding its pathspecs, and the byte of its `(`. Rust allows whitespace and
+/// comments between the path's tokens and before the `(`, and a raw name (`r#grep`).
+fn scan_call_at(src: &str, i: usize) -> Option<(&'static str, usize, usize)> {
+    // `::` must follow `repo`, and `(` must follow the name (comments and whitespace aside). That
+    // alone rejects `repository::` and `grep_in(`; the check before `repo` keeps `my_repo::grep`
+    // out.
+    if src[..i].ends_with(is_ident) || !src[i..].starts_with("repo") {
+        return None;
+    }
+    let colons = skip_trivia(src, i + "repo".len());
+    src[colons..].strip_prefix("::")?;
+    let mut name_at = skip_trivia(src, colons + 2);
+    if src[name_at..].starts_with("r#") {
+        name_at += 2;
+    }
+    let (name, arg) = [("grep", 1), ("ls_files", 0)]
+        .into_iter()
+        .find(|(name, _)| src[name_at..].starts_with(name))?;
+    let open = skip_trivia(src, name_at + name.len());
+    src[open..].starts_with('(').then_some((name, arg, open))
+}
+
+/// Every `repo::grep(pattern, pathspecs)` and `repo::ls_files(pathspecs)` call in the code of
+/// `src` (comments and string literals skipped), as its line and its pathspecs.
+fn repo_wide_scans(src: &str) -> Result<Vec<(usize, Vec<String>)>, String> {
+    let mut scans = vec![];
+    let mut i = 0;
+    while i < src.len() {
+        if let Some(end) = skip_at(src, i) {
+            i = end;
+            continue;
+        }
+        if let Some((name, arg, open)) = scan_call_at(src, i) {
+            let line = src[..i].matches('\n').count() + 1;
+            let args = call_args(src, open);
+            let specs = args
+                .get(arg)
+                .ok_or_else(|| format!("line {line}: `repo::{name}` without its pathspecs"))?;
+            scans.push((
+                line,
+                literals_of(specs, src).map_err(|e| format!("line {line}: {e}"))?,
+            ));
+            i = open;
+        }
+        i += src[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    Ok(scans)
+}
+
+#[test]
+fn repo_wide_scans_reads_literals_constants_and_skips_comments_and_strings() {
+    // Arrange: a pattern holding a paren and a comma; a constant list with an exclusion, after a
+    // constant whose name it prefixes and a doc comment that quotes it; char literals of a quote
+    // and a paren; a scan named only in a comment, in a string and in a raw string holding an
+    // unpaired quote; a non-ASCII name in code; a lookalike function; a nested block comment whose
+    // inner `*/` does not end it; a comment between a callee and its `(`, and before and after the
+    // path's `::`; and a raw name.
+    let src = r##"
+/// `const SPECS: [&str; 1] = ["decoy"];` in a doc comment is not the definition.
+const SPECS_2: [&str; 1] = ["wrong"];
+const SPECS: [&str; 2] = [":(glob)platform/**/*.yml", ":!platform/x.yml"];
+fn f() {
+    let (q, p) = ('"', '(');
+    let raw = r#"a " repo::grep("x", &["raw"])"#;
+    let café = 1;
+    // repo::grep("no", &["comment"])
+    let s = "repo::ls_files(&[\"string\"])";
+    my_repo::grep("no", &["lookalike"]);
+    repo::grep(r"a(b, c", &["platform", "agents"]);
+    repo::ls_files(&SPECS);
+    /* outer /* inner */ repo::grep("no", &["nested"]); // */ repo::ls_files(&["after"]);
+    repo::ls_files /* files */ (&["spaced"]);
+    repo::grep_in(dir, "no", &["boundary"]);
+    repo/* c */::grep("x", &["inpath"]);
+    repo::r#ls_files(&["raw"]);
+    repo:: /* c */ r#grep("x", &["afterpath"]);
+    repository::grep("no", &["prefix"]);
+    f(repo, grep("no", &["nocolons"]));
+}
+"##;
+
+    // Act
+    let scans = repo_wide_scans(src).expect("the scans read");
+
+    // Assert
+    assert_eq!(
+        scans,
+        [
+            (12, vec!["platform".to_owned(), "agents".to_owned()]),
+            (
+                13,
+                vec![
+                    ":(glob)platform/**/*.yml".to_owned(),
+                    ":!platform/x.yml".to_owned()
+                ]
+            ),
+            (14, vec!["after".to_owned()]),
+            (15, vec!["spaced".to_owned()]),
+            (17, vec!["inpath".to_owned()]),
+            (18, vec!["raw".to_owned()]),
+            (19, vec!["afterpath".to_owned()]),
+        ]
+    );
+}
+
+#[test]
+fn repo_wide_scans_refuses_a_constant_defined_twice() {
+    // Arrange: one name in two scopes.
+    let src = "const S: [&str; 1] = [\"outer\"];\nfn f() { const S: [&str; 1] = [\"inner\"]; repo::ls_files(&S); }";
+
+    // Act
+    let refusal = repo_wide_scans(src).expect_err("a refusal");
+
+    // Assert
+    assert!(refusal.contains("`S` is defined twice"), "{refusal}");
+}
+
+#[test]
+fn repo_wide_scans_refuses_a_pathspec_it_cannot_read() {
+    // Arrange: a pathspec list held in a variable, a non-ASCII name in a call's arguments, and
+    // one in a constant's value; each is refused by name, never a panic.
+    let cases = [
+        ("fn f(dirs: &[&str]) { repo::grep(\"x\", dirs); }", "`dirs`"),
+        ("fn f() { repo::grep(\"x\", café); }", "`café`"),
+        (
+            "const S: [&str; 1] = [café];\nfn f() { repo::ls_files(&S); }",
+            "`[café]`",
+        ),
+    ];
+
+    for (src, name) in cases {
+        // Act
+        let refusal = repo_wide_scans(src).expect_err("a refusal");
+
+        // Assert
+        assert!(
+            refusal.contains(&format!("{name} is not a literal")),
+            "{refusal}"
+        );
+    }
+}
+
+/// Whether a change to `file` alone selects `module` in the push lane (everything counts).
+fn selects(config: &Config, module: &str, file: &String) -> bool {
+    match select(config, Lane::Push, std::slice::from_ref(file)) {
+        Selection::All => true,
+        Selection::Modules(selected) => selected.contains(module),
+    }
+}
+
+/// The scans in `src` (module `module`, file `rel`) whose files do not all select the module in
+/// the push lane under `config`, as one line each, and how many scans it read.
+fn unselected_scans(config: &Config, module: &str, rel: &str, src: &str) -> (usize, Vec<String>) {
+    let scans = repo_wide_scans(src).unwrap_or_else(|e| panic!("{rel}: {e}"));
+    let mut problems = vec![];
+    for (line, specs) in &scans {
+        let specs: Vec<&str> = specs.iter().map(String::as_str).collect();
+        let files = repo::ls_files(&specs);
+        assert!(
+            !files.is_empty(),
+            "{rel}:{line}: {specs:?} cover no tracked file"
+        );
+        let missed: Vec<String> = files
+            .into_iter()
+            .filter(|file| !selects(config, module, file))
+            .collect();
+        if !missed.is_empty() {
+            problems.push(format!(
+                "{rel}:{line} scans {} file(s) whose change does not select {module}, e.g. {}",
+                missed.len(),
+                missed[..missed.len().min(3)].join(", ")
+            ));
+        }
+    }
+    (scans.len(), problems)
+}
+
+#[test]
+fn a_scan_beyond_its_area_is_reported_and_one_within_it_is_not() {
+    // Arrange: BASE's `common_sh` area claims platform/lib/common.sh only, and its
+    // `restart_policy` area claims the compose files.
+    let config = config(BASE);
+    let within = r#"fn t() { repo::grep("x", &[":(glob)platform/**/*compose*.yml"]); }"#;
+    let beyond = r#"fn t() { repo::grep("x", &["platform/lib/common.sh", ":(glob)platform/**/*compose*.yml"]); }"#;
+
+    // Act
+    let (_, as_restart_policy) = unselected_scans(&config, "restart_policy", "inline.rs", within);
+    let (scans, as_common_sh) = unselected_scans(&config, "common_sh", "inline.rs", beyond);
+
+    // Assert
+    assert!(as_restart_policy.is_empty(), "{as_restart_policy:?}");
+    assert_eq!(scans, 1);
+    assert_eq!(as_common_sh.len(), 1, "{as_common_sh:?}");
+    assert!(
+        as_common_sh[0].starts_with("inline.rs:1 scans ")
+            && as_common_sh[0].contains("whose change does not select common_sh"),
+        "{as_common_sh:?}"
+    );
+}
+
+/// A module outside the security set runs only when a change selects its area. A scan that
+/// reads files outside the area's paths would then be skipped by a change that adds an
+/// offender there, wherever another area claims that file. So every file such a scan reads must
+/// select the module in the push lane: by its area, by `full`, or by being unclassified (which
+/// runs everything). A static module that scans beyond its area belongs in `always`
+/// (areas.d/README.md).
+#[test]
+fn every_repo_wide_scan_runs_when_a_file_it_reads_changes() {
+    // Arrange
+    let config = repo_config();
+
+    // Act
+    let (scans, problems) = beyond_security_set(&config, |module, rel, src| {
+        unselected_scans(&config, module, rel, src)
+    });
+
+    // Assert
+    assert!(
+        scans > 0,
+        "no repo-wide scan outside the security set; the reader is broken"
+    );
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// Every call in the code of `src` (comments and literals skipped) that has a whole argument
+/// made of string literals, inline or through constants, as its line and those literals. A call
+/// is a name followed by `(`; a method (`.name(`) is a needle, not a read, and a macro
+/// (`name!(`) is not a call. A call's arguments are walked too, so a nested call is visited.
+fn path_reads(src: &str) -> Vec<(usize, Vec<String>)> {
+    let mut reads = vec![];
+    let mut i = 0;
+    while i < src.len() {
+        if let Some(end) = skip_at(src, i) {
+            i = end;
+            continue;
+        }
+        if src[i..].starts_with(is_ident) && !src[..i].ends_with(is_ident) {
+            let name_end = i + src[i..]
+                .find(|c: char| !is_ident(c))
+                .unwrap_or(src.len() - i);
+            let before = src[..i].trim_end();
+            let method = before.ends_with('.') && !before.ends_with("..");
+            let open = skip_trivia(src, name_end);
+            if !method && src[open..].starts_with('(') {
+                let literals: Vec<String> = call_args(src, open)
+                    .into_iter()
+                    .filter_map(|arg| literals_of(arg, src).ok())
+                    .flatten()
+                    .collect();
+                if !literals.is_empty() {
+                    reads.push((src[..i].matches('\n').count() + 1, literals));
+                }
+            }
+            i = name_end;
+            continue;
+        }
+        i += src[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    reads
+}
+
+/// The literals in `src` (module `module`, file `rel`) that name a file in `tracked`, counted,
+/// and one line per such file whose change does not select the module in the push lane.
+fn unselected_reads(
+    config: &Config,
+    module: &str,
+    rel: &str,
+    src: &str,
+    tracked: &BTreeSet<String>,
+) -> (usize, Vec<String>) {
+    let mut count = 0;
+    let mut problems = vec![];
+    for (line, literals) in path_reads(src) {
+        let files = literals.iter().filter_map(|l| normalise("", l));
+        for file in files.filter(|f| tracked.contains(f)) {
+            count += 1;
+            if !selects(config, module, &file) {
+                problems.push(format!(
+                    "{rel}:{line} reads {file}, whose change does not select {module}"
+                ));
+            }
+        }
+    }
+    (count, problems)
+}
+
+#[test]
+fn path_reads_reads_call_arguments_and_skips_needles() {
+    // Arrange: reads by inline literal, constant, borrowed constant, array constant, a nested
+    // path call, a type's constructor and a call after a range; needles in a method (spaced
+    // dot too), a macro, a comment, a string and a for loop's array.
+    let src = r#"const X: &str = "c/x.yml";
+const ARR: [&str; 2] = ["d/1", "d/2"];
+const N2: &str = "n2";
+const Y: &str = "e/y";
+fn t() {
+    text::read("a/x.yml");
+    f(X);
+    f(&X);
+    g(&ARR);
+    text::read(&repo::path(Y));
+    Path::new("b");
+    s.contains("n1");
+    s . starts_with(N2);
+    format!("{}", "n3");
+    assert!(x == "n8");
+    // f("n4")
+    let q = "f(\"n5\")";
+    for f in ["n6"] {}
+    let r = 0..g("n7");
+}
+"#;
+
+    // Act
+    let reads = path_reads(src);
+
+    // Assert
+    let s = |v: &[&str]| v.iter().map(|x| (*x).to_owned()).collect::<Vec<_>>();
+    assert_eq!(
+        reads,
+        [
+            (6, s(&["a/x.yml"])),
+            (7, s(&["c/x.yml"])),
+            (8, s(&["c/x.yml"])),
+            (9, s(&["d/1", "d/2"])),
+            (10, s(&["e/y"])),
+            (11, s(&["b"])),
+            (19, s(&["n7"])),
+        ]
+    );
+}
+
+#[test]
+fn a_read_beyond_its_area_is_reported_and_one_within_it_is_not() {
+    // Arrange: BASE's common_sh claims platform/lib/common.sh; a compose file is
+    // restart_policy's; "untracked.txt" is not in the tracked set.
+    let config = config(BASE);
+    let compose = "platform/services/x/compose.yml";
+    let tracked: BTreeSet<String> = ["platform/lib/common.sh", compose]
+        .map(str::to_owned)
+        .into();
+    let within = r#"fn t() { text::read("platform/lib/common.sh"); f("untracked.txt"); }"#;
+    let beyond = format!(r#"fn t() {{ text::read("{compose}"); text::read("./{compose}"); }}"#);
+
+    // Act
+    let (read, ok) = unselected_reads(&config, "common_sh", "inline.rs", within, &tracked);
+    let (_, bad) = unselected_reads(&config, "common_sh", "inline.rs", &beyond, &tracked);
+
+    // Assert
+    assert_eq!(read, 1);
+    assert!(ok.is_empty(), "{ok:?}");
+    let message = format!("inline.rs:1 reads {compose}, whose change does not select common_sh");
+    assert_eq!(bad, [message.clone(), message]);
+}
+
+/// `check` (module, its source file, the source) summed over every suite module outside the
+/// security set: how many reads it counted, and its problem lines.
+fn beyond_security_set(
+    config: &Config,
+    mut check: impl FnMut(&str, &str, &str) -> (usize, Vec<String>),
+) -> (usize, Vec<String>) {
+    let Selection::Modules(always) = select(config, Lane::Push, &[]) else {
+        panic!("an empty change selects the security set, not everything");
+    };
+    let mut count = 0;
+    let mut problems = vec![];
+    for module in crate::SUITE_MODULES {
+        if always.contains(*module) {
+            continue;
+        }
+        let rel = format!("platform/tests/suite/{module}.rs");
+        let (read, found) = check(module, &rel, &text::read(&rel));
+        count += read;
+        problems.extend(found);
+    }
+    (count, problems)
+}
+
+/// A literal that names a tracked file and is a whole argument of a call is a read of that file,
+/// so a change to the file must select the module that reads it, as for a repo-wide scan.
+#[test]
+fn every_fixed_path_read_runs_when_its_file_changes() {
+    // Arrange
+    let config = repo_config();
+    let tracked: BTreeSet<String> = repo::ls_files(&[]).into_iter().collect();
+
+    // Act
+    let (reads, problems) = beyond_security_set(&config, |module, rel, src| {
+        unselected_reads(&config, module, rel, src, &tracked)
+    });
+
+    // Assert
+    assert!(
+        reads > 0,
+        "no fixed-path read outside the security set; the reader is broken"
+    );
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// The repository's `areas.yml` and each tracked area file, parsed.
+fn area_documents() -> (Node, Vec<Node>) {
+    let main = yaml::load_one(&repo::path("platform/tests/areas.yml")).expect("areas.yml loads");
+    let area_files = repo::ls_files(&[":(glob)platform/tests/areas.d/*.yml"])
+        .iter()
+        .map(|f| yaml::load_one(&repo::path(f)).unwrap_or_else(|| panic!("{f} loads")))
+        .collect();
+    (main, area_files)
+}
+
+/// The modules of every `playbook` tier: those of `areas.yml`'s areas and of each area file.
+fn playbook_modules(main: &Node, area_files: &[Node]) -> BTreeSet<String> {
+    let areas = main.get("areas").and_then(Node::as_map).unwrap_or_default();
+    areas
+        .iter()
+        .map(|(_, area)| area)
+        .chain(area_files)
+        .filter_map(|area| area.get("tiers")?.get("playbook")?.as_seq())
+        .flatten()
+        .filter_map(Node::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// One line per module and loaded file whose change does not select the module in the push lane.
+fn unloaded_playbook_modules(
+    config: &Config,
+    modules: &BTreeSet<String>,
+    loaded: &[String],
+) -> Vec<String> {
+    let mut problems = vec![];
+    for module in modules {
+        for path in loaded {
+            if !selects(config, module, path) {
+                problems.push(format!("{path} does not select {module}"));
+            }
+        }
+    }
+    problems
+}
+
+#[test]
+fn playbook_modules_reads_areas_yml_and_area_files() {
+    // Arrange: a playbook tier in areas.yml, one in an area file, and other tiers that are not.
+    let main = yaml::parse(
+        "areas:\n  a:\n    tiers: {static: [a_static], playbook: [a_play]}\n  b:\n    tiers: {cli: [b_cli]}\n",
+        "inline",
+    )
+    .remove(0);
+    let file = yaml::parse(
+        "paths: [x]\ntiers: {playbook: [f_play], unit: [f_unit]}\n",
+        "inline",
+    )
+    .remove(0);
+
+    // Act
+    let modules = playbook_modules(&main, &[file]);
+
+    // Assert
+    assert_eq!(modules, ["a_play", "f_play"].map(str::to_owned).into());
+}
+
+#[test]
+fn a_playbook_module_unselected_by_a_loaded_file_is_reported() {
+    // Arrange: two areas claim the loaded files; multi, owning multi_playbook, claims neither.
+    let extra = "\n  cfg:\n    paths: [\"ansible.cfg\"]\n    tiers: {static: [cfg_static]}\n  plugins:\n    paths: [\"platform/playbooks/filter_plugins/x.py\"]\n    tiers: {static: [plugin_static]}\n";
+    let without = config(&format!("{BASE}{extra}"));
+    let with = config(&format!("{BASE}{extra}").replace(
+        "paths: [\"platform/services/multi/**\"]",
+        "paths: [\"platform/services/multi/**\", \"ansible.cfg\", \"platform/playbooks/filter_plugins/x.py\"]",
+    ));
+    let modules: BTreeSet<String> = ["multi_playbook".to_owned()].into();
+    let loaded = ["ansible.cfg", "platform/playbooks/filter_plugins/x.py"].map(str::to_owned);
+
+    // Act
+    let missing = unloaded_playbook_modules(&without, &modules, &loaded);
+    let none = unloaded_playbook_modules(&with, &modules, &loaded);
+
+    // Assert
+    assert_eq!(missing.len(), 2, "{missing:?}");
+    assert!(none.is_empty(), "{none:?}");
+}
+
+/// ansible.cfg's settings, pinned whole: its lines without trailing whitespace, blank lines or
+/// lines starting with `#`. The guard keeps no reader of Ansible's config grammar (three review
+/// passes each found a form a reader dropped); any other change to the file fails the test below.
+const CFG_SETTINGS: [&str; 5] = [
+    "[defaults]",
+    "show_custom_stats = True",
+    "stdout_callback = redact_requests",
+    "callback_plugins = ./callback_plugins",
+    "filter_plugins = ./platform/playbooks/filter_plugins",
+];
+
+/// Every key `CFG_SETTINGS` may hold, and whether its value is a directory Ansible loads plugins
+/// from. That is Ansible's meaning, which nothing here can derive, so it is declared once, here.
+const CFG_KEYS: [(&str, bool); 4] = [
+    ("show_custom_stats", false),
+    ("stdout_callback", false),
+    ("callback_plugins", true),
+    ("filter_plugins", true),
+];
+
+/// The setting lines of an ansible.cfg text: trailing whitespace trimmed, without blank lines or
+/// lines whose first character is `#`. An indented line is kept, so it fails the pin.
+fn cfg_settings(cfg: &str) -> Vec<&str> {
+    cfg.lines()
+        .map(str::trim_end)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect()
+}
+
+/// The plugin directories `settings` loads, classified by `CFG_KEYS`: `[defaults]` first, then
+/// `key = ./dir` lines. A line, key or value it cannot classify, or a missing key, is an error.
+fn cfg_dirs(settings: &[&str]) -> Result<Vec<String>, String> {
+    let Some((&"[defaults]", lines)) = settings.split_first() else {
+        return Err("line 1 is not [defaults]".into());
+    };
+    let mut seen = vec![];
+    let mut dirs = vec![];
+    for line in lines {
+        let (key, value) = line
+            .split_once(" = ")
+            .ok_or(format!("not `key = value`: {line}"))?;
+        let &(_, loads) = CFG_KEYS
+            .iter()
+            .find(|(k, _)| *k == key)
+            .ok_or(format!("{key} is not in CFG_KEYS"))?;
+        if loads {
+            match value.strip_prefix("./") {
+                Some(dir) if !dir.is_empty() && !dir.contains(':') => dirs.push(dir.to_owned()),
+                _ => return Err(format!("{key} is not one ./ directory: {value}")),
+            }
+        }
+        seen.push(key);
+    }
+    match CFG_KEYS.iter().find(|(k, _)| !seen.contains(k)) {
+        Some((k, _)) => Err(format!("{k} is missing")),
+        None => Ok(dirs),
+    }
+}
+
+#[test]
+fn the_cfg_pin_ignores_trailing_whitespace_and_column_0_comments_only() {
+    // Arrange
+    let real = text::read("ansible.cfg");
+    let commented = format!("{real}# a note\n\n");
+    let ignored = [
+        real.replace("= True", "= True  "),
+        real.replace('\n', "\r\n"),
+    ];
+    let changes = [
+        real.replacen("\nstdout_callback", "\n    stdout_callback", 1),
+        format!("{real}  # a note\n"),
+        format!("{real}library = ./x\n"),
+        real.replace("./platform/playbooks/filter_plugins", "./other"),
+    ];
+
+    // Act and assert
+    assert_eq!(cfg_settings(&commented), CFG_SETTINGS);
+    for same in &ignored {
+        assert_ne!(same, &real);
+        assert_eq!(cfg_settings(same), CFG_SETTINGS, "{same:?}");
+    }
+    for changed in &changes {
+        assert_ne!(cfg_settings(changed), CFG_SETTINGS, "{changed}");
+    }
+}
+
+#[test]
+fn cfg_dirs_classifies_every_pinned_key_and_refuses_the_rest() {
+    // Arrange
+    let with = |extra: &'static str| [&CFG_SETTINGS[..], &[extra]].concat();
+    let refused = [
+        with("library = ./x"),
+        with("filter_plugins = plugins"),
+        with("filter_plugins = ./"),
+        with("filter_plugins = ./a:./b"),
+        with("filter_plugins=./x"),
+        CFG_SETTINGS[..4].to_vec(),
+        [&["[other]"][..], &CFG_SETTINGS[1..]].concat(),
+    ];
+
+    // Act and assert
+    assert_eq!(
+        cfg_dirs(&CFG_SETTINGS).unwrap(),
+        ["callback_plugins", "platform/playbooks/filter_plugins"]
+    );
+    for settings in &refused {
+        assert!(cfg_dirs(settings).is_err(), "{settings:?}");
+    }
+}
+
+/// ansible.cfg loads every plugin in each directory it names (filter and callback plugins) into
+/// every playbook run, so a change to it or to any of them must select every playbook-tier module.
+#[test]
+fn every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes() {
+    // Arrange
+    let config = repo_config();
+    let (main, area_files) = area_documents();
+    assert_eq!(
+        cfg_settings(&text::read("ansible.cfg")),
+        CFG_SETTINGS,
+        "ansible.cfg changed: update CFG_SETTINGS, and classify a new key in CFG_KEYS"
+    );
+    let dirs = cfg_dirs(&CFG_SETTINGS).unwrap_or_else(|e| panic!("CFG_SETTINGS: {e}"));
+    let mut loaded = vec!["ansible.cfg".to_owned()];
+    for dir in dirs {
+        let files = repo::ls_files(&[&format!("{dir}/")]);
+        assert!(!files.is_empty(), "{dir} holds no tracked file");
+        loaded.extend(files);
+    }
+
+    // Act
+    let modules = playbook_modules(&main, &area_files);
+    let problems = unloaded_playbook_modules(&config, &modules, &loaded);
+
+    // Assert
+    assert!(
+        !modules.is_empty(),
+        "no playbook-tier module; the reader is broken"
+    );
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// The actions that load another file into a playbook run. Each is read under the three spellings
+/// Ansible runs: the short name, `ansible.builtin.<short>` and `ansible.legacy.<short>`
+/// (deploy_playbooks_preflight.rs, IMPORT_KEYS).
+const CHAIN_SHORTS: [&str; 3] = ["import_playbook", "include_tasks", "import_tasks"];
+
+/// Chain targets the walk may not resolve, each as (file, target, reason). A closed list: a row
+/// that matches no refusal is stale and reported.
+const CHAIN_EXCEPTIONS: &[(&str, &str, &str)] = &[];
+
+/// A target the chain walk cannot resolve: the file naming it, the line, the target and why.
+/// Matched by value, so an exception for one target never accepts another that contains it.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Unresolved {
+    file: String,
+    line: usize,
+    target: String,
+    why: &'static str,
+}
+
+impl std::fmt::Display for Unresolved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}:{}: {} does not resolve to a tracked file ({})",
+            self.file, self.line, self.target, self.why
+        )
+    }
+}
+
+/// `dir/tail` with `.` and `..` resolved lexically; `None` above the repository root.
+fn normalise(dir: &str, tail: &str) -> Option<String> {
+    let mut parts = vec![];
+    for part in dir.split('/').chain(tail.split('/')) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// The tracked file `path`, or every tracked file under the directory `path`.
+fn tracked_at(path: &str, tracked: &BTreeSet<String>) -> Vec<String> {
+    let prefix = format!("{path}/");
+    tracked
+        .iter()
+        .filter(|f| *f == path || f.starts_with(&prefix))
+        .cloned()
+        .collect()
+}
+
+/// A string that is `{{ playbook_dir }}/<path>` and nothing else; the path is captured.
+static PLAYBOOK_DIR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\{\{\s*playbook_dir\s*\}\}/(.+)$").expect("the pattern compiles")
+});
+
+/// Every file the playbook `start` loads (itself included): `import_playbook` targets walked
+/// recursively, `include_tasks`/`import_tasks` targets, and `{{ playbook_dir }}/<path>` strings,
+/// each resolved against the directory of the file that names it. Second: one refusal per target
+/// the walk cannot resolve to a tracked file or directory.
+fn chain_files(
+    root: &Path,
+    start: &str,
+    tracked: &BTreeSet<String>,
+) -> (BTreeSet<String>, Vec<Unresolved>) {
+    let mut files = BTreeSet::from([start.to_owned()]);
+    let mut refusals = vec![];
+    let mut queue = vec![start.to_owned()];
+    let mut walked = BTreeSet::new();
+    while let Some(file) = queue.pop() {
+        if !walked.insert(file.clone()) {
+            continue;
+        }
+        let text =
+            std::fs::read_to_string(root.join(&file)).unwrap_or_else(|e| panic!("{file}: {e}"));
+        let Some(doc) = yaml::parse(&text, &file).into_iter().next() else {
+            continue;
+        };
+        let dir = file.rsplit_once('/').map_or("", |(d, _)| d);
+        // (target, why it is refused, whether it is a playbook to walk, whether it may be a
+        // directory: only a `{{ playbook_dir }}` path may, a directive loads one file)
+        let mut targets: Vec<(String, Option<&'static str>, bool, bool)> = vec![];
+        for task in yaml::tasks(&doc) {
+            for (key, value) in task.as_map().unwrap_or_default() {
+                let Some(key) = key.as_str() else { continue };
+                let short = key
+                    .strip_prefix("ansible.builtin.")
+                    .or_else(|| key.strip_prefix("ansible.legacy."))
+                    .unwrap_or(key);
+                if !CHAIN_SHORTS.contains(&short) {
+                    continue;
+                }
+                match value.as_str().or_else(|| value.get("file")?.as_str()) {
+                    Some(t) => {
+                        targets.push((t.to_owned(), None, short == "import_playbook", false))
+                    }
+                    None => targets.push((
+                        key.to_owned(),
+                        Some("not a string or a mapping with a string file"),
+                        false,
+                        false,
+                    )),
+                }
+            }
+        }
+        for s in yaml::strings(&doc, false) {
+            if let Some(tail) = PLAYBOOK_DIR.captures(s).map(|c| c[1].to_owned()) {
+                let why = tail
+                    .contains(['{', '}', '(', ')'])
+                    .then_some("a templated or computed path");
+                targets.push((tail, why, false, true));
+            }
+        }
+        for (target, why, walk, dir_ok) in targets {
+            let why = why
+                .or_else(|| target.contains("{{").then_some("a templated path"))
+                .or_else(|| target.starts_with('/').then_some("an absolute path"));
+            let resolved = normalise(dir, &target);
+            let mut found = resolved
+                .as_deref()
+                .map(|r| tracked_at(r, tracked))
+                .unwrap_or_default();
+            found.retain(|f| dir_ok || Some(f) == resolved.as_ref());
+            let why = why.or(match (&resolved, found.is_empty()) {
+                (None, _) => Some("above the repository root"),
+                (_, true) => Some("not tracked"),
+                _ => None,
+            });
+            if let Some(why) = why {
+                let line = text
+                    .lines()
+                    .position(|l| l.contains(target.as_str()))
+                    .map_or(0, |i| i + 1);
+                refusals.push(Unresolved {
+                    file: file.clone(),
+                    line,
+                    target,
+                    why,
+                });
+                continue;
+            }
+            for f in found {
+                if walk {
+                    queue.push(f.clone());
+                }
+                files.insert(f);
+            }
+        }
+    }
+    (files, refusals)
+}
+
+/// The refusals no exception row accepts, then one line per row that accepts no refusal.
+fn unexcepted(refusals: &[Unresolved], exceptions: &[(&str, &str, &str)]) -> Vec<String> {
+    let accepts = |r: &Unresolved, (file, target, _): &(&str, &str, &str)| {
+        r.file == *file && r.target == *target
+    };
+    let mut problems: Vec<String> = refusals
+        .iter()
+        .filter(|r| !exceptions.iter().any(|e| accepts(r, e)))
+        .map(Unresolved::to_string)
+        .collect();
+    for e @ (file, target, reason) in exceptions {
+        if !refusals.iter().any(|r| accepts(r, e)) {
+            problems.push(format!("stale exception: {file} {target} ({reason})"));
+        }
+    }
+    problems
+}
+
+/// A temporary repository holding `files` (path, content), and their tracked set.
+fn chain_repo(files: &[(&str, &str)]) -> (TempDir, BTreeSet<String>) {
+    let root = TempDir::new().expect("a temporary directory");
+    for (path, content) in files {
+        let at = root.path().join(path);
+        std::fs::create_dir_all(at.parent().expect("a parent")).expect("the directory is made");
+        std::fs::write(at, content).expect("the file is written");
+    }
+    let tracked = files.iter().map(|(p, _)| (*p).to_owned()).collect();
+    (root, tracked)
+}
+
+#[test]
+fn chain_files_follows_imports_includes_and_playbook_dir_paths() {
+    // Arrange: a imports b, b imports c; a commented import is not followed, nor a path with
+    // more lines after it, and a directive naming a directory is refused.
+    let a = r#"# - import_playbook: z.yml
+- ansible.builtin.import_playbook: b.yml
+- hosts: all
+  tasks:
+    - include_tasks: tasks
+    - include_tasks: tasks/t.yml
+    - ansible.builtin.import_tasks: {file: tasks/u.yml}
+    - ansible.legacy.include_tasks: tasks/v.yml
+    - command: "{{ playbook_dir }}/files/s.py"
+      args: {chdir: "{{ playbook_dir }}/../infra/d"}
+    - debug: {msg: "{{ playbook_dir }}/files/n.py\nrest"}
+"#;
+    let (root, tracked) = chain_repo(&[
+        ("p/a.yml", a),
+        ("p/b.yml", "- import_playbook: c.yml\n"),
+        ("p/c.yml", "- hosts: all\n"),
+        ("p/z.yml", "- hosts: all\n"),
+        ("p/tasks/t.yml", "- debug: {}\n"),
+        ("p/tasks/u.yml", "- debug: {}\n"),
+        ("p/tasks/v.yml", "- debug: {}\n"),
+        ("p/files/s.py", ""),
+        ("p/files/n.py", ""),
+        ("infra/d/1.tf", ""),
+        ("infra/d/2.tf", ""),
+    ]);
+
+    // Act
+    let (files, refusals) = chain_files(root.path(), "p/a.yml", &tracked);
+
+    // Assert
+    let expected = [
+        "infra/d/1.tf",
+        "infra/d/2.tf",
+        "p/a.yml",
+        "p/b.yml",
+        "p/c.yml",
+        "p/files/s.py",
+        "p/tasks/t.yml",
+        "p/tasks/u.yml",
+        "p/tasks/v.yml",
+    ];
+    assert_eq!(files, expected.map(str::to_owned).into());
+    let refused = refusals.iter().map(|r| (r.target.as_str(), r.why));
+    assert!(refused.eq([("tasks", "not tracked")]), "{refusals:?}");
+}
+
+#[test]
+fn chain_files_refuses_a_target_it_cannot_resolve() {
+    // Arrange: one playbook per case, each line naming the target the refusal must name.
+    let cases = [
+        ("- import_playbook: \"{{ x }}.yml\"\n", "{{ x }}.yml"),
+        ("- import_playbook: missing.yml\n", "missing.yml"),
+        ("- import_playbook: ../../up.yml\n", "../../up.yml"),
+        ("- import_playbook: /b.yml\n", "/b.yml"),
+        ("- debug: {msg: \"{{ playbook_dir }}/f{x.py\"}\n", "f{x.py"),
+        ("- debug: {msg: \"{{ playbook_dir }}/f}x.py\"}\n", "f}x.py"),
+        ("- debug: {msg: \"{{ playbook_dir }}/f(x.py\"}\n", "f(x.py"),
+        ("- debug: {msg: \"{{ playbook_dir }}/f)x.py\"}\n", "f)x.py"),
+        ("- import_playbook: [a.yml]\n", "import_playbook"),
+    ];
+    for (content, target) in cases {
+        let (root, mut tracked) = chain_repo(&[("p/a.yml", content)]);
+        // Every target but the missing one is tracked, so each check is the only refusal.
+        if let Some(path) = normalise("p", target).filter(|_| target != "missing.yml") {
+            tracked.insert(path);
+        }
+
+        // Act
+        let (_, refusals) = chain_files(root.path(), "p/a.yml", &tracked);
+
+        // Assert
+        assert_eq!(refusals.len(), 1, "{content}: {refusals:?}");
+        assert_eq!(
+            (
+                refusals[0].file.as_str(),
+                refusals[0].line,
+                refusals[0].target.as_str()
+            ),
+            ("p/a.yml", 1, target),
+            "{content}"
+        );
+        assert!(
+            refusals[0]
+                .to_string()
+                .starts_with(&format!("p/a.yml:1: {target} does not resolve")),
+            "{content}: {refusals:?}"
+        );
+    }
+}
+
+#[test]
+fn an_exception_accepts_its_refusal_and_a_stale_one_is_reported() {
+    // Arrange: one row per refusal, a stale row, and a refusal whose target holds another row's
+    // target after `: ` (its message contains that row's), which no row accepts.
+    let refusal = |file: &str, target: &str| Unresolved {
+        file: file.to_owned(),
+        line: 3,
+        target: target.to_owned(),
+        why: "not tracked",
+    };
+    let refusals = [refusal("p/a.yml", "x.yml"), refusal("p/c.yml", "d: w.yml")];
+    let rows = [
+        ("p/a.yml", "x.yml", "why"),
+        ("p/b.yml", "y.yml", "gone"),
+        ("p/c.yml", "w.yml", "a different target"),
+    ];
+
+    // Act
+    let problems = unexcepted(&refusals, &rows);
+
+    // Assert
+    assert_eq!(
+        problems,
+        [
+            "p/c.yml:3: d: w.yml does not resolve to a tracked file (not tracked)",
+            "stale exception: p/b.yml y.yml (gone)",
+            "stale exception: p/c.yml w.yml (a different target)",
+        ]
+    );
+}
+
+/// The playbooks `src` reads by fixed path, where its chains start: tracked `.yml`/`.yaml` under
+/// platform/playbooks or platform/semaphore, not a task file, resolved as fixed-path reads are.
+fn chain_starts(src: &str, tracked: &BTreeSet<String>) -> BTreeSet<String> {
+    path_reads(src)
+        .into_iter()
+        .flat_map(|(_, literals)| literals)
+        .filter(|l| !l.starts_with('/'))
+        .filter_map(|l| normalise("", &l))
+        .filter(|f| {
+            tracked.contains(f)
+                && (f.ends_with(".yml") || f.ends_with(".yaml"))
+                && (f.starts_with("platform/playbooks/") || f.starts_with("platform/semaphore/"))
+                && !f.starts_with("platform/playbooks/tasks/")
+        })
+        .collect()
+}
+
+#[test]
+fn chain_starts_resolve_a_dot_path_and_skip_a_rooted_one() {
+    // Arrange
+    let tracked = BTreeSet::from(["platform/playbooks/a.yml".to_owned()]);
+    let starts = |path: &str| chain_starts(&format!("fn t() {{ read(\"{path}\"); }}"), &tracked);
+
+    // Act and assert
+    assert_eq!(starts("./platform/playbooks/a.yml"), tracked);
+    assert!(starts("/platform/playbooks/a.yml").is_empty());
+}
+
+/// A playbook-tier module runs a playbook, and the run loads every file the playbook's chain
+/// names, so a change to any of them must select the module.
+#[test]
+fn every_file_a_playbook_chain_loads_selects_its_module() {
+    // Arrange
+    let config = repo_config();
+    let (main, area_files) = area_documents();
+    let tracked: BTreeSet<String> = repo::ls_files(&[]).into_iter().collect();
+
+    // Act
+    let mut walked = 0;
+    let mut refusals = vec![];
+    let mut problems = vec![];
+    for module in playbook_modules(&main, &area_files) {
+        let src = text::read(&format!("platform/tests/suite/{module}.rs"));
+        for start in chain_starts(&src, &tracked) {
+            walked += 1;
+            let (files, refused) = chain_files(repo::root(), &start, &tracked);
+            refusals.extend(refused);
+            for file in files {
+                if !selects(&config, &module, &file) {
+                    problems.push(format!(
+                        "{module}: {start} loads {file}, whose change does not select {module}"
+                    ));
+                }
+            }
+        }
+    }
+    refusals.sort();
+    refusals.dedup();
+    problems.extend(unexcepted(&refusals, CHAIN_EXCEPTIONS));
+
+    // Assert
+    assert!(walked > 0, "no playbook chain walked; the reader is broken");
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
 }

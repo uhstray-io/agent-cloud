@@ -2,7 +2,7 @@
 # (weft's docs/cicd.md §3.1). One workspace per VM, because a workspace boundary is a machine
 # boundary; nothing here is shared with another workspace.
 #
-#   board          weft-board        the web API and the page; starts weft-voice as its child
+#   board          weft-board        the web API and the page
 #   orchestrator   orchestrator run  starts weft-whisper and weft-extract as children, and every
 #                                    agent and egress-proxy container through the podman socket
 #   capture        capture-discord   reads the rooms an admin enrolled on the board
@@ -33,9 +33,9 @@
 # the workspace directory belongs to the deploy user on the VM, and the backup and the restore can
 # read it.
 #
-# Ports: the board's HTTP port to the Caddy host only (bind from inventory), and the workspace's
-# one UDP port for calls, the same number inside and out, because the board tells browsers that
-# number in every SDP answer.
+# Ports: the board's HTTP port to the Caddy host only (bind from inventory), and nothing else. No
+# UDP port: live calls are off on the rack until a media route is chosen (weft D578), so weft.toml
+# has no [voice] and the board starts no weft-voice.
 #
 # THE BOARD IS ON PASTA, NOT THE `weft` BRIDGE, so it sees the real peer (weft #580). Rootless
 # podman forwards a port published from a bridge through rootlessport, which connects onward from
@@ -75,7 +75,6 @@ services:
     ports:
       # An IPv6 bind arrives bracketed (workspace.env.j2): podman refuses it bare before a port.
       - "${WEFT_BOARD_BIND}:${WEFT_BOARD_PORT}:8080"
-      - "${WEFT_VOICE_UDP}:${WEFT_VOICE_UDP}/udp"
     healthcheck:
       # The board's one unauthenticated route. node is the image's runtime, so no curl is
       # assumed; a non-2xx or a refused connection exits non-zero.

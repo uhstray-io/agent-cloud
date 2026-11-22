@@ -1,20 +1,23 @@
-# weft front door — staging's mail catcher. deploy.sh appends this overlay only when .env carries
-# WEFT_DOOR_MAILPIT_IMAGE, which templates/door.env.j2 renders only when the inventory sets
-# weft_door_mailpit. tasks/weft-door-mail.yml refuses that on any environment but staging, before
-# anything stops, so the rack never runs it. .env is the one decision point, so this file and the
-# variables it needs cannot disagree.
+# weft front door — the mail catcher, for staging and for the rack while no workspace is a
+# customer's. deploy.sh appends this overlay only when .env carries WEFT_DOOR_MAILPIT_IMAGE, which
+# templates/door.env.j2 renders only when the inventory sets weft_door_mailpit.
+# tasks/weft-door-mail.yml refuses that, before anything stops, outside staging and the rack, and
+# on the rack once any workspace is not marked weft_workspace_owner: operator (unmarked counts as a
+# customer's). .env is the one decision point, so this file and the variables it needs cannot
+# disagree.
 #
 # The front door refuses to start without mail (weft #541), and its sign-up and reset links are
 # working credentials. Mailpit catches every message and sends none: no relay or forward is
-# configured, so staging cannot mail a real address whatever is typed into its sign-up form.
+# configured, so the door cannot mail a real address whatever is typed into its sign-up form.
 #
 # Mailpit shares the door's network namespace, because the door speaks plain SMTP only to its own
 # loopback (WEFT_FRONT_DOOR_SMTP_SECURITY=plain to anything else refuses to start). The accepted
 # cost: podman refuses to remove a container another one shares the namespace of, so the two are
 # stopped and recreated together (deploy.sh), and the catcher's messages do not survive a deploy.
 #
-# The web UI is published on the VM's loopback only. It has no sign-in and shows live staging
-# links, so it is reached through an SSH tunnel to the door VM (README.md, "Staging mail").
+# The web UI is published on the VM's loopback only. It has no sign-in and shows live sign-up and
+# reset links, so it is reached through an SSH tunnel to the door VM (README.md, "The mail
+# catcher").
 
 services:
   mailpit:

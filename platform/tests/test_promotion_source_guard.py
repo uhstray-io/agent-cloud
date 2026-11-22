@@ -209,7 +209,7 @@ def test_source_refuses_a_branch_other_than_dev():
 # The release budget step (policy 10 R2, R3, R12). It runs the real scripts/semver.py, committed on
 # main, so the count the guard reports is the count the release run reports.
 
-BUDGET_OVER_FILES = tuple(f"many/{i:03}.txt" for i in range(121))  # one more than R3's 120
+BUDGET_OVER_FILES = tuple(f"many/{i:03}.txt" for i in range(151))  # one more than R3's 150
 
 
 def _pr_commit(env: dict, cwd: Path, subject: str, files: tuple[str, ...]) -> str:
@@ -285,7 +285,7 @@ def test_budget_passes_over_the_limit_before_v0_15_0(tmp_path):
     result = _run_budget(env, _ci_clone(env, origin, tmp_path, "ci", head), head)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "::notice title=Release budget transition::" in result.stdout
-    assert "1 pull requests and 121 files" in result.stdout
+    assert "1 pull requests and 151 files" in result.stdout
 
 
 def test_budget_fails_over_the_file_limit_once_v0_15_0_is_tagged(tmp_path):
@@ -296,7 +296,7 @@ def test_budget_fails_over_the_file_limit_once_v0_15_0_is_tagged(tmp_path):
     result = _run_budget(env, _ci_clone(env, origin, tmp_path, "ci", head), head)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "::error title=Release over budget::" in result.stdout
-    assert "121 files (limit 120)" in result.stdout
+    assert "151 files (limit 150)" in result.stdout
     assert "since v0.15.0" in result.stdout
 
 
@@ -321,7 +321,7 @@ def test_budget_passes_within_the_limits_after_v0_15_0(tmp_path):
     _git(env, work, "push", "-q", "origin", "dev")
     result = _run_budget(env, _ci_clone(env, origin, tmp_path, "ci", head), head)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "OK: 3/100 pull requests and 3/120 files since v0.15.0." in result.stdout
+    assert "OK: 3/100 pull requests and 3/150 files since v0.15.0." in result.stdout
 
 
 def test_budget_step_fetches_the_tags_it_decides_on(tmp_path):

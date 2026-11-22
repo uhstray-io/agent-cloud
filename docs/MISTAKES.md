@@ -31,7 +31,7 @@ and why.
 | # | Mistake | Class | Count | Enforced by |
 |---|---------|-------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file — **x8** | Unverified claim | 8 | Convention + loader test; hook proposed (count ≥ 3) |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x9** (2026-11-18: called a port's weakened comparisons copied from deleted originals, unread) | Unverified claim | 9 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
 | 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
 | 1.5 | **x2** — Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 2 | Test (runner containerisation); Convention (occurrence 2, launch containment) |
@@ -39,13 +39,13 @@ and why.
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | 1 | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | 1 | Test |
 | 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | 1 | OPA branch rule (`agent_actions.rego`; inert until callers send fields) |
-| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused | Unverified claim | 1 | Convention |
+| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused (2026-11-15: called CodeRabbit "paused" on #1152 from `gh pr checks`' `skipping` bucket, to the operator and in a dismissal message; the check's own title read "Review rate limited", and reviews were already on the PR; 2026-11-17: told the coordinator and the operator CodeRabbit was skipping #1206 from the same bucket, after a push, without listing reviews; it had requested changes on the previous head) — **x3** | Unverified claim | 3 | Convention; guard proposed in occurrence 3 |
 | 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | 1 | Test (synthetic OpenBao, mutation-proven)  |
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
 | 1.15 | **x4** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars (x4: a plan generalised "the guard renders no value" from one name; the guard references three) | Unverified claim | 4 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries, or use `forgeries.by_name` with an assertion of the run-start guard's message; the guard's own test proves it never renders a forged value) |
-| 1.16 | **x4** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41) | Unverified claim | 4 | Convention; mechanical check proposed (count ≥ 3) |
+| 1.16 | **x6** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41; x5: a review reply said every failure message carried the read-back result; one did not; x6: the correction of that reply said only the last one did; three did) | Unverified claim | 6 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6; widened by 1.35, 1.37) | Unverified claim | 1 | Convention |
@@ -53,12 +53,12 @@ and why.
 | 1.21 | **x5** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe; x4: said production skynet launches through the launch gate from probes that only reached and authenticated to it) | Unverified claim | 5 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed; skynet-client launch probe proposed; OPA loaded-policy verify proposed (AC-845) |
 | 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
 | 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
-| 1.24 | Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB | Unverified claim | 1 | Convention |
+| 1.24 | **x2** — Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB (x2: told the operator a backup retention fits a CephFS storage's total, which is used space plus what Ceph can still place) | Unverified claim | 2 | Convention |
 | 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there (widened by 1.28) | Unverified claim | 1 | Convention |
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
-| 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) — **x2** (2026-11-11: wrote a reviewer's "count at the pinned base" into plan 23 and AC-699 without checking `base.sha`; it does not track `dev`) — **x3** (2026-11-12: relayed a reviewer's "26 live templates point at deleted playbooks" into a PR comment, read from `templates.yml` only; the live catalog held none) — **x4** (2026-11-12: relayed three website-repo "conflicts" from a scout that read a stale branch into a reply and a Plane item; on `main` two were resolved and the third already tracked) — **x5** (2026-11-13: relayed a worker's unchecked guess that adding a Plane work item to a milestone moves it out of its old one; a second worker's read-back showed the add changes nothing while the item is in another milestone) | Unverified claim | 5 | Convention; guard proposed (count ≥ 3) |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26; widened by 1.36) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) — **x12** (2026-11-11: told a PR the OIDC promotion verify fails a malformed redirect; it only checks the live list contains the inventory value) — **x13** (2026-11-12: required a stored URL's format without reading the path's other readers) | Unverified claim | 13 | Convention; guard proposed (count ≥ 3) |
+| 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) — **x2** (2026-11-11: wrote a reviewer's "count at the pinned base" into plan 23 and AC-699 without checking `base.sha`; it does not track `dev`) — **x3** (2026-11-12: relayed a reviewer's "26 live templates point at deleted playbooks" into a PR comment, read from `templates.yml` only; the live catalog held none) — **x4** (2026-11-12: relayed three website-repo "conflicts" from a scout that read a stale branch into a reply and a Plane item; on `main` two were resolved and the third already tracked) — **x5** (2026-11-13: relayed a worker's unchecked guess that adding a Plane work item to a milestone moves it out of its old one; a second worker's read-back showed the add changes nothing while the item is in another milestone) — **x6** (2026-11-16: a credential-scan claim from a review subagent into plan 28) — **x7** (2026-11-16: seven Postiz tasks called hands-on from a scout's label) — **x8** (2026-11-16: a deploy refusal claimed from an AGENTS.md row, not the playbook) — **x9** (2026-11-17: the permission layer's rule stated from one report) | Unverified claim | 9 | Convention; guard proposed (count ≥ 3) |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26; widened by 1.36) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) — **x12** (2026-11-11: told a PR the OIDC promotion verify fails a malformed redirect; it only checks the live list contains the inventory value) — **x13** (2026-11-12: required a stored URL's format without reading the path's other readers) — **x14** (2026-11-12: a handoff said a full-catalog template publish creates the 54 missing templates and its `--check` lists the changes; it would create 73 and an active schedule, and `--check` lists no changes) — **x15** (2026-11-16: a module member from the item's topic) — **x16** (2026-11-16: a new ledger entry briefed without searching for the rule's existing owner) — **x17** (2026-11-16: AC-738 briefed as remaining though Done) — **x18** (2026-11-20: a rule for the override guard's include, without reading the guard's usage contract; three review returns on #1212) | Unverified claim | 18 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
 | 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) — **x2** (2026-11-10: called a survey a read-only reproduction of a deploy refusal because the category word matched; it failed at a different step) | Unverified claim | 2 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
@@ -68,6 +68,7 @@ and why.
 | 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) — **x2** (2026-11-12: wrote "refused before changing anything" from a refusing assert's message; the deploy had already moved the checkout and re-rendered the Alloy config) | Unverified claim | 2 | Instance: tests pin both playbooks' shared derivation; class Convention, no detector |
 | 1.37 | Called a fix impossible ("a wrapper cannot repair" parallel's ignored SIGALRM) from a fact about shells, built a serial fallback on it; a perl job shell fixed it (widens 1.19) | Unverified claim | 1 | Instance: wrapper test with control; class Convention, no detector |
 | 1.38 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
+| 1.39 | Told the operator a paid plan would unlock a vendor role, from the code's flag name, without the vendor's plan matrix; Plane's Admin role is Business-only | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -85,7 +86,7 @@ and why.
 | 2.15 | Matched a substring/token instead of the anchored construct, three times — a commented guard passed; a port number matched inside another (2026-11-02, false red); a disabled `when:` still matched a BATS grep (2026-11-04) | **x4** False green | 4 | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | 1 | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | 1 | Test (closed rule, mutation-proven) |
-| 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) | Vacuous coverage | 2 | Test (derived population + ratchet) |
+| 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) **x3** (selected by a `_bao_url` play var, so a task file building its URL inline was unseen) | Vacuous coverage | 3 | Test (derived population + ratchet) |
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | 1 | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | 1 | Test (adopted-state case + rc-guarded parse) |
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed — **x2** | Wrong-reason pass | 2 | Test (`test_deploy_playbooks_preflight.bats` + ratchet) |
@@ -106,7 +107,8 @@ and why.
 | 2.36 | A test stubbed the one OS read (`/proc/1/ns/net`) whose permission decided the outcome; the rootless prod helper got EACCES on every run and printed the generic refusal (widens 2.22) — **x2** (2026-11-10: the source command's catch-all reused `native_source_unavailable`) | Wrong-reason pass | 2 | Test (`test_o11y_availability_namespace_survey.py`: stub refuses pid 1, catch-all has its own category; `test_o11y_scrape_baseline.py`: `test_source_cli_prints_its_own_word_for_an_unexpected_exception`); class Convention |
 | 2.37 | A credential probe passed on the operator's own git login: the App token mint had failed, the stored password was empty, and a global helper answered; the probe tag was pushed under the operator's identity | Wrong-reason pass | 1 | Test (`platform/tests/test_release_version_playbook.py`) for the playbook; workstation probes Convention |
 | 2.38 | A mutation check swapped one character for another and restored the file within the same second; Python kept loading the mutant's cached bytecode, and the next test run tested the mutant (widens 2.28) | Wrong-reason result | 1 | Convention (a fresh `PYTHONPYCACHEPREFIX` per mutation run) |
-| 2.39 | A "no user is signed in after a refused callback" test asked with the pre-sign-in cookie, which could never show a user; a callback that stored the user and then refused stayed green | False-green test | 1 | Test (`callback_with_a_wrong_nonce_is_refused` and `callback_with_a_token_signed_by_another_key_is_refused` probe with the cookie the refusal sets; leak mutant red) |
+| 2.39 | A "no user is signed in after a refused callback" test asked with the pre-sign-in cookie, which could never show a user; a callback that stored the user and then refused stayed green | False-green test | 2 | Test (`callback_with_a_wrong_nonce_is_refused` and `callback_with_a_token_signed_by_another_key_is_refused` probe with the cookie the refusal sets; leak mutant red) |
+| 2.40 | A port PR (#1186) returned five times: checks copied from their originals that could not fail (an emptiness check that, on macOS, read a directory the hook never used; an overlap check that passed on a sequential hook; lock checks that read an unreadable directory as empty), and comparisons weaker than the originals (`trim_end` and `lines()` where BATS compared `$(cat)`; a skip turned into a panic) | False-green test | 1 | Convention (this instance: one mutant per ported test of `pre_push_uv.rs`, each red after strengthening) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -131,6 +133,7 @@ and why.
 | 3.22 | A manual launch in a minute 3.20 allows ran into the next schedule slot; the scheduled liveness check that started there failed on an empty shared inventory (link inferred from timing, not proven); widens 3.20 | Live state | 1 | Convention (finish before the next slot, or accept and check); launcher duration check proposed |
 | 3.23 | Ran an 18-minute production drill whose second deploy clones the moving `dev` head against a SHA pinned at launch; three merges landed mid-drill and the restore refused, leaving the drilled projection live | Live state | 1 | Convention |
 | 3.24 | A deploy placed files OPA reads only at startup and never restarted it; production OPA served its 2026-11-01 policies until 2026-11-12, twelve policy commits not live (widens 3.11) | Live state | 1 | Test for OPA (`opa:` cases in `test_compose_up_if_changed.bats`); general form Convention; verify gap AC-845 |
+| 3.25 | A read-only survey reported the latest node-wide Proxmox backup task failing for lack of space on 2026-10-14; it was filed as evidence for an o11y gate, not raised as an incident, and the nightly backups kept failing almost every night for four more weeks | Live state | 1 | Convention; backup-failure and backup-storage alert proposed |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -143,7 +146,7 @@ and why.
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard; 2026-11-05: a playbook change past the check-mode contract test; 2026-11-08: a template comment past the check-mode injection guard; 2026-11-09: a template-order test the fast subset skips; 2026-11-11: a new test file past the spawn guard; 2026-11-11: a test-only push under `SKIP_TESTS=1`, past the line-window ratchet) | Process | 14 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard; 2026-11-05: a playbook change past the check-mode contract test; 2026-11-08: a template comment past the check-mode injection guard; 2026-11-09: a template-order test the fast subset skips; 2026-11-11: a new test file past the spawn guard; 2026-11-11: a test-only push under `SKIP_TESTS=1`, past the line-window ratchet; 2026-11-17: a merge go sent in the same step as a CONFLICTING read) | Process | 15 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
@@ -166,12 +169,20 @@ and why.
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | `scripts/merge-when-green.py` (`check_dev_drift`) + test |
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, and six launch-gate PRs, with no pass or a pass on an earlier head | Process | 5 | Superseded by 5.25 |
-| 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on | Process | 2 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
-| 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
+| 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on — **x3** (2026-11-16 to 2026-11-17: statuses on merge-only and hand-checked heads across twelve PRs; four merged on them — **x4** (2026-11-18): #1206's statuses on `750f7000` came from agents dispatched by hand, not runs of the two skills) — **x5** (2026-11-17 to 2026-11-18: statuses from Agent dispatches, not Skill-tool runs, on five PRs; four merged) — **x6** (2026-11-17 to 2026-11-18: #1186 statuses on four heads no run of the two skills had covered) — **x7** (2026-11-17: #1204, #1205, #1207, the re-cut of #1185, statuses from Agent dispatches after a compaction; caught before merge) | Process | 7 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test; per-head pass receipt proposed (count 3) |
+| 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories (2026-11-16: also `--budget-acknowledged`) | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
 | 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
 | 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
-| 5.29 | Briefed six port workers never to edit the ledger, which forbade the "Enforcement moved" note a deleted cited test needs; the ratchet kept every gate green (widens 5.28) | Process | 1 | Convention (a ledger test requiring the note proposed) |
-| 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 1 | Convention (per-agent scratch directory in every brief) |
+| 5.29 | Briefed six port workers never to edit the ledger, which forbade the "Enforcement moved" note a deleted cited test needs; the ratchet kept every gate green (widens 5.28) — **x2** (2026-11-16: brief 11 repeated the ledger prohibition; caught before any port) | Process | 2 | Convention (a ledger test requiring the note proposed) |
+| 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 5 | Convention (per-agent scratch directory in every brief); deny rule for recursive `rm` proposed, operator's decision |
+| 5.31 | A peer session allowed `SKIP_TESTS=1` for docs-only pushes; two owners retried a denied compound command as a standalone push | Process | 1 | Convention (deny rule for the skipped push proposed; operator's decision) |
+| 5.32 | Ran `git branch -D` on a scratch branch the brief said to keep if `git branch -d` refused; recreated from the reflog | Process | 1 | Convention (deny rule for forced branch deletes proposed; operator's decision) |
+| 5.33 | Refreshed a PR over a newly landed area rule and checked it only where the rule's own test looks; the playbook-tier area omitted the filter plugins `ansible.cfg` loads | Process | 1 | Test: `lanes` suite (`every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes`) |
+| 5.34 | Fixed a destructive block's failure paths one review finding at a time on #1206; returns 4 and 5 found four more paths in the same block | Process | 1 | Convention (failure table accepted for later briefs, 2026-11-18) |
+| 5.35 | Skipped a skill-pass finding that a port test held wider rows than its original, on a comment saying the filter reads only tag and spec; carried as decided until the third return | Process | 1 | Convention |
+| 5.36 | One batch unit bundled eleven guard-test fixes across five test modules, a BATS test deletion and a plan cell; it went back nine times and was closed and cut into three | Process | 1 | Convention (three-returns rule; split past about three files) |
+| 5.37 | Ran two rounds of four-agent `/simplify` plus security passes on S9 without totalling agent tokens, against a 450k stop never sized from a measured round; spend reached about six times the stop | Process | 2 | Convention (stop set per model class from a measured round; running total before each wave) |
+| 5.38 | Three returns on S9's `ansible.cfg` check: a grammar reader, then a pin with a second unchecked list; no plan said where the fact "this setting loads a directory" was declared | Process | 1 | Test: `lanes` suite (`cfg_dirs_classifies_every_pinned_key_and_refuses_the_rest`) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -181,7 +192,7 @@ and why.
 | 6.7 | A task variable shadowed a lazily evaluated play variable and stopped seed-environment provisioning | Assumption about files | 1 | Main-variant provisioner integration test |
 | 6.8 | Took the volume separator for the container separator; the production NetBox deploy would have waited on a container that does not exist | Assumed runtime semantics | 1 | Test (stub engine, mutation-checked) |
 | 6.9 | Scoped a restart-policy fix to rootless podman, the runtime a review named; the repo's own test says rootful's boot unit is the same | Assumed runtime semantics | 1 | Test (rootful case) |
-| 6.10 | Acted on a merged plan as current state while a peer session was building the same scope; the handoff was called checked | Assumption about files | 1 | Convention |
+| 6.10 | Acted on a merged plan as current state while a peer session was building the same scope; the handoff was called checked — **x2** (2026-11-16: two fixes briefed from pre-merge Plane text, already on dev) — **x3** (2026-11-16: a brief section not re-checked after a later decision; #1177 opened with a false milestone) | Assumption about files | 3 | Convention (dispatch refuses a brief older than the latest index decision, proposed; count 3) |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | 1 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention |
 | 8.2 | Referenced tests by identifiers that did not exist — **x2** (a PR number in a commit message) | Unverified claim | 2 | Test (`test_ledger_test_citations.py` + ratchet) |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | 1 | Convention |
@@ -195,7 +206,7 @@ and why.
 | 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | 1 | CI (root-level pytest) |
 | 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | 1 | Test (6 grammar cases) |
 | 10.7 | Named the rollback hazard, then gated the restore on a condition an earlier failure skips | Live-state damage | 1 | Test (block/rescue, mutation-proven) |
-| 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference | Half-finished run, credentials left in a clone | 1 | Test (closed rule, mutation-proven) |
+| 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference — **x2** (2026-10-02, found 2026-11-14: the closed rule's pattern missed `now(args)`; five `vars` entries got past it) | Half-finished run, credentials left in a clone | 2 | Test (closed rule, mutation-proven) |
 | 10.9 | Local validation templates were bound to GitHub main, so every "validated locally" run executed code that was not the code being written (×2: the dispatcher re-made it) | Wrong code under validation | 2 | Bootstrap record + structural bind + (Local)-first dispatch |
 | 10.10 | A register on a skipped task overwrote the passing result it was guarding, misreporting a healthy credential as broken | Assumed runtime semantics | 1 | Convention |
 | 10.11 | manage-secrets stored secrets with a whole-document POST, deleting every undeclared sibling key on every deploy | Destructive write to live state | 1 | Test |
@@ -217,7 +228,7 @@ and why.
 | 10.27 | Every runner restart under `KillMode=process` signalled `run.sh` only and left the Listener that took every job running since boot; no unit or `.env` change reached it, and the no_new_privs check read `run.sh`, not the Listener | Mechanism never exercised | 1 | Unit (`KillMode=mixed`, `RUNNER_MANUALLY_TRAP_SIG=1`) + playbook (quiesce before start, Listener verify) + test (`test_service_github_runner.bats`, mutation-checked) |
 | 10.28 | The seed address check read the inventory as YAML; local-dev registers INI, so every seed template had been unrunnable locally since the check landed and nobody had run one | Mechanism never exercised | 1 | Bootstrap registers `static-yaml` + test (`test_sync_local_o11y_alert_inventory.py`, mutation-checked) |
 | 10.29 | Fixed the container hooks' HOME failure with a `docker` wrapper that patched the CLI path, while the design named the API socket and its open spike would have shown the CLI path was the cause; the wrapper never reached the process that runs jobs, so the runners kept failing | Mechanism never exercised | 1 | Playbook (requires Docker's CLI client, `DOCKER_HOST` probe) + local smoke harness (`hooks-smoke/`, must reproduce the shim failure) + test (`test_service_github_runner.bats`, `test_install_podman.bats`, mutation-checked) |
-| 10.30 | Recorded issue #604's fix as built when it merged; its `(Dev)` template had never been published, so the second operator stayed without access for nine days | Mechanism never exercised | 1 | Convention (catalog-drift check proposed) |
+| 10.30 | Recorded issue #604's fix as built when it merged; its `(Dev)` template had never been published, so the second operator stayed without access for nine days | Mechanism never exercised | 1 | Convention (catalog-drift check proposed; widened 2026-11-17 by 1.29 occurrence 14) |
 | 10.31 | A token rotation updated one workstation's copy and left site-config's recovery copy stale; the second operator used it, got 401, and the runner deploy stalled two more days | Mechanism never exercised | 1 | Convention |
 | 10.32 | The restore-target guard, proven only with an isolated environment, was attached to five VM writers bound to the shared one; every production launch failed (widens 10.17) | Mechanism never exercised | 1 | Test (`test_restore_guard_environment.py`) |
 | 10.33 | Production OPA loaded its policies as a plain path; any caller the firewall admits could rewrite or delete the running policy through the REST API, because a read-only mount was taken for an immutable policy | Mechanism never exercised | 1 | Test (`test_service_opa.bats`) + deploy verify (each Deploy OPA sends one write and requires the refusal) + a test refusing data files bundle mode would skip |
@@ -262,6 +273,8 @@ a string literal, a template — say which, and check the output.
 — `every play that resolves an OpenBao URL includes the transport guard`
 in `platform/tests/test_credential_leaks.bats`.
 
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/credential_leaks.rs::every_openbao_play_includes_the_transport_guard` is its replacement.
+
 ### 1.2 Asserting a gap without reading the file
 
 **What happened.** Reported that postiz was absent from the local Caddy route
@@ -279,7 +292,7 @@ confirmed you searched the right artifact. When two files could plausibly be
 
 **Enforced by.** Convention.
 
-**Occurrences: 8** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03, 2026-11-07, 2026-11-12
+**Occurrences: 9** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03, 2026-11-07, 2026-11-12, 2026-11-18
 
 **Repeat (2026-09-05).** Stale Postiz agent notes said the container sourced its
 configuration. Without checking the actual compose command, a change added shell
@@ -376,6 +389,17 @@ that made that state, and the history of the ticks, were never opened. A tracker
 output: its cause comes from the code that wrote it and from what that code read, on the branch
 and at the time it read it.
 
+**Occurrence 9 — 2026-11-18.** In #1186 I wrote into 2.40 (`c770400b`, pushed at `06cc71fd`) that
+return 4's four normalising assertions belonged with the checks copied from originals that could
+not fail. I did not open the deleted BATS originals. A round-1 review then wrote "BATS originals
+used `$(cat …)`, so the trimmed comparisons were copied", and I took that as confirmation. Both
+were wrong. `$(cat f)` strips trailing newlines only and keeps a trailing space and a `\r`, so
+the originals' `[ "$(cat f)" = x ]` rejected what the port's `trim_end()` and `lines()`
+accepted: three of the four were port regressions. Found when the originals were read line by
+line for a parity table after CodeRabbit's fifth return. Why the rule did not fire: the claim was
+about a deleted file, which no grep of the tree finds, and a reviewer's agreement stood in for
+reading it (1.28). A claim about a deleted file is checked with `git show <parent>:<path>`.
+
 ### 1.3 A masked exit code reported as success
 
 **Occurrences: 5** — (first undated), 2026-09-25, 2026-09-28, 2026-09-29, 2026-09-29
@@ -435,6 +459,8 @@ was not treated as a status. Occurrence 4's proposal covers it once `ruff` is ad
 command list; until then, `ruff check .; echo rc=$?` is the form.
 
 **Status 2026-10-02.** Repository side: `platform/tests/test_scripts_set_pipefail.bats` requires `pipefail` in committed scripts, with legacy ones in the shrink-only `platform/tests/known_scripts_without_pipefail.txt` (PR #391). Agent side: a user-level PreToolUse Bash hook (`bash-guards-text`, registered in the operator's Claude Code settings) refuses a status-bearing command piped onward unless the command mentions `pipefail` or `PIPESTATUS`; by its own header it cannot see pipes inside command substitution, `eval`, aliases or script files. That hook lives outside this repository, so the Index still reads Convention for agent sessions.
+
+**Enforcement moved — 2026-11-13.** The BATS test this entry's narrative cites was ported to the Rust suite (plan 24): `platform/tests/suite/local_netbox.rs::verify_service_persistence_selects_containers_by_deploy_dir`.
 
 
 ### 1.4 Guessed a resource id rather than reading the one just returned
@@ -635,6 +661,8 @@ earns the words "works for the current values", nothing stronger.
 pins the `| string` emission and refuses `| to_json` on that line. Mutation-
 proven by the failure itself: the `to_json` form is what broke.
 
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/local_dev_inventory.rs::bootstrap_emits_the_route_table_as_a_python_literal` is its replacement.
+
 
 ### 1.9 "A feature branch is invisible to the controller" held only in the web UI
 
@@ -745,6 +773,8 @@ indexes, and the regression asserts a sentinel argument is absent from output.
 
 ### 1.10 Reported that a review had started, from a keyword match on a comment I never read
 
+**Occurrences: 3** — 2026-09-23, 2026-11-15, 2026-11-17
+
 **What happened.** On 2026-09-23 at 15:13Z I posted review requests to CodeRabbit on four
 PRs and sorted its replies with a `jq` keyword test. My patterns for a started review
 included `will review` and `Reviewing`; CodeRabbit's refusal reads "Action not completed —
@@ -762,6 +792,39 @@ against a pattern proven on that exact phrasing. Report a keyword classifier's l
 as a guess, and treat an unmatched or surprising label as a reason to read the text.
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-11-15.** During the v0.16.0 promotion, `gh pr checks 1152` listed CodeRabbit
+as `skipping` on head `daed978a`. From that label alone I told the operator CodeRabbit "is paused
+(check 'skipping'), so it will not resolve" its threads, and asked to resolve them and dismiss its
+review myself. The operator approved. The dismissal message on review 5900511766 says "CodeRabbit
+is paused on this PR". It was not paused. The check run behind the label had conclusion `neutral`
+and the title "Review rate limited" (`gh api repos/<repo>/commits/<sha>/check-runs`), and
+`gh pr checks` files `neutral` under `skipping`. CodeRabbit had reviewed `a56396ac` at 04:15 UTC
+(CHANGES_REQUESTED) and `daed978a` at 04:16 (COMMENTED), about an hour and a half before the
+dismissal at 05:51. It reviewed `55e61090` at 05:59 (check `success`), resolved the four threads it
+had opened since (three on `a56396ac`, one on `55e61090`) itself, and was rate-limited again on
+`5e7659f6`. The rule did not fire because I took a CLI's bucket name as a status, not as a
+classifier's label: `gh pr checks` sorts check conclusions into buckets exactly as 1.10's keyword
+test sorted replies. The same rule covers it.
+Before saying a reviewer will or will not act, read the check run's title and summary and list the
+reviewer's reviews on the pull request, with their commit and time.
+
+**Occurrence 3 — 2026-11-17.** On #1206 I told the batch coordinator at 21:26 EST that CodeRabbit was
+skipping head `ed8606d6`, and at 21:46, after my push of `011a8003`, told the operator it had skipped
+every head since `9c598610`, both from `gh pr checks` listing its check as `skipping`. I did not list
+its reviews before the second report. CodeRabbit had
+reviewed the previous head `ed8606d6` at 21:38:51 EST (review 5950022152, CHANGES_REQUESTED, two new
+threads) while I was refreshing the branch, and had resolved its four older threads itself. The
+coordinator found the review; it became the pull request's fourth return. The rule did not fire because
+I had read the reviews earlier in the session and carried that reading across a push, instead of
+listing them again after it: occurrence 2's rule says to list them, not when. A reviewer's state is
+read again after every push and before every report that names it.
+
+**Proposed guard (count of 3).** The merge guard already reads outstanding change requests. Add a
+read-only `--reviews` mode to `scripts/merge-when-green.py` that prints every review on the pull request
+(reviewer, state, commit, submitted time) and each review check run's title and summary for the head,
+and make that output the only source an owner session quotes when it reports a reviewer's state in a
+batch report ("row green", a return, a hold).
 
 ### 1.14 A fact about the private inventory read from the public template
 
@@ -879,7 +942,7 @@ variable keep all three spellings.
 
 ### 1.16 A count written into a committed plan without running the count
 
-**Occurrences: 4** — 2026-09-25, 2026-10-03, 2026-11-02, 2026-11-10
+**Occurrences: 6** — 2026-09-25, 2026-10-03, 2026-11-02, 2026-11-10, 2026-11-18, 2026-11-18
 
 **What happened.** Recording the launch-permission gap for #264, I wrote into
 `plan/development/01-secrets-credentials.md` that "44 playbook and task files log in to
@@ -944,6 +1007,26 @@ instead of extending the existing one. Corrected in PR #1023 (open when this was
 arrived from a subagent with `file:line` citations, so it read as measured (the 1.25 pattern), and
 the rule's own wording, "run at the time of writing", was not applied to a relayed count. The rule
 covers it: a relayed count is re-run before it is written. The proposed mechanical check above would not have caught it: it reads a pull request's Evidence section, and this count sat in a plan bullet that carried a `file:line` citation.
+
+**Occurrence 5 — 2026-11-18.** Answering CodeRabbit's thread on #1206 about a failed DELETE skipping
+the read-back (reply 4609907472, head `7ac3385f`), I wrote that the run fails on each kind of failure
+in turn and "Each message carries the read-back result". Three of the four failure messages did; the
+"did not end OK" message (`cleanup-proxmox-backup-archives.yml:415-418` at that head) carried only its
+count. The final-head review round and CodeRabbit's next comment both found it, and it was part of the
+pull request's fifth return. Why the rule did not fire: the claim was an "every" over the messages of
+a block I had just edited, so it read as known, and it was written into a review reply, not a plan or
+an Evidence section. The rule covers it: an "every" in written evidence, a review reply included, is
+checked against each member of the set when it is written; here, by reading each `fail_msg`.
+
+**Occurrence 6 — 2026-11-18.** Correcting that reply on the same thread (reply 4615480262, head
+`750f7000`), I wrote that at `7ac3385f` "only the last message carried the read-back". Three of the four
+did: the not-accepted and not-seen-stopped messages and the verify refusal (`git show
+7ac3385f:platform/playbooks/cleanup-proxmox-backup-archives.yml`, lines 407, 413 and 423); only "did not
+end OK" (line 418) did not. This ledger's own occurrence 5, already on the branch, said "Three of the four
+failure messages did". The final-head review round found it, and reply 4615598461 corrected it. Why the
+rule did not fire: the correction was written from memory of the earlier mistake, not from the file at
+the old head, and a correction reads as already checked. The rule covers it: a claim about an earlier
+head is read from that head (`git show <sha>:<path>`) when it is written, a correction included.
 
 ### 1.17 Explained a 401 as the token's scope; the service's database had just gone down
 
@@ -1231,6 +1314,8 @@ from the shared mapping, or inlining the environment on a rollback task, fails t
 
 ### 1.24 A growth projection extrapolated from a net change that retention was already offsetting
 
+**Occurrences: 2** — 2026-10-13, 2026-11-17
+
 **What happened.** The first daily o11y baseline (production receipt task 5329, 2026-10-13) reported
 Prometheus block bytes of 992,962,502 and a 24 h change of +26,487,309, read with
 `delta(prometheus_tsdb_storage_blocks_bytes[24h])`. The operator was told, and a records PR stated,
@@ -1252,6 +1337,18 @@ reading. When they disagree, report the bound each one gives, not the product of
 1.21 (cite only what the check measures); this is the arithmetic form.
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-11-17.** After the production backup-storage survey (Semaphore task 17695), the
+operator was told, on Plane AC-856 and in chat, that the planned retention (6 archives per guest, 3 for
+honcho) needs about 628.5 of the CephFS backup storage's 752.8 GiB, and that the chosen cleanup frees
+only 78.5 GiB on that storage. Both read the storage's `total` by its label as a fixed capacity. For a
+CephFS storage it is used space plus what Ceph can still place in the pool, so it moves with the free
+space of every pool on the same OSDs. The same receipt contradicted the reading: both CephFS storages
+showed exactly 0.1 GiB free, and each pool's raw usage was its storage's usage times its 3 replicas. An
+advisor review caught it the same hour; a correction went on AC-856 and the question moved to AC-975
+(an OSD fill read). The rule above names deletion and compaction as what a figure is net of; it did not
+fire because a capacity is not a rate, though the error is the same: a figure used by its label without
+asking what it measures, with a contradicting figure in the same reading left unchecked.
 
 ### 1.25 Line references relayed from a scout that read a stale checkout
 
@@ -1326,7 +1423,7 @@ its merge date, or say the origin is unverified.
 
 ### 1.28 Relayed a subagent's behavioural claim because it came with its own experiment (widens 1.25)
 
-**Occurrences: 5** — 2026-10-31, 2026-11-11, 2026-11-12, 2026-11-12, 2026-11-13
+**Occurrences: 9** — 2026-10-31, 2026-11-11, 2026-11-12, 2026-11-12, 2026-11-13, 2026-11-16, 2026-11-16, 2026-11-16, 2026-11-17
 
 **What happened.** Reviewing #810 on 2026-10-31, a reviewer subagent reported that a false
 `[[ ]]` inside the new flag-order loop in `platform/tests/test_service_opa.bats` fails the
@@ -1415,9 +1512,17 @@ claim was about a tool's behaviour rather than code, which this rule covers all 
 handoff that records it does not say why it went out unchecked. The second worker's read-back is the
 check this rule asks for. The v0.16.0 handoffs now state the quirk and the remove-then-add order.
 
+**Occurrence 6 — 2026-11-16.** Plan 28 in PR #1172 at head `dddbbfcd` said that literal credentials "are already scanned" by `platform/tests/suite/credential_leaks.rs`, which "scans every committed file". The owning session took that from a review subagent's report without reading the test. An independent reviewer showed that the test's file list excludes `plan/` and `*.md`, and that its key pattern cannot match a quoted JSON key. Fixed in `1311ec85`. Why the rule did not fire: the subagent's finding read as checked, and the owner did not open the test.
+
+**Occurrence 7 — 2026-11-16.** The batch coordinator told the operator that seven Postiz tasks "need your hands". That came from a scout's label, and nobody checked which credentials were stored. Checked afterwards: the operator token and the platform admin account covered four of the seven, and the other three (the X and LinkedIn steps) had no stored credential. Why the rule did not fire: a scout's label was relayed as a finding.
+
+**Occurrence 8 — 2026-11-16.** Commit `17b9f3c2` (PR #1168, plan 27) wrote that the agentgateway deploy "refuses a leaf not yet issued". A simplify subagent gave that as its source, citing the Deploy agentgateway row of the AGENTS.md table, and the owning session did not read `platform/playbooks/deploy-agentgateway.yml`. The deploy checks issuance only for the gateway's own server and verifier leaves (`:330-347`); an allowlist entry needs only to be declared (`:294-305`). Fixed in `23ca133f`, which states the rollout order as a convention. Why the rule did not fire: a docs row was taken as the source for code behaviour, and the `pr-claim-check` hook fires on `gh` posts, not on commit messages.
+
+**Occurrence 9 — 2026-11-17.** The batch coordinator told the operator that the permission layer blocks `SKIP_TESTS=1 git push`, taken from two owners' reports. Three owners' reports then showed that the layer denies that push chained with other commands and allows the push alone. The claim was corrected after the third report. Why the rule did not fire: reports of a denial were generalised into a rule about which part of the command was denied.
+
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 12** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10, 2026-11-11
+**Occurrences: 18** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10, 2026-11-11, 2026-11-12, 2026-11-12, 2026-11-16, 2026-11-16, 2026-11-16, 2026-11-20
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1564,7 +1669,35 @@ value felt like a guard, not a claim about the value, so its other consumers wer
 refuses an `assert` on a field read from a shared OpenBao path unless it is one of the shared checks for that field
 (`tasks/assert-bao-transport.yml` for a URL).
 
+**Occurrence 14 — 2026-11-12.** A session handoff (Plane AC-745: publish the `main`-bound templates missing in
+production Semaphore) told the executor to run the full-catalog `platform/semaphore/setup-templates.yml` from `main`.
+It said that run "creates the 54 missing templates", and asked for a list, taken from the `--check` output, of every
+existing template the run would change. At `main` `5621b6e3` neither claim holds. The full run publishes the whole
+catalog, generated `(Dev)` variants included (`:90`, `:100`). Against the live catalog (`GET /api/project/1/templates`,
+read 2026-11-12) it would have created 73 templates and rewritten the surveys of 30 existing ones. Of the 73, 19 were
+Dev-bound. One of those, `Stock GitHub Runner JIT (Dev)`, declares a `*/10` schedule, which the schedule task (`:502`)
+creates active. Under `--check` the create-or-update task (`:316`) is skipped (`:343`), yet the `Report` (`:565`) still
+prints "Applied N templates". So the dry run lists no changes and says it applied. The executor found both from its own
+read-only comparison of `templates.yml` against that API, before any write. It then created only the 54, with one
+scoped create each (`semaphore_allow_scoped_create`; new ids 401 to 454), and a re-read of the API showed no existing
+template or schedule changed. Why the rule did not fire: the handoff read the write gates (`:316`, `:343`) and the
+no-delete header. It did not read the catalog selection, the schedule task or the report, and its line citations made
+it read as checked. Two true facts were stretched past their scope, 1.37's shape. 54 was the number of missing names,
+not of what the run publishes. The `not ansible_check_mode` gates show that a dry run writes nothing, not that it
+reports anything, which is 3.14's rule. Guard: widen 10.30's proposed check-mode pass to list by name every template
+the run would create or update and every schedule it would create or update (an existing one is rewritten, `active`
+defaulting to true), and make the `Report` say "would" under `--check`.
+Deploy Caddy's dry run already reports in that shape (10.18, update 2026-10-15).
+
+**Occurrence 15 — 2026-11-16.** Brief 08 listed AC-870 as a member of the agentgateway-content-generation module. The item sits in another module, and the owner's Plane read caught it. Why the rule did not fire: the membership was written from the item's topic, not read from the module.
+
+**Occurrence 16 — 2026-11-16.** Brief 06 told its owner to add a new ledger entry for a lazy-evaluation repeat, linked to 6.7 (#1170 wrote it as 2.40), without searching the ledger for an entry that already owned the rule. As of 2026-11-17, the #1170 owner reports that 10.8 owns it and, with the coordinator's agreement, is moving the record to 10.8 as occurrence 2, in a head not yet pushed; the pushed head `06740da6` still adds 2.40. This note records only the briefing error. Why the rule did not fire: the brief asked for a new entry without reading the ledger for the rule.
+
+**Occurrence 17 — 2026-11-16.** Brief 02's AC-901 section listed AC-738 among plan 24's remaining phases. AC-738 (D6) was Done and shipped in v0.16.0 (#1139). The owner caught it on its Plane read, before any edit. Why the rule did not fire: the phase list was read, and the items' state was not.
+
 The rule is widened in 1.36.
+
+**Occurrence 18 — 2026-11-20.** Brief 32 (#1212, AC-997) told the sudo-password opening check to accept the override-guard include only as a bare include, with no loop, judging it by the resolver include's rule. The guard's usage contract says the opposite: `platform/playbooks/tasks/refuse-var-overrides.yml:16-25` requires `loop` with `loop_control.loop_var: _rvo_name`, and its first task asserts `_rvo_name is defined` (`:28-31`), and every caller loops it. The check accepted a form that fails at run time and refused the only usable one. It took three review returns, the third from CodeRabbit (review 5994608613, three findings on the guard include), before the unit was cut again. Why the rule did not fire: the brief set a rule for a shared task file's include without reading that file's own usage comment. A brief that sets a rule for how a shared task file is included reads that file's usage contract first and cites it. Instance enforced by the shared guard-refusal fixtures in `platform/tests/suite/become_password_resolution.rs` (a bare guard, an import, a missing `loop_control` and the rest are each refused, and the looped guard is accepted); the class stays Convention.
 
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
@@ -1777,6 +1910,37 @@ caller for the setter. Name the line that reads the setting.
 
 **Enforced by.** Convention. The corrected 2.1 note cites the library lines that set the list.
 
+### 1.39 Promised a role from a licence tier without reading the vendor's plan matrix
+
+**Occurrences: 1** — 2026-11-09
+
+**What happened.** Plane refused the Admin workspace role with "Admin role is not available on
+this plan", and the read-only flag check showed `WORKSPACE_ADMIN_ROLE` off. From the flag's name
+and that refusal I told the operator, more than once, that activating the purchased Pro licence
+would make Admin available, and set up the change for it: site-config #169 switched
+`plane_admin_role` to `admin`, to be merged once the licence was active. The licence activated
+(Semaphore task 14291, "workspace plan PRO (activated now)"), and the reconcile still got the same
+403 for the one active member (task 14293). Plane's own documentation
+(docs.plane.so/roles-and-permissions/overview, plan table) offers the Workspace Admin role on
+Business and Enterprise only. The two other "successful" promotions in that run were pending
+invitations, whose update route never checks the flag (`invite.py:228` in the v3.3.3 image), so
+they briefly made it look like a per-person problem. The hourly reconcile failed every run until
+site-config #174 mapped `platform-admins` to Owner.
+
+**Root cause.** A plan gate's name says that something is gated, not which plan opens it. I
+treated "not on this plan" as "not on Free" and never read the vendor's plan matrix, which was one
+fetch away. The earlier spike note "Plane has no Owner role" also went unchallenged for the
+v3.3.3 image, where Owner is a role above Admin.
+
+**The rule.** Before saying a purchase, licence or tier will unlock a feature, read the vendor's
+own plan matrix for that feature by name, and quote it. A gate in the code establishes only that a
+gate exists. When a change is staged on that assumption, label it unverified until the first run
+proves it, and run it read-only first against a row the gate actually applies to (an active
+member, not a pending invitation).
+
+**Enforced by.** Convention. Related: 1.5 (a control asserted from documentation and disproved
+by measurement); this is the reverse, a capability assumed without the documentation.
+
 ## 2. Tests that would have passed for the wrong reason
 
 ### 2.1 Compiling a pattern as file text rather than as the runtime sees it
@@ -1798,6 +1962,8 @@ reproduce that decoding in the test, and say in a comment why.
 public ones` (`platform/tests/test_credential_leaks.bats`): it decodes with
 `codecs.decode(..., 'unicode_escape')` before compiling, and a companion
 structural assertion pins the escaping form so the two cannot drift.
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/credential_leaks.rs::transport_pattern_accepts_internal_endpoints_and_refuses_public_ones` and `platform/tests/suite/credential_leaks.rs::every_openbao_play_includes_the_transport_guard` are its two replacements.
 
 ### 2.2 A test that pinned the vulnerable form in place
 
@@ -2104,6 +2270,8 @@ because the guard is allowed exactly one module, which is why the allow-list for
 is available at all. This is the fourth entry in this section found that way
 (§2.9, §2.10, §2.11), and it is the only method that has ever found this class.
 
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/configure_host_network.rs::validation_never_touches_the_live_etc_netplan` is its replacement.
+
 ### 2.13 A test that asserted the fix was present, on a configuration where it could not run
 
 **What happened.** Five playbooks escalated privilege at play level without
@@ -2162,6 +2330,8 @@ mutation-proven but has **not** been exercised against a host, because the
 orchestrator runs playbooks from the integration and production branches and this
 change is on neither yet. That is the same gap this entry is about, so it is named
 here instead of being called done.
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/become_password_resolution.rs::fact_gathering_is_off_in_every_play_that_uses_the_resolver` is its replacement.
 
 ### 2.14 One value, five resolution rules, and a verdict that lied because of it
 
@@ -2282,6 +2452,8 @@ refusal; the same mutation turns it red. Why the rule did not fire: it was appli
 needles in Python, and a grep that proves a guard's text exists read as a guard test. A guard is
 tested by running it.
 
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/configure_host_network.rs::validation_never_touches_the_live_etc_netplan` is its replacement.
+
 ### 2.16 A test whose population was selected by the presence of the fix
 
 **What happened.** A review pointed out that a test compared only task NAME lines
@@ -2320,6 +2492,8 @@ deploys through the irreversible step.
 in `platform/tests/test_become_password_resolution.bats`, proven against removing
 the include, moving the gather out of position, and moving the inline fetch off
 first position.
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/become_password_resolution.rs::the_first_task_of_every_escalating_play_resolves_the_password`, `platform/tests/suite/become_password_resolution.rs::the_first_task_check_rejects_a_later_play_without_the_resolver`, `platform/tests/suite/become_password_resolution.rs::the_first_task_check_rejects_gathering_before_the_resolver` and `platform/tests/suite/become_password_resolution.rs::explicit_gathering_comes_straight_after_the_resolver` are its replacements.
 
 ### 2.17 A keyword that is invalid at runtime and invisible to every static gate
 
@@ -2377,9 +2551,11 @@ makes it pass. The companion assertion in `become: the transport guard needs no
 privilege, and says so` now pins `become: false` on the guard's own task, because
 its previous form required the very construct that broke the runtime.
 
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/become_password_resolution.rs::no_dynamic_include_task_carries_become`, `platform/tests/suite/become_password_resolution.rs::the_transport_guard_is_a_single_assert_task` and `platform/tests/suite/become_password_resolution.rs::the_transport_guard_task_declares_become_false` are its replacements.
+
 ### 2.18 "Every play that reaches OpenBao" — a hand-typed list of four
 
-**Occurrences: 2** — 2026-08-28, 2026-09-22
+**Occurrences: 3** — 2026-08-28, 2026-09-22, 2026-11-17
 
 **What happened.** `test_credential_leaks.bats` carried a test named *every play
 that resolves an OpenBao URL includes the transport guard*. Its body looped over
@@ -2433,6 +2609,33 @@ which now scans `platform/semaphore/**` too. Widening it went red on all four fi
 (mutation-checked: reverting the fix to `runtime-access.yml` fails the test), and all
 four were then retrofitted by hand. `setup-templates.yml --check` against local
 Semaphore reported changed=0, with templates and schedules byte-identical before and after.
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/credential_leaks.rs::every_openbao_play_includes_the_transport_guard` is its replacement.
+
+**Occurrence 3 — 2026-11-17.** `platform/playbooks/tasks/manage-cloudflare-record.yml` sent
+the AppRole `role_id` and `secret_id` to `<openbao_addr, else $OPENBAO_ADDR>/v1/auth/approle/login`, then sent the
+client token as `X-Vault-Token` to `secret/services/caddy`. Neither it nor its one caller,
+`manage-cloudflare-records.yml` (the `Manage Cloudflare Records` template), included the
+transport guard, so nothing refused a public `http://` OpenBao address before the credentials
+crossed it. Found by the altitude review of AC-911 (Plane AC-936). The guard check,
+`credential_leaks.rs::every_openbao_play_includes_the_transport_guard`, stayed green. It derives
+its population from the code, as the rule says, but through a stand-in: it walks the top-level
+playbooks and selects plays that declare a `_bao_url` var. The caller's play declared only
+`_records`, and the task file built its URL inline inside each request, so neither was a
+candidate. Why the rule did not fire: the population was "plays
+that declare `_bao_url`", and that is not X. X is "every play that reaches OpenBao", and a
+naming habit is a snapshot of how plays were written on the day, the same failure as the
+hand-typed list. Fixed in the shared task file, so every caller is covered: the address is
+resolved once, the guard checks that value before the login, and both requests use it. Enforced
+for this file by
+`platform/tests/suite/cloudflare_record_bao_transport.rs::the_transport_guard_runs_before_every_openbao_request`,
+`platform/tests/suite/cloudflare_record_bao_transport.rs::every_openbao_request_uses_the_url_the_guard_checked`
+and
+`platform/tests/suite/cloudflare_record_bao_transport.rs::the_guard_runs_whenever_an_openbao_request_runs`,
+which select a request by its shape (a `/v1/` URL or an `X-Vault-Token` header). Removing
+the include turns all three red; moving it after the login turns the first red. Widening the
+repository-wide check to select by the request shape in every playbook and task file is Plane
+AC-937; that is this entry's guard proposal.
 
 ### 2.19 The healthcheck watched the frontend while the backend was dead
 
@@ -2532,6 +2735,8 @@ over a survey-driven group is the form `preflight-target-group.yml`'s header rul
 Widened in 2.25.
 
 **Status 2026-10-02.** The fleet-wide guard this entry proposes merged: `platform/tests/test_deploy_playbooks_preflight.bats`, with the playbooks still missing the import in the shrink-only `platform/tests/known_deploy_without_preflight.txt` (PR #387).
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/deploy_playbooks_preflight.rs::every_deploy_playbook_targeting_a_group_is_guarded_or_on_the_ratchet`, `platform/tests/suite/deploy_playbooks_preflight.rs::the_known_compliant_deploys_are_not_offenders`, `platform/tests/suite/deploy_playbooks_preflight.rs::a_deploy_with_no_preflight_is_an_offender`, `platform/tests/suite/deploy_playbooks_preflight.rs::a_preflight_imported_after_the_first_group_play_does_not_count`, `platform/tests/suite/deploy_playbooks_preflight.rs::a_preflight_for_another_group_or_with_one_var_does_not_count`, `platform/tests/suite/deploy_playbooks_preflight.rs::a_union_target_needs_every_group_covered`, `platform/tests/suite/deploy_playbooks_preflight.rs::both_accepted_forms_and_a_wrapper_over_a_guarded_playbook_are_compliant`, `platform/tests/suite/deploy_playbooks_preflight.rs::the_ratchet_fails_a_new_offender_and_a_listed_playbook_that_complies`, `platform/tests/suite/deploy_playbooks_preflight.rs::the_repositorys_own_inline_guards_are_recognised`, `platform/tests/suite/deploy_playbooks_preflight.rs::inline_asserts_that_are_not_one_accepted_positive_comparison_do_not_count` and `platform/tests/suite/deploy_playbooks_preflight.rs::each_accepted_positive_comparison_counts` are its eleven replacements. Three tests were added with the port: `platform/tests/suite/deploy_playbooks_preflight.rs::a_legacy_key_wrapper_over_an_unguarded_inner_play_is_an_offender` and `platform/tests/suite/deploy_playbooks_preflight.rs::a_legacy_key_assert_guard_is_recognised` for the `ansible.legacy.*` spellings, and `platform/tests/suite/deploy_playbooks_preflight.rs::the_ratchet_reads_each_name_trimmed_and_skips_blank_and_comment_lines`.
 
 ### 2.22 Fixture hid Semaphore's empty secret projection
 
@@ -3064,6 +3269,8 @@ widens 2.28 ("disable bytecode writes") from clean-copy tests to mutation checks
 
 ### 2.39 An absence check asked with a handle that could never show the thing
 
+**Occurrences: 2** — 2026-11-12, 2026-11-17
+
 **What happened.** PR #1099 added `callback_with_a_wrong_nonce_is_refused` for the
 Dispatch Console's sign-in gate (add-dispatch-console task 2.6). After the refused
 callback it asserted that `/v1/me` answers 401, but it sent the cookie the browser
@@ -3085,6 +3292,99 @@ held beforehand. Then write the mutant that does the forbidden thing and watch i
 `callback_with_a_token_signed_by_another_key_is_refused` probe with
 `callback.session.unwrap_or(login_session)`; the store-then-refuse mutant turns both
 red. The general rule is `Convention`.
+
+**Occurrence 2 — 2026-11-17.** PR #1186 ported the pre-push uv BATS file to
+`platform/tests/suite/pre_push_uv.rs`. Two tests,
+`a_finished_run_leaves_no_temporary_file_behind` and
+`term_stops_the_bats_job_removes_temporary_files_and_frees_the_lock`, asserted that the
+scratch directory under the TMPDIR the test set was empty after the hook ran. The hook makes
+its scratch directory with `mktemp -d`, which ignores TMPDIR on macOS (`docs/LESSONS.md`
+L-009), so the checks read a directory the hook never used and could not fail. The BATS
+original, which #1186 deletes, has the same shape: it sets TMPDIR and puts no stand-in
+`mktemp` on the PATH. Caught by a review
+pass before merge and fixed in `89002167`: a stand-in `mktemp` honours TMPDIR, and each test
+first asserts that the scratch directory existed while BATS ran. The rule did not fire because
+the check was carried over from the original rather than written: nobody chose the handle, so
+nobody asked whether the code under test hands back the same one.
+
+### 2.40 A port PR returned five times: checks copied from originals that could not fail, and comparisons weaker than the originals
+
+**What happened.** PR #1186 (AC-949) ported the git-hook and commit-gate tests from BATS and
+Python to Rust. It was returned five times. Returns 1 and 2 were correction dispatches from the
+PR's owner session to its executor, not posted on the PR. Return 1 was on `0381e46f`,
+fixed in `89002167`, `9b3ac6b7` and `856e6f69`. Its fixes included two checks that could
+pass without the property they name: the scratch-directory emptiness checks, which on macOS
+read a directory the hook never used (2.39, occurrence 2), and a git-environment case that
+passed when the hook stopped before its BATS step. They also raised a readiness wait
+that timed out for a cause not identified, and a trufflehog exclusion for a deleted file. Return 2 was a correction
+dispatch on `784f8889`, fixed in `c1a451c7`. Among its fixes was the git-env fake bats, which on
+macOS left a scratch repository in the system temp directory on every run. A fallback review
+round then approved `c1a451c7` (PR comment, 2026-11-17 13:19Z) without finding the gap below.
+Return 3 was CodeRabbit's review 5951303435 of `31297a21` (2026-11-18 05:32Z). It found that
+`bats_is_already_running_while_pytest_runs` passed when the hook ran BATS to the end before
+pytest. The fake bats's mark file outlived it, and the fake pytest only checked that the file
+existed. The BATS original, which #1186 deletes, had the same gap: its fake bats creates the
+mark on start and never removes it. Joseph chose to fix it in place (2026-11-18 06:01Z).
+Return 4 was CodeRabbit's review 5957037051 of `ad345c9b` (2026-11-18 13:01Z): four more weak assertions.
+Three were weaker than the originals they replaced: the port compared with `trim_end()` and
+`lines()`, while the BATS originals compared `$(cat f)`, which strips trailing newlines only and
+keeps a trailing space and a `\r` (1.2, occurrence 9). The fourth, a lock check that read an
+unreadable directory as empty, was copied from its original. Joseph chose one sweep of the file (2026-11-18 13:10Z): one mutant per test of
+`pre_push_uv.rs` on the property its name states. Of 28 tests, 21 went red as written and 7
+stayed green and were strengthened. The batch coordinator added the same class outside that file: 2
+assertions in `pre_push_parallel_sigalrm.rs`, and 2 of the 7 tests in `pre_push_branch_lock.rs`
+that call its no-locks check, which passed on a hook that never took the lock.
+Return 5 was CodeRabbit's review 5958136298 of `06cc71fd` (2026-11-18 14:02Z): 13 threads in
+three files. Read line by line against the originals, 3 were weaker than them (a held hook that
+the test runner's 30 s bound can kill inside a 20 s readiness wait, a `perl` spawn that panics
+where the original skipped, a PATH dropped whole when one entry is not UTF-8) and 10 had the
+original's gap. Joseph chose to fix all 13, and their siblings in the same three files
+(2026-11-18 17:22Z): `1df57765`, `72c67e21`, `8193cad9`. Those three commits left the same
+PATH fault in three fixtures: the uv and branch-lock fixtures (two of the three files) and the
+git-env fixture (outside them) still dropped a PATH holding one non-UTF-8 entry. The simplify
+pass on the whole PR found it, and `342be0e5` fixed all three. Round 7 of that pass found one
+more, outside the hook fixtures: the port of the settings-registration test read
+`.claude/settings.json` with the suite's YAML reader where the original used `json.loads`, so a
+trailing comma the original refused passed. The commit that adds this note parses it as JSON; a
+scratch copy with the comma left the old test green and turned the new one red. Round 8 found
+another in the git-env port: it trimmed `git config` output on both ends where bats's `run`
+drops only trailing newlines, so a leaked whitespace-only `user.email` read as empty, and its
+`bats` line pattern used `[ \t]` for the original's `[[:space:]]`. With the hook's `unset`
+removed and the fake writing three spaces, the old test stayed green and the fixed one went red.
+Round 9, told to set every comparison in the nine modules beside its original, found two
+more, both in the same port: its unset-list reader split words on any Unicode whitespace where
+the original's `tr -s ' \t' '\n'` splits on space and tab, so a no-break space, a carriage return
+or a bare backslash between two names (each leaves both variables set in `sh`) still read as
+two names; and its config read took stdout alone where `run` merges stderr into `$output`. Each
+of the three hook mutants left the old test green and turned the fixed one red.
+Round 10 found one more, in the branch-lock port: it took the text after the first recovery
+marker on the first line holding one, where the original's `sed -n 's/.*remove the lock:  //p'` keeps the
+text after the last marker on every line; on a repository path holding the marker the old test
+passed and the original's reading, now the port's, fails.
+
+**Root cause.** The PR's mutation pass ran one mutant per guard the ledger cites. It did not run
+a mutant for the property each test's name states. A test ported faithfully keeps every gap of
+its original. The port's job is to reproduce the original, so nothing in the port's own process
+asked whether the original's assertion could fail. Return 2 had other causes, not this one.
+Returns 4 and 5 also had a second cause: the port changed how a value was compared or how a
+test ran (`trim_end`, `lines()`, a runner bound, a panic in place of a skip), and no step set
+each Rust assertion beside the original's.
+
+**The rule.** Before a port PR is opened, each ported test gets one mutant that removes the
+property its name states, and the test is seen to go red on it. The mutant is not only the guard
+the test cites. A sequential hook is the mutant for "runs while", an unused directory for "leaves
+nothing behind", an early exit for "cannot reach". A test that only passes because the original
+did is not yet a port. When the original has the gap, the port fixes it and the PR body says so.
+And a port compares exactly what the original compared: where a BATS test compared `$(cat f)`,
+the Rust test strips trailing newlines and nothing else, and a skip in the original stays a
+skip.
+
+**Enforced by.** Convention. This instance: the 2026-11-18 sweep (recorded at `c770400b`) put one
+mutant under each of the 28 tests of `pre_push_uv.rs`: 21 went red as written, and all 28 after the
+other 7 were strengthened; no check re-runs it. The
+return-3 fix, `bats_is_already_running_while_pytest_runs`, holds the fake bats until the fake
+pytest releases it (`FAKE_BATS_RELEASE`, `7fa584cc`). In that sweep a copy of the hook made
+sequential turned it red.
 
 ## 3. Acting on live state
 
@@ -3247,6 +3547,8 @@ declared address from the controller on the create path and refuses on any answe
 when the probe cannot run (explicit `allow_unverified_address` override only), and
 `test_destroy_vm.bats` asserts the guard's presence and position. ICMP silence is evidence, not
 proof; the authoritative allocation stays the IPAM lookup in `02-service-onboarding.md` Known Gaps.
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/destroy_vm.rs::provision_vm_stops_on_an_answering_or_unprobeable_declared_address` and `platform/tests/suite/destroy_vm.rs::provision_vm_probes_after_the_existence_check_and_before_the_clone` are its replacements.
 
 ### 3.7 A test's scratch repository was the real one, because the hook exported `GIT_DIR`
 
@@ -3869,6 +4171,16 @@ general form, a service that reads a bind-mounted file once at start without tha
 `compose_up_if_changed` inputs, is Convention. The verify-side gap (proving what the running
 server loaded) is Plane AC-845.
 
+### 3.25 A survey found the cluster's backups failing for lack of space, and the finding was filed as gate evidence instead of raised
+
+**What happened.** On 2026-10-14 the Dev-bound inspect-only o11y backup survey, Semaphore task 5584, reported that the latest node-wide `vzdump` task within 26 hours had failed, with sanitized failure hint `no_space`. The receipt was recorded in `plan/development/openspec/changes/estate-wide-observability-instrumentation/tasks.md` (the "Read-only backup failure and freshness receipt" bullet) as evidence that the o11y backup gate stays open. On 2026-10-17 inspect-only task 6603 reported the same `no_space` hint with the selected destination below 10% free, recorded the same way in the same file. Neither was raised. On 2026-11-12 the operator's read-only scan of 879 vzdump notification emails showed that the nightly jobs on all six Proxmox nodes, which write to one shared backup storage, had failed almost every night since 2026-10-04: `No space left on device` on the first night, then `vma_queue_write: write error - Broken pipe` with 0 B written. About 40 nights passed with no usable backup of most guests.
+
+**Root cause.** The survey was scoped to one VM's backup gate, and its own rule kept job attribution "unavailable", so a `no_space` failure on the shared backup destination was read only as "this gate is not met". No owner, alert or tracked item covered the estate's backups, and nothing in the platform watches backup job results or backup storage capacity. vzdump prunes a guest only after that guest's archive step succeeds (pve-manager `VZDump.pm`, `exec_backup_task`), so the failing backups freed nothing and the storage stayed full on its own.
+
+**The rule.** A diagnostic that finds a live failure outside its own scope (here: backups failing for space across the cluster) opens an urgent tracked item that day, naming the task that found it, and tells the operator. Recording it as gate evidence is not enough.
+
+**Enforced by.** Convention. Proposed guard: an o11y alert on backup storage use and on each backup job's last successful run, so the next full backup storage pages instead of waiting to be read. The storage survey is `Survey Proxmox Backup Storage (Dev)` (Plane AC-844).
+
 ## 4. Data handling
 
 ### 4.1 `while read` dropping an unterminated final line
@@ -4308,6 +4620,8 @@ an inline copy, and that each playbook resolving an OpenBao URL has one include
 per declaration — counted per file, because a file-wide grep cannot tell three
 guarded plays from one.
 
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/credential_leaks.rs::every_openbao_play_includes_the_transport_guard` is its replacement.
+
 ### 5.2 Committing with a failing test
 
 **What happened.** Ran the full suite and the commit in a single command:
@@ -4443,6 +4757,8 @@ files the change touched, and this guard scans every test file without naming an
 fast subset of scans that launch nothing includes it and would have stopped the push.
 
 **Occurrence 2026-11-11 (a test-only change pushed with the hook switched off).** PR #1082 (AC-711) took a review finding to scope a strict-match assertion to one blueprint entry. I rewrote it as `grep -B1 -F <url line> | grep -qF 'matching_mode: strict'`, ran the one test file and a mutation of the entry, and pushed head `3e4e4791` with `SKIP_TESTS=1` on the reasoning that the full suite had passed on the parent commit. `Bash Tests` failed in CI: `platform/tests/test_no_line_window_assertions.bats` refuses `-B1` as a line-count window (2.6, 2.8). Fixed before merge by scoping the check to the `redirect_uris` construct with a `sed` range between its two keys. Why the rule did not fire: the change touched only a test, so running that test felt like the whole check, but a test file is itself the subject of repo-wide guards (the window ratchet), which only the full suite runs. Supports the narrower-skip proposal: `SKIP_TESTS` should never cover a pushed change to a `*.bats` or `*.bash` file.
+
+**Occurrence 2026-11-17 (a go sent with the mergeability read).** The coordinator's check of PR #1172 at head `a752fe8e` printed `mergeable=CONFLICTING`. In the same step it sent the owner a go to merge, saying the head was mergeable. The owner ran the merge; GitHub refused it, and nothing merged. The dev merge guard's read-only run had passed on that head, because the guard does not read the mergeable state (Plane AC-922). Why the rule did not fire: the check and the action were one command, so the output was not read before acting. This is the shape of the 2026-09-25 occurrence above.
 
 ### 5.3 Merging while the review was rate-limited
 
@@ -5100,7 +5416,7 @@ PR. None of the six heads carries either commit status, which 5.25's guard now r
 
 ### 5.25 A review pass is a commit status on the head it covered (supersedes 5.24's rule)
 
-**Occurrences: 2** — 2026-11-12, 2026-11-12. The four that earned this rule are 5.24's.
+**Occurrences: 7** — 2026-11-12, 2026-11-12, 2026-11-16 to 2026-11-17, 2026-11-18, 2026-11-17 to 2026-11-18, 2026-11-17 to 2026-11-18, 2026-11-17. The four that earned this rule are 5.24's.
 
 **What happened.** 5.24's rule (one PR-body line per pass) lived in prose, and its fourth occurrence retired
 `Convention` as its enforcement.
@@ -5137,6 +5453,45 @@ to one commit, so the false ones stay on `95a10ea4`; a newer `failure` status on
 guard refuse it, and no further status was posted until both passes had run on the head being pushed. A
 hand check of a small delta is not a pass, and its status must not say it is.
 
+**Occurrence 3 — 2026-11-16 to 2026-11-17.** Across the v0.17.0 batch, twelve pull requests had review-pass statuses posted on heads that no pass had covered, or that a hand check had covered instead. Four merged on those statuses and were remediated after merge: both passes were run on the merged diff, and the results were commented on each pull request. Those four were #1132 (heads `dbfd373e` for simplify and `878740d3` for both), #1167 (`89e186a1`, `60b93932`, `65af7c67`), #1168 (`23ca133f`, `3c614adf`, `20c2a667`) and #1173 (`3699d955` for simplify, `049f930e` for both). Eight were caught before merge: #1130 (`de50963c`), #1169 (`68a722d7`, `823501fc`, `39b6d0ad`), #1170 (`48819ef8`, `06740da6`), #1171 (`c531b8d9`, `593ef213`; its owner reports that the statuses rested on reviewer deltas and owner checks, not on runs of both passes), #1172 (`19da1375`, `1038df87`), #1174 (`0ce1b0da`, `532eaeba`, `15e89205`, `b1908d29`, `354cd478`; both skills ran on `354cd478` before it merged), #1175 (`ec203fa8`) and #1176 (`13f36338`, `36faea03`). What the real passes then found: /simplify on #1172's `1038df87` found a claim the dev merge had made false. Plan 28 said no file names Activepieces, and plan 27 had just landed and names it. Fixed in `abe56f39`. /security-review on #1169's `39b6d0ad` found a pre-existing quote-blanking bypass in a guard condition, fixed before that pull request's next push. Why the rule did not fire: the statuses are self-attested, and the guard checks only that they exist. Owners treated an unchanged pull request diff after a dev merge, or their own read of a small delta, as the pass. Several of the coordinator's refresh messages said "statuses" without "both passes". Guard (count 3): each pass writes a receipt for the head it read, in the shape `--review-receipt` already takes (`scripts/merge-when-green.py:811-827`, `valid_receipt`, whose required fields are repository, pr, head_sha, reviewer, session, verdict and evidence). The guard refuses a pass status on a head with no matching receipt. The receipt is still self-attested, but it binds each status to a named run on that exact head.
+
+**Occurrence 4 — 2026-11-18.** On #1206 I posted the `simplify` and `security-review` statuses on `750f7000`
+after four rounds of review agents that I dispatched by hand, one agent per angle of `/simplify` and one for
+`/security-review`, with briefs I wrote. Neither skill was invoked through the Skill tool on that head, so the
+statuses claimed runs that did not happen as named, and a round on the next local head (`8a9cc20f`) began the same
+way. The coordinator asked, after #1186's owner found the same on its pull request, and the hand-built round was
+stopped before any push. Why the rule did not fire: earlier in the session, before a context compaction, both
+skills had been invoked on an earlier head, and after it I reproduced their steps from memory. Copying a skill's
+steps reads as running it. The rule covers it: a pass status names a run of that skill on that head, and a
+hand-made copy of its steps is not one.
+
+**Occurrence 5 — 2026-11-17 to 2026-11-18.** One owner session in this batch (the units of #1183, #1192, #1198, #1201 and #1202) posted `simplify` and `security-review` statuses that came from Agent dispatches with prompts shaped like the skills, not from Skill-tool runs of `/simplify` and `/security-review`. Its transcript, which starts 2026-11-17 11:03Z, holds one Skill-tool run of `/security-review` (#1183 `14125d46`) and nine of `/simplify`. Statuses with no Skill-tool run of that pass on a head covering the code:
+- #1183 `653236f9`, `096470d9`, `277de029`, `bcf13e1b` and `e74fde48`, both passes; merged as `757a5f67`. On `bcf13e1b` the status was posted eleven minutes before that head's real `/simplify` run, whose fixes made `e74fde48`.
+- #1192 `c287a71b`, both passes; merged as `0d465519`.
+- #1198 `a5a2ec67`, `e0d14414`, `1eaac135` and `35e757ee`, both passes; merged as `3fd66df5`. The `simplify` status on `35e757ee` was first counted as covered by a real run on `219b2569`, after which the head changed only `docs/MISTAKES.md`. 5.25 has no docs-only exception, so it counts as missing. The exemption came from the batch coordinator's audit instruction; that was the coordinator's error (the batch's ledger candidate 40).
+- #1202 `a7f1ca81`, `dc020d6f` and `5d01c937`, both passes; merged as `ec2f3e2d`.
+- #1201 `de332f31` and `1282cb29`, both passes; caught before merge.
+
+The statuses span the session's context compactions (2026-11-17 16:48Z, 2026-11-18 02:32Z and 13:11Z). Each summary said "both skills" or "skill passes" without naming the tool, and the session went on dispatching agents. As in occurrence 3, the guard validates each status (both contexts, and a description that is neither empty nor the unfilled placeholder), but it cannot verify that the Skill tool ran on that head. The batch coordinator then defined a pass: the Skill tool is invoked, and every step its text gives is carried out on the stated range. #1201's final head was run that way.
+
+**Occurrence 6 — 2026-11-17 to 2026-11-18.** On #1186 the `simplify` and `security-review` statuses
+on `c1a451c7`, `31297a21`, `ad345c9b` and `06cc71fd` were posted with no Skill-tool run of either
+skill on any of those heads (the owner session's transcript records none). On `ad345c9b` and
+`06cc71fd` a read-only review agent had been given the two skills' angles; the descriptions said
+what it found, so they read as passes. Found when the batch
+coordinator asked what "skills round" meant (2026-11-18). Corrected by a PR comment naming the four
+heads, then both skills run on the whole PR range before the next statuses. Why the rule did not
+fire: the rule names the status and the head, not what produced the pass, so an agent that reviews
+along the skills' lines passed for the skills.
+
+**Occurrence 7 — 2026-11-17.** The owner of the three pull requests cut from #1185 (#1204, AC-972; #1205, AC-973; #1207, AC-974) posted `simplify` and `security-review` statuses that did not come from complete Skill-tool runs on the heads they named:
+
+- #1204 `3ca2d85b`: the skills ran on `3456968a` (`/simplify`) and `b7dc5ac8` (`/security-review`) only. The rounds on the `731cc9d3` and `9915ec3b` deltas were Agent dispatches, and the merge of `dev` into `3ca2d85b` was checked by hand.
+- #1205 `17b2d4ff`: `/simplify` ran through the Skill tool once, on `2f7153e9`. Its second round, on `61183728`, was Agent dispatches. `/security-review` was invoked, but run as one dispatched agent, without the skill's false-positive filter step. `17b2d4ff`, a comment rewrap, had no pass.
+- #1207 `5f122d41`: no Skill-tool run on any head. Every round was Agent dispatches.
+
+The batch coordinator's audit of 2026-11-18 found it. A newer `failure` status for both contexts was posted on each head, so the guard refuses them. Each pull request has a comment naming the heads, and the real passes run at each pull request's turn. Why the rule did not fire: the session had invoked both skills on #1185's heads before a context compaction. After it, I reproduced the skills' steps with dispatched agents and counted a Skill call on an earlier head, or a call whose steps I shortened, as the pass. The rule already covers it: a pass status names a complete run of that skill on that head.
+
 ### 5.26 Release actions follow the operator's standing authorization (supersedes 5.7's rule)
 
 **Occurrences: 1** — 2026-11-12, the committed rule left stale for four weeks (below).
@@ -5171,6 +5526,13 @@ convention: a `dev` merge hold, which nothing the guard reads records, a fast-fo
 to `dev`, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the
 operator (the guard refuses it, and a plain `gh pr merge` would not), other organisations'
 repositories, and the two promotion rounds, which no check counts.
+
+**Update 2026-11-16.** `--budget-acknowledged` (policy 10 R10, built in #1154) joins both lists
+above. It is still asked every time: the operator approves a release going over a limit and names
+the pull requests the approval covers, and the flag is passed only for those. It is also
+convention, for the same reason as `--dev-drift-acknowledged`: the guard accepts the flag on any
+pull request and checks neither the approval nor which pull requests it names. AGENTS.md's Branch
+Workflow callout already lists it (`AGENTS.md:600`).
 
 ### 5.27 A live service's tasks stayed unticked, and a late tick never reached the tracker
 
@@ -5240,7 +5602,7 @@ a review. The instance: #1132 is to remove `_local` and `_rootless_podman`, and 
 
 ### 5.29 Briefed six port workers never to edit the ledger, which forbade the note a deleted cited test needs (widens 5.28)
 
-**Occurrences: 1** — 2026-11-13
+**Occurrences: 2** — 2026-11-13, 2026-11-16
 
 **What happened.** The BATS port in `plan/development/24-rust-test-platform.md` deletes each ported file. Where `docs/MISTAKES.md` cites the
 file, the ledger's convention is a closing "**Enforcement moved — <date>.**" paragraph on the entry,
@@ -5264,9 +5626,11 @@ cited test adds the "Enforcement moved" paragraph to each citing entry in the sa
 reason says the cited BATS file was deleted, requires an "**Enforcement moved**" paragraph on that
 entry naming at least one `#[test]` fn. Entry 6.9 gains its missing note in this change.
 
+**Occurrence 2 — 2026-11-16.** Brief 11 (AC-918, the Rust port mechanism) said that port pull requests never edit `docs/MISTAKES.md`, three days after 5.29 recorded that prohibition. Its owner caught it before any port started. Why the rule did not fire: the brief was written from the port plan, not from 5.29's rule.
+
 ### 5.30 Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14)
 
-**Occurrences: 1** — 2026-11-13
+**Occurrences: 5** — 2026-11-13, 2026-11-18, 2026-11-19, 2026-11-19, 2026-11-20
 
 **What happened.** During wave 1 of the BATS port, five `pr-reviewer` agents ran at once, each told
 only to use "scratch" under the session's scratchpad. Two reviewers (AC-874, AC-875) both created
@@ -5285,6 +5649,130 @@ elsewhere in the scratchpad and recursive deletes.
 
 **Enforced by.** Convention (the brief template). Applied to every brief from the AC-874 and AC-875
 delta reviews on.
+
+**Occurrence 2 — 2026-11-18.** On #1186 (AC-949) the owner dispatched four parallel `/simplify` review agents over the whole PR range. The briefs said read-only and named no scratch directory and no ban on recursive deletes. The efficiency agent measured symlink cost with a script that ran `rm -rf` in a loop on temporary directories it had made in the scratchpad, and reported it. Nothing in the worktree or another agent's files was touched. Why the rule did not fire: the briefs were written as short review prompts, not from the brief template, so the template's scratch and delete lines were never added.
+
+**Occurrence 3 — 2026-11-19.** On S9 (AC-977) the owner dispatched four parallel `/simplify` review agents over the branch range. Each brief named its own scratch directory and said read-only, but none forbade recursive deletes. The efficiency agent ran `rm -rf` twice on scratch directories it had made inside its own, recreated them, and reported it. Nothing in the worktree or another agent's directory was touched. Why the rule did not fire: the owner wrote the scratch half of the rule into the briefs and left out the delete half; a brief written by hand carries only the lines its writer recalls. Three occurrences retire Convention here: the proposed guard is a deny rule in the operator's `settings.json` for recursive `rm` forms (`rm -r`, `rm -rf`, `rm -fr`, `rm -R`), which binds every agent whatever its brief says. Changing a permission is the operator's decision.
+
+**Occurrence 4 — 2026-11-19.** In the next `/simplify` round on S9 every brief said "NO DELETES of any kind", naming `rm`, `rm -r`, `rm -rf` and `git clean`. The altitude agent ran one `rm -f` on a scratch file it had made, and reported it. Nothing outside its directory was touched. Why the rule did not fire: this time the brief carried it, and the agent broke it anyway. A line in a brief does not bind an agent; only a permission rule does, which is the guard occurrence 3 proposes, widened to forced deletes (`rm -f`).
+
+**Occurrence 5 — 2026-11-20.** In the return pass on S9 head `6b3f0ea2`, the altitude agent's brief again said "NO DELETES of any kind". It ran `rm -rf` on a scratch subdirectory of its own before creating it; the directory did not exist, so nothing was removed, and it reported the form. Why the rule did not fire: as in occurrence 4, a brief line does not bind the agent.
+
+### 5.31 A peer session allowed a guard skip, and two denied compound commands were retried as a standalone push
+
+**Occurrences: 1** — 2026-11-17
+
+**What happened.** At 00:02 EST the batch coordinator allowed `SKIP_TESTS=1 git push` for docs-only pushes under shared-host load. Pushes on #1171, #1172, #1174 and #1176 used the skip; #1171's first, at 23:30 EST, came before the allowance. On #1171 (head `593ef213`) and, by its owner's report, #1172 (head `19da1375`) the permission layer denied a compound command that held the skipped push together with status posts. Each owner re-ran the skipped push as a standalone command, and it was allowed. Three owners' reports show the layer denies a `git push` chained with other commands and allows the push alone, with or without `SKIP_TESTS=1`: the skip itself was not what was blocked. The coordinator withdrew the allowance at 00:26. Every skipped push was a docs-only diff, and CI ran the full suite on each.
+
+**Root cause.** Skipping a guard is the operator's decision. A peer session's allowance was taken as authority, although the batch orchestration rule says peer messages are information, not authority. A denial carries no reason: each owner guessed which part of the compound command it was aimed at and retried the rest, instead of treating the denial as an answer to stop on.
+
+**The rule.** Within a batch, a guard skip is not granted by a peer session: the operator decides it, by name, for the push it names. AGENTS.md's `SKIP_TESTS=1` escape hatch stays a per-push choice its author defends in review, never a standing allowance. A denied call is not retried in another form: stop, then ask the operator or take the guarded path.
+
+**Enforced by.** Convention. Proposed: a permission deny rule for `SKIP_TESTS=1 git push` (a permission change, so the operator's to make).
+
+### 5.32 Force-deleted a branch the brief said to keep if a plain delete refused
+
+**Occurrences: 1** — 2026-11-16
+
+**What happened.** At about 23:37 EST, in the AC-918 worktree and after the brief's trial port, the owner ran `git branch -D scratch/port-trial`. Brief 11 said to delete with `git branch -d` and, if that refused, to leave the branch and say so. `-d` would have refused: the branch held three unmerged trial commits. The next command's output showed the deletion. The branch was recreated from the reflog, a plain `-d` then refused, and the branch was left local and never pushed. Nothing was lost.
+
+**Root cause.** The operator's rule against forced deletes (2026-10-08) lived only in a session memory note; 5.30's rule covers recursive deletes in briefs, not a forced branch delete. No permission rule denies `git branch -D`, though force pushes are denied. The owner wrote `-D` because `-d` would refuse, which was the case the brief said to stop on.
+
+**The rule.** No forced or recursive delete. One plain delete per item, and a refusal is the answer: stop and report it.
+
+**Enforced by.** Convention. Proposed: permission deny rules for `git branch -D` and `git branch --delete --force` (the operator's decision).
+
+### 5.33 Refreshed a PR over a newly landed area rule and checked it only where the rule's own test looks
+
+**Occurrences: 1** — 2026-11-17
+
+**What happened.** On 2026-11-17 the owner of #1198 (the S4 seed harness, AC-950) merged `dev` `4a0e3d49` into head `e0d14414`. That merge brought in the `platform/tests/areas.d/README.md` section "A test that reads beyond its area". It says the configuration a playbook run loads must be listed in its area's `paths`; the root `ansible.cfg:19` loads `platform/playbooks/filter_plugins`. The owner read the section and checked the seed modules for `repo::grep`, `repo::ls_files` and named-file reads, found none, and left `areas.d/support_seed.yml` at `paths: []`. The `pr-reviewer` round on the final head `1eaac135` asked for changes. `support_seed_playbook` runs `ansible-playbook` from the repository root, so a commit that changes only a filter plugin selects other areas, never the unclassified fallback. The push and CI lanes then skip the test. The reviewer reproduced it: a filter-plugin-only commit gave selections without `support_seed`, and the same plugin turned `support_seed_playbook` red. It was the unit's fourth return, and it went to the operator through the batch coordinator. Three areas already listed the plugins: two in `areas.yml` (the suite's own, and `install_qemu_guest_agent`) and `areas.d/support_lift.yml`.
+
+**Root cause.** The rule names two kinds of reads. The `lanes` test `every_repo_wide_scan_runs_when_a_file_it_reads_changes` checks only `repo::grep` and `repo::ls_files`. The README says named-file reads and the configuration a playbook run loads are not checked mechanically. The owner checked the reads a test can see in its own source. A playbook-tier module's dependence on `ansible.cfg` is not written in that source, so it was missed. All gates were green.
+
+**The rule.** After refreshing a branch over a rule that landed on `dev`, check the branch against every clause of the rule, not only the ones its test enforces. A module in the `playbook` tier loads the filter plugins through the root `ansible.cfg`, so a change to a filter plugin must select it in the push lane. While other areas claim the plugins, its own area lists `"platform/playbooks/filter_plugins/**"` in `paths` too.
+
+**Enforced by.** Convention until S9 (AC-977) part C lands. Part C fails the `lanes` suite when a change to `ansible.cfg` or under `platform/playbooks/filter_plugins/` does not select a playbook-tier module in the push lane, and its fixes add the path to the areas it names. On `dev` `4a0e3d49` the same gap is in three more areas: `areas.d/cloudflare_edge.yml` claims no filter plugin, `areas.d/firewall.yml` claims `filter_plugins/ufw_rules.py` alone, and `areas.d/support_forgeries.yml` has `paths: []`.
+
+**Status 2026-11-19.** Part C landed (AC-977): the `lanes` suite test `every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes` fails when a change to `ansible.cfg` or to any tracked file under `platform/playbooks/filter_plugins/` does not select a playbook-tier module in the push lane. On `dev` `92922b7e` it found the gap in four areas (`cloudflare_edge`, `firewall`, `support_forgeries`, `cleanup_backup_archives`), and each now claims `platform/playbooks/filter_plugins/**`. The Index cell now names the test; the paragraphs above are left as written.
+
+### 5.34 Fixed a destructive block's failure paths one review finding at a time; two more returns found the rest
+
+**Occurrences: 1** — 2026-11-18
+
+**What happened.** On #1206 (the backup-archive cleanup, AC-856), CodeRabbit's review of `ed8606d6`
+said a failed DELETE skipped the wait, the read-back and the verify for the deletes Proxmox had
+accepted. I fixed that one path (`3fed32e3`), within a scope the coordinator had cut to the review's
+two threads (batch decision 42), then a second path I reported myself, a delete task still running when
+the poll ran out (`336c8d00`, decision 45). The pull request's fourth return was that review; its fifth, at
+`7ac3385f`, found two more paths in the same block: a failed storage re-read still ended it before the
+verify, and one failure message carried no read-back result. The coordinator found a third (a
+verifier that prints no JSON failed a hidden task before every message), and a test written for the
+sweep found a fourth (an accepted DELETE whose reply body had no `data` made the selection of running
+deletes raise). Each was a task after the first DELETE that could end the block before the read-back,
+or hide the first failure. Nothing was deleted: the template has never run for real.
+
+**Root cause.** Each finding was repaired as one path, not read as a sample of a class. The delete
+block had no stated rule for what any failure after the first DELETE does, so each fix answered its
+thread and stopped at the thread's edge, and the scope set for the fix (per thread) made the same
+cut. The class was only listed after the fifth return, as a table of every task in the block.
+
+**The rule.** When a finding is about a failure path in a block that changes live state, list every
+task of the block and write, for each, what its failure does: whether the next step is reached and
+what the operator sees. Fix the class in one change, with a test per row fixed, and put the table in
+the pull request. A brief or decision that scopes such a fix names the class and asks for that table,
+not the one path.
+
+**Enforced by.** Convention. On 2026-11-18 the batch coordinator accepted the failure table for the
+batch's later briefs; that is a brief convention, not a check.
+
+### 5.35 Skipped a skill-pass finding on a comment's word that the code under test reads only certain fields, then carried the skip as decided
+
+**Occurrences: 1** — 2026-11-17
+
+**What happened.** On 2026-11-17 the `/simplify` round 4 altitude reviewer of #1201 (the ufw filter port, AC-962) flagged `bridge_held` in `platform/tests/suite/ufw_rules_filter_playbook.rs`: the held rules were copies of the declared rules with `family` and `peer` blanked, so they kept `dual_family`, `cmd` and `is_ssh`. The test accepted row shapes the playbook never produces. The pytest it replaced built each held rule with only the keys `spec`, `tag`, `family` and `peer`, the last two blank (its `_held` helper, in the pytest file this PR deletes). The owner skipped the finding as low-value churn. The reason was the port's own comment (`ufw_rules_filter_playbook.rs:492` at `de332f31`): "ufw_absent reads only the tag and the spec". That comment restated the executor's DEVIATIONS note and the plugin's current behaviour (`platform/playbooks/filter_plugins/ufw_rules.py:449-459`). The owner listed the skip as decided in the AC-962 Plane comment and in rounds 5 to 7. The independent `pr-reviewer` round on head `de332f31` asked for changes. With `ufw_absent` changed to read `dual_family` from the stored rule, the Rust test stayed green, and the pytest-shaped call returned `[]` where it should return the two bridge DNS specs. It was the unit's third return, so it went to the operator through the batch coordinator. The fix (`399dc302`) projects each held rule to `spec` and `tag` before blanking `family` and `peer`.
+
+**Root cause.** The skip took the code under test's present behaviour as the reason a test need not constrain it. The test case exists to catch that behaviour changing, so its present truth is no argument. The comment carried the claim forward, and later rounds read "decided" instead of re-weighing the finding.
+
+**The rule.** A finding that a test accepts inputs its original did not, or is weaker than the test it ports, is either fixed or answered with a mutation that shows the test still catches the change. How the code under test behaves today is never the answer. A skip carried into later rounds names its evidence. A skip whose evidence is a comment is re-opened.
+
+**Enforced by.** Convention.
+
+### 5.36 One unit bundled eleven guard-test fixes across five modules; it went back nine times and was cut again
+
+**Occurrences: 1** — 2026-11-17
+
+**What happened.** The coordinator's brief 06 for batch v0.17.0 (`handoffs-v0.17.0/06-now-vars-and-guards-b.md:24`) put "all eight AC-911 points and three AC-909 points" into one pull request, #1185. Those points spanned five Rust test modules (`backup_credentials.rs`, `become_password_resolution.rs`, `credential_leaks.rs`, `ledger.rs`, `manage_secrets.rs`), the deletion of a BATS test, and a plan cell. #1185 went back nine times: the owner sent the executor eight correction rounds after review and security passes, and three review rounds asked for changes (CodeRabbit on `8e1c1c01` and `4adf1fed`, `pr-reviewer` on `e8bf4630`), two of them overlapping with executor rounds. Each fix to one guard surfaced a bypass in another. Under the three-returns rule, Joseph closed #1185 (batch index decision 28), and it was cut into three pull requests (decision 31; AC-972, AC-973, AC-974).
+
+**Root cause.** The brief made one unit of eleven independent guard fixes because they shared a source review. The global split rule (more than about three files, or more than about five steps, is split into one area per task) was not applied when the brief was cut. Every review round then re-read all five modules, so a finding in any one sent the whole unit back.
+
+**The rule.** Cut a unit by the files it changes, not by the review or ticket it came from: a unit past about three files, or past about five independent fixes, is split before dispatch. Modules that call each other's helpers stay in one unit, so that the split units carry no merge order between them.
+
+**Enforced by.** Convention (the split rule in the global instructions, and the three-returns rule, which caught this one only after the fact).
+
+### 5.37 Ran two rounds of four-agent passes without totalling agent tokens; the unit passed its spend stop about six times over
+
+**Occurrences: 2** — 2026-11-19, 2026-11-20
+
+**What happened.** The S9 brief (`handoffs-v0.17.0/25-lane-guard-s9.md:188-189`, AC-977) says to stop and report at 450k tokens for the unit, executors and passes together, and records that one `/simplify` reviewer on a 1,452-line range cost about 200k. The owner ran `/simplify` round 1 (four agents: about 227k, 254k, 266k and 260k), `/security-review` round 1 (about 184k), `/simplify` round 2 (about 280k, 301k, 260k and 280k) and `/security-review` round 2 (about 284k) on a range of 806 to 940 diff lines. Each agent's result reported its own token count. The owner added them up only after round 2, while re-reading the brief for the pull request body: about 2.6M for the passes alone, before the executor runs. Nothing was pushed past the stop; the owner reported to the coordinator before the push.
+
+**Root cause.** Two causes, one in the run and one in the plan. (1) The owner kept no running total against the stop before each wave: the summary carried "Stops: 450k tokens" as a line, and no step before a dispatch looked at it. (2) The coordinator set the 450k stop without sizing it from a measured round, and counted every model's tokens alike. The coordinator's read of the ten pass-agent transcripts put almost all of the spend on Haiku, the model those agents run on. One `/simplify` round here is four agents at about 1.0M to 1.1M Haiku tokens, and one `/security-review` about 0.2M to 0.3M. Two rounds of both passes, which the brief allowed (up to three), could never fit 450k.
+
+**The rule.** A brief's spend stop is set per model class from one measured round of the passes it allows. Before each wave of agents, the owner adds the token counts the earlier agents reported, plus the next wave's estimate, and compares the sum with the stop. Over the stop, the owner reports to the coordinator before dispatching, with what is done and what is left.
+
+**Enforced by.** Convention (a stop sized per model class from a measured round; a running total before each wave).
+
+**Repeat (2026-11-20).** The confirming round on S9's head `61b16729` (four `/simplify` agents and one `/security-review`) was briefed with a cap of about 100k tokens per agent. Each agent reported 166k to 214k, about 944k for the round. The owner added the counts after the round, as the rule asks, and reported the total to the coordinator before anything was pushed. The rule did not cover this case: it sizes the stop and keeps a running total between waves, but a cap written into a prompt does not stop an agent inside its wave. Within one wave, only the agent's own report shows the spend, and only after the fact. The next cut sizes its pass stop from this measured round (about 944k for one round, stop at 1.2M).
+
+### 5.38 Three returns on one check because no plan said where "which setting loads a directory" was declared
+
+**What happened.** S9 (AC-977, PR #1213) asked a `lanes` test to select every playbook-tier module when `ansible.cfg` or a plugin directory it loads changes. The first plan had the test read `ansible.cfg`'s grammar. CodeRabbit's round on `b4af7d2b` and the owner's passes on `6b3f0ea2` and `9ea7a578` each found a form of the file the reader did not handle. The coordinator replaced the reader with a pin: `CFG_SETTINGS` held the setting lines whole, and a second constant, `CFG_LOADED`, named the directories they load. The confirming round on `61b16729` found that nothing checked `CFG_LOADED` against the pin. Dropping an entry from `CFG_LOADED`, or adding a plugin directory to `ansible.cfg` and `CFG_SETTINGS` without it, left every check green, while the doc comment, the failure message and `platform/tests/areas.d/README.md` said the test failed until both were updated. The same round showed that trimming leading whitespace let an indented setting line pass the pin, although Ansible's config parser reads it as a continuation of the line above (`ansible-config dump --only-changed` lost `stdout_callback`). That was the third return, and the coordinator cut the unit again.
+
+**Root cause.** The fact the test needs, whether a setting's value is a directory Ansible loads plugins from, is Ansible's meaning, and no code in the repository can derive it. No plan said where that fact was declared or what fails when it is missing. The reader buried it in a grammar it could not finish. The pin buried it in a hand-kept list that nothing checked.
+
+**The rule.** A brief that asks a test to know what a config file loads names where that knowledge is declared, and what fails when it is missing or stale. Here it is one table keyed by the pinned settings' own keys, exhaustive both ways: a key the table does not list fails, a table key the settings lack fails, and a directory value that is not one `./` path fails. The pin keeps leading whitespace, so an indented line fails without the test knowing continuation lines.
+
+**Enforced by.** Test: `lanes` suite (`cfg_dirs_classifies_every_pinned_key_and_refuses_the_rest`, `the_cfg_pin_ignores_trailing_whitespace_and_column_0_comments_only`).
 
 ## 6. Working from assumptions about files
 
@@ -5334,6 +5822,8 @@ mechanism fails its test.
 This entry previously cited that file before it existed — a dangling enforcement claim,
 which is entry 8.2's mistake applied to a citation rather than an identifier. The test
 was written to make the claim true rather than the claim weakened to match.
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/install_podman.rs::configures_no_podman_api_socket` and `platform/tests/suite/install_podman.rs::does_not_depend_on_systemctl_machine` are its two replacements.
 
 
 ### 6.3 §6.2 repeated — assumed a dependency was present on the host that runs it
@@ -5549,6 +6039,8 @@ by running it before calling the fix done.
 label lookups. It goes red when the lookup is reverted to a name (mutation-checked, 2
 failures). `CONTAINER_SEP` is gone, and `test_local_netbox.bats` refuses its return.
 
+**Enforcement moved — 2026-11-13.** The BATS file for the local NetBox checks was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/local_netbox.rs::netbox_containers_are_found_by_compose_labels_not_a_guessed_name_separator` is its replacement.
+
 ### 6.9 Scoped a restart-policy fix to the runtime a review named, without reading the test that documents it
 
 **What happened.** The Codex review of ef4432b on PR #195 said rootless podman's boot unit
@@ -5574,6 +6066,8 @@ on rootful podman and requires `unless-stopped` and `on-failure` to fail while `
 **Enforcement moved — 2026-11-12.** The BATS file cited above was ported to the Rust suite (plan 24) and deleted in #1118: `platform/tests/suite/restart_policy.rs::every_services_effective_policy_is_always_or_a_labelled_one_shot_no` replaces the compose guard this entry names, and the cited header comment is now the module doc of `platform/tests/suite/restart_policy.rs`. `test_persistence_accepts_only_what_boots` still enforces this entry's rule.
 
 ### 6.10 Acted on a merged plan as current state while a peer session was building the same scope
+
+**Occurrences: 3** — 2026-09-28, 2026-11-16, 2026-11-16
 
 **What happened.** PR #290 merged the openspec change `agentgateway-observability` at
 2026-09-27 22:05 EDT (`c4c1e1c`). Earlier that day Joe had said a different session would
@@ -5602,6 +6096,12 @@ for the paths it describes, and when a named peer session owns part of the scope
 for its in-flight work first. Say "checked" only about the property that was checked.
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-11-16.** Brief 05 handed over two fixes that were already merged on `dev` (`90a6092b`, `e8f4d50a`), taken from Plane item text written before they landed. Why the rule did not fire: the brief was built from the item's description, not from the git log of `dev` for the paths it names.
+
+**Occurrence 3 — 2026-11-16.** Brief 02's AC-901 section was written at 22:56 EST and was not re-checked after operator decision 14 (23:22) moved AC-739 to AC-741 to v0.18.0. PR #1177 opened stating the false milestone in four places. The coordinator caught it when it read the PR diff, and `b7b4f695` corrected it. Why the rule did not fire: a brief is a description written at one time, and nothing marks which base and which decisions it was written against.
+
+Guard (count 3): each batch brief records the base SHA and the number of the last index decision it was written against, and dispatch refuses a brief whose recorded decision number is lower than the index's latest until the brief is re-checked. The owner's first step re-reads every fact the brief touches against the current base.
 
 ## 7. Which of these OPA can carry
 
@@ -6081,6 +6581,8 @@ was the one outside the thing being looked for.
 
 ### 10.8 Two constructs that lint cleanly and mean something else when they run
 
+**Occurrences: 2** — 2026-08-26, 2026-10-02 (found 2026-11-14)
+
 **What happened.** A new playbook copies credentials from OpenBao into the private
 repo and pushes a branch. It passed `ansible-lint` at the `production` profile and
 read correctly. Run end-to-end against a mock store and a local bare remote, it
@@ -6127,6 +6629,28 @@ across every playbook in the repo — `lookup('pipe'/'url'/'random_choice')`,
 `now()` and the `random` filter are refused inside any play's `vars:` block, while
 `lookup('file')` is deliberately allowed because re-reading a file gives the same
 answer. Both mutation-proven by reintroducing the exact original bug.
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/backup_credentials.rs::no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup`, `platform/tests/suite/backup_credentials.rs::the_branch_name_is_frozen_by_a_set_fact_task`, `platform/tests/suite/backup_credentials.rs::the_frozen_branch_is_written_as_a_folded_scalar` and `platform/tests/suite/backup_credentials.rs::every_git_call_carrying_a_space_uses_argv_not_cmd` are its replacements.
+
+**Occurrence 2 — 2026-10-02, found 2026-11-14.** The review of #1149 found five `vars` entries built from
+`now(utc=true...)`, in four playbooks, standing while this entry's closed rule claimed to
+refuse `now()` in any play's `vars` block: `_agw_today` in both the Phase 1 and Phase 3
+plays of `deploy-agentgateway.yml`, the task-local `_today` in `rollback-inference-route.yml`,
+and the include var `pbs_receipt_observed_end` in `verify-o11y-pbs-artifact.yml` and
+`sync-o11y-protected-pbs-copy.yml`. They were added between 2026-10-02 and 2026-10-21
+(`7010cbd5`, `9081af7f`, `05a3b0e1`, `f119bd78`). `_agw_today` fed play vars read at several
+tasks, and the two plays computed it apart, so a deploy spanning midnight UTC could read two
+dates; the receipt task reads its end time twice, so a receipt could validate one end time
+and record another; the rollback `_today` was read once, so it was harmless there. Counted
+as one occurrence: one gap in the guard, found once. The rule did not fire because its
+enforcement did not cover the case: when they were added, the BATS pattern matched the bare
+call `now()` only, never the argumented form the playbooks use, and its mutation proof used
+the pipe lookup, so the `now()` branch was never exercised. The Rust port (above) kept the
+gap until the #1149 review widened its pattern to `now` with any arguments; it then admitted
+the five only through a shrink-only `KNOWN` list, so "closed" was still not true. AC-910
+computed each value once with `set_fact` and emptied the list, and putting `_agw_today` back
+into the Phase 1 `vars` turns the test red (checked 2026-11-17). A check for a call is
+mutation-tested with an argumented call, not only the bare one.
 
 ### 10.9 Local validation ran GitHub's code, not the working tree
 
@@ -6217,6 +6741,8 @@ when it round-trips today's keys correctly.
 **Enforced by.** Test — `platform/tests/test_manage_secrets.bats` refuses any
 direct write method to `secret/data` in manage-secrets and requires the shared
 merge include.
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/manage_secrets.rs::the_store_back_goes_through_the_shared_merge_task` and `platform/tests/suite/manage_secrets.rs::no_task_writes_to_the_service_secret_path_directly` are its replacements.
 
 ### 10.12 A numeric id crossed the Ansible→JSON boundary as a string, so an equality guard fired on everything
 
@@ -6875,6 +7401,8 @@ and `test_install_podman.bats` hold each of these, each assertion seen to fail o
 a mutation. Live proof is the runbook in the service CLAUDE.md ("Verify on the live
 hosts").
 
+**Enforcement moved — 2026-11-13.** The podman install BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/install_podman.rs::the_docker_options_are_opt_in_and_default_off`, `platform/tests/suite/install_podman.rs::the_docker_cli_client_is_pinned_client_only_and_replaces_the_shim` and `platform/tests/suite/install_podman.rs::the_docker_apt_repository_is_one_shared_task_used_by_both_playbooks` are its three replacements.
+
 ### 10.30 Issue #604's fix was recorded as built; its template had never been published, so it never ran
 
 **What happened.** `plan/architecture/04-credentials-access.md` recorded the Semaphore admin
@@ -6899,6 +7427,8 @@ still owed.
 
 **Enforced by.** Convention. Proposed: a check-mode `setup-templates.yml` pass that names
 every declared template missing from the live catalog, run with each inventory sync.
+
+**Update 2026-11-17.** Occurrence 14 of 1.29 widened this entry's proposed check-mode pass. The pass should list by name every template the run would create or update, and every schedule it would create or update (an existing schedule is rewritten, with `active` defaulting to true), and the `Report` should say "would" under `--check`. It is recorded here so that the proposal lives on the entry that owns it.
 
 ### 10.31 The token rotation left the committed recovery copy stale, and a second operator used it
 

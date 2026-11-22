@@ -146,16 +146,26 @@ No template, inventory variable, environment file or OpenBao path SHALL hold or 
 - **WHEN** the workspace's compose file, templates and playbooks are read
 - **THEN** no service has an `env_file`, no environment variable names a key, token, secret or password, and no playbook reads a workspace credential from inventory or OpenBao
 
-### Requirement: Staging's front door keeps its mail, and the rack's never does
+### Requirement: The mail catcher serves staging, and the rack only before its first customer
 
-The front door SHALL refuse to start without mail (weft #541). Staging's front door SHALL hand every message to a mail catcher that sends none, reached by plain SMTP on the door's own loopback, with its interface published on the VM's loopback only. A front door outside staging that names the catcher SHALL be refused before anything stops.
+The front door SHALL refuse to start without mail (weft #541). Staging's front door SHALL hand every message to a mail catcher that sends none, reached by plain SMTP on the door's own loopback, with its interface published on the VM's loopback only. The rack's front door MAY use the same catcher, published the same way, only while every host in `weft_workspaces` is marked `weft_workspace_owner: operator` (Jacob, 2026-11-17, weft #332); a workspace not so marked SHALL count as a customer's. A front door outside staging and the rack that names the catcher, the rack's front door naming it while any workspace is a customer's, and a customer's workspace deployed while the rack's front door names it SHALL each be refused before anything stops.
 
 #### Scenario: Staging's front door keeps its mail
 
 - **WHEN** a person signs up on staging's front door
 - **THEN** the sign-up email is in the catcher, reached through an SSH tunnel to the door VM, and no message leaves the VM
 
-#### Scenario: A rack front door never names the mail catcher
+#### Scenario: A front door outside staging and the rack never names the mail catcher
 
-- **WHEN** a deploy or a rollback reaches a front door whose `weft_environment` is not `staging` and which sets `weft_door_mailpit`
+- **WHEN** a deploy or a rollback reaches a front door whose `weft_environment` is neither `staging` nor `rack` and which sets `weft_door_mailpit`
 - **THEN** the run fails before anything stops, and the running front door is left as it was
+
+#### Scenario: The rack's front door keeps the mail catcher only while no workspace is a customer's
+
+- **WHEN** a deploy or a rollback reaches the rack's front door, which sets `weft_door_mailpit`, and a host in `weft_workspaces` is not marked `weft_workspace_owner: operator`
+- **THEN** the run fails before anything stops, names that workspace, and the running front door is left as it was
+
+#### Scenario: A customer's workspace is not deployed while the rack's front door has the mail catcher
+
+- **WHEN** a deploy or a rollback reaches a rack workspace not marked `weft_workspace_owner: operator` while the rack's front door sets `weft_door_mailpit`
+- **THEN** the run fails before anything stops, and the running workspace is left as it was

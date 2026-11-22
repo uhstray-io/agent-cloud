@@ -77,7 +77,7 @@ Before every deploy the binary takes its own backup set beside the data and veri
 
 ### D11. Every weft name is proxied (Jacob, 2026-11-10)
 
-Every platform hostname is proxied by Cloudflare, and grey-clouding was rejected because it publishes the origin address in DNS (`plan/architecture/05-platform-infra.md`). weft's names follow, with no exception. The costs and where each lands: live voice over UDP cannot pass the HTTP proxy and waits on decision V (tasks 4.4, 5.2, 8.3); the front door's per-address sign-in counter needs the real client (C5 below, task 4.3); the WAF challenge faces weft's non-browser paths and needs a skip (C6 below, task 4.2); the proxy's request timeout and body limit apply to uploads.
+Every platform hostname is proxied by Cloudflare, and grey-clouding was rejected because it publishes the origin address in DNS (`plan/architecture/05-platform-infra.md`). weft's names follow, with no exception. The costs and where each lands: live voice over UDP cannot pass the HTTP proxy, so calls are off on the rack until a media route is chosen (weft D578; tasks 4.4, 5.2, 8.3); the front door's per-address sign-in counter needs the real client (C5 below, task 4.3); the WAF challenge faces weft's non-browser paths and needs a skip (C6 below, task 4.2); the proxy's request timeout and body limit apply to uploads.
 
 The front door reads the client from `CF-Connecting-IP` (`WEFT_FRONT_DOOR_CLIENT_ADDRESS_HEADER`) and believes it only from the edge Caddy host (`WEFT_FRONT_DOOR_TRUSTED_PROXIES`, from `weft_door_trusted_proxies`), as the board does from `[board] client_address_header` and `trusted_proxies`; a deploy refuses a front door without the proxies before anything stops. weft #484 retired `WEFT_FRONT_DOOR_BEHIND_A_PROXY`, which read `X-Forwarded-For`, and a door given it alone refuses to start. Caddy passes `CF-Connecting-IP` through as it arrives, so until task 4.3 lands a client that reaches Caddy without crossing Cloudflare can name its own address. That is not safe for the rack, and the rack is not deployed before task 4.3.
 
@@ -111,6 +111,12 @@ weft's slow checks run on the platform's runner service with `github_runner_life
 - **The shared package-read PAT.** Until task 5.4, `tasks/registry-login.yml` logs in with the shared `secret/services/github:pat`, which then sits in the deploy user's `auth.json` on every weft VM, where the orchestrator, through its socket, can read it. Task 5.4 replaces it with a weft-only read credential, a GitHub App installation token if GitHub's container registry accepts one for these packages, before the rack.
 - **The orchestrator holds the deploy user's podman socket.** A compromised orchestrator can run anything as the deploy user: its image store, its containers, `.env` and the clone between the render and `deploy.sh up`, until the VM is rebuilt. `weft.toml` and the verifiers are out of its reach, so it cannot make a deploy choose a different release, but it can change what that release runs. Task 5.5 gives it the socket of a separate unprivileged user who runs only agent and egress-proxy containers: the GitHub runner's pattern, one unprivileged account's rootless socket (`runner-dotenv.j2`, `tasks/podman-user-docker-socket.yml`), recorded in `platform/services/weft-workspace/deployment/CLAUDE.md` (task 2.3).
 
+**Known gaps in the rack's mail catcher, which must close before the first customer** (task 6.3; Jacob, 2026-11-17, weft #332). `tasks/weft-door-mail.yml` reads site-config, not the running hosts:
+
+- **Removing `weft_door_mailpit` changes nothing until the door is deployed.** The running front door keeps Mailpit until Deploy weft Front Door runs, and a customer workspace stood up in between passes the workspace check, which reads the door's site-config value. Deploy the door with the real provider before the first customer's Stand Up weft Workspace.
+- **A workspace dropped from inventory but still running is invisible** to the door's check, which reads `weft_workspaces`.
+- **weft's front door has no setting to close sign-up** ([weft #608](https://github.com/uhstray-io/weft/issues/608)), so anyone who reaches the rack's door can sign up, and their link lands in a catcher only the operator reads. The rack's door must not be offered to customers before task 6.3.
+
 ### For Joe's review
 
 - **C4, the Caddy layout.** weft's fragment goes to central Caddy through `tasks/distribute-caddy-site.yml`, the flat layout `manage-caddy-sites.yml` manages (`weft-edge.yml`). weft does not migrate production Caddy to the composable layout; that stays Joe's.
@@ -139,7 +145,7 @@ Until task 8.5 lands there is no supported path to retire a host's data. The int
 
 ## Open decisions
 
-- **V**: how live voice reaches a workspace now that every name is proxied. Blocks tasks 4.4 (the UDP allow), 5.2 and 8.3.
+- **V**: how live voice reaches a workspace now that every name is proxied. Narrowed by weft D578 (Jacob, 2026-11-17): live calls are off on the rack until a media route is chosen, so no workspace renders `[voice]`, publishes a UDP port, or needs a UDP allow or forward. Blocks task 8.3.
 - **D17**: TLS on the LAN hop. Blocks task 8.2.
 - **D19**: a company's data after it leaves. Blocks task 8.5.
 - **#108**: seal custody beyond OpenBao. Blocks task 6.2.
