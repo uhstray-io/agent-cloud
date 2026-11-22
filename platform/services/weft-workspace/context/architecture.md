@@ -54,8 +54,9 @@ Every weft hostname is proxied by Cloudflare (Jacob, 2026-11-10), and Caddy rout
 | any other `*.<weft domain>` | the front door | It redirects an old name or an id address to the current name, answers 503 for a name not routed yet, and 404 otherwise |
 
 `/api/*`, `/mcp` and the hand-off are non-browser paths, so the WAF challenge needs a skip for them
-(see the OpenSpec change's `tasks.md`). Calls over UDP cannot pass Cloudflare's HTTP proxy; how
-live voice reaches a workspace is an open decision in its `design.md`.
+(see the OpenSpec change's `tasks.md`). Calls over UDP cannot pass Cloudflare's HTTP proxy, so
+live calls are off on the rack until a media route is chosen (weft D578, weft #332): no workspace
+has `[voice]` or a UDP port.
 
 ## What agent-cloud holds, and what it never does
 

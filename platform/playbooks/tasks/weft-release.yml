@@ -240,9 +240,10 @@
   ansible.builtin.include_tasks: weft-door-header.yml
   when: _weft_role == 'door'
 
-- name: "Front door: staging's mail catcher, refused anywhere else"
+# Both roles: the rack's door is refused the catcher once a workspace is a customer's, and a
+# customer's workspace is refused while the rack's door has it.
+- name: "The front door's mail catcher: staging, or a rack with no customer workspace"
   ansible.builtin.include_tasks: weft-door-mail.yml
-  when: _weft_role == 'door'
 
 - name: "Pull the verified images by digest"
   ansible.builtin.command:

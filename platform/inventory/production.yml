@@ -82,9 +82,12 @@ all:
     # platform/services/weft-workspace/deployment/README.md:
     #   each group:       weft_environment (rack | staging), weft_domain,
     #                     weft_secret_root (weft | weft-staging)
-    #   workspace groups: weft_public_address
-    #   each workspace:   weft_workspace_id, weft_workspace_name, weft_voice_udp, weft_providers,
+    #   each workspace:   weft_workspace_id, weft_workspace_name, weft_providers,
     #                     weft_default_provider, weft_daily_tokens, weft_tracker_bot_login, weft_clones
+    #   each rack workspace: weft_workspace_owner (operator | customer; unset is a customer's). Set
+    #                     on each host in weft_workspaces, never on the group: a group value would
+    #                     mark a customer's workspace as the operator's and let the rack's front
+    #                     door keep the mail catcher
     #   each rack host:   weft_release, its pin: <version>@sha256:<release.json digest>, written by a
     #                     person; a rollout moves the hosts whose pins changed
     weft_svc:
@@ -131,4 +134,5 @@ all:
     target_node: "{{ proxmox_node | default('alphacentauri') }}"
     vm_storage: "{{ proxmox_vm_storage | default('vm-lvms') }}"
     iso_storage: "{{ proxmox_iso_storage | default('SharedISOs') }}"
+    # proxmox_backup_cleanup_pairs: [{vmid: <vmid>, storage: <storage id>}]  # archives Clean Up Proxmox Backup Archives (Dev) may delete; values in site-config
     template_vmid: 9000

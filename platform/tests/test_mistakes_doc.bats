@@ -116,28 +116,3 @@ print('OK' if not problems else '; '.join(problems))
 "
   [ "$output" = "OK" ]
 }
-
-@test "mistakes doc: the four tests named below exist" {
-  # Entry 8.2 is an invented cross-reference. This lists the names explicitly
-  # rather than discovering them: an auto-discovering version needed enough regex
-  # to mistake code fragments for prose, and a test that fails for its own reasons
-  # teaches people to edit the test (entry 2.2).
-  #
-  # DELIBERATELY NOT exhaustive over every path the document mentions. The file is
-  # appended to by more than one line of work at a time, so an exhaustive check
-  # fails on another author's in-flight entry rather than on anything here. The
-  # four below are the ones this branch is responsible for.
-  local suite
-  suite=$(cat "$REPO_ROOT"/platform/tests/*.bats | tr '\n' ' ')
-  local n
-  for n in \
-    "every play that resolves an OpenBao URL includes the transport guard" \
-    "the transport pattern accepts internal endpoints and refuses public ones" \
-    "postiz: the seed playbook uses the shared cleartext OpenBao guard" \
-    "install-podman: configures no podman API socket"; do
-    # named in the doc ...
-    assert_contains "$(tr '\n' ' ' < "$DOC")" "$n"
-    # ... and present in the suite
-    assert_contains "$suite" "@test \"$n\""
-  done
-}

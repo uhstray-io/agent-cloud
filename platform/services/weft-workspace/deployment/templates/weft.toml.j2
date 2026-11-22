@@ -126,12 +126,9 @@ client_address_header = {{ weft_board_client_address_header | default('CF-Connec
 {% endif %}
 {% endif %}
 
-[voice]
-udp = {{ weft_voice_udp }}
-# The rack's public address with this workspace's own port: browsers send the audio there, and
-# the rack forwards the same number to this VM.
-public = "{{ weft_public_address }}:{{ weft_voice_udp }}"
-
+{# No [voice]: live calls are off on the rack until a media route is chosen (weft D578, weft
+    #332). Every weft name is proxied by Cloudflare, which carries no UDP. Without [voice] the
+    board starts no weft-voice and its rooms say there are no calls; recordings still work. #}
 [front_door]
 # The id the front door issued this workspace. Wrong, and every sign-in is refused for an
 # audience mismatch nobody can see from a browser.

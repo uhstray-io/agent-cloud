@@ -166,7 +166,7 @@ All default off, so declaring a value alone never starts a scrape or pages anyon
 
 | Variable | Effect |
 |---|---|
-| `dgx_spark_scrape_enabled` | Renders `config/scrape.d/dgx-spark.yml` and the `inference-failing`, `telemetry-missing`, `memory-thermal` and `benchmark-gate` alert groups; off lists those rules under `deleteRules` |
+| `dgx_spark_scrape_enabled` | Renders `config/scrape.d/dgx-spark.yml` and the `inference-failing`, `telemetry-missing`, `memory-thermal`, `benchmark-gate` and `kv-pool-trial` alert groups; off lists those rules under `deleteRules` |
 | `o11y_inference_probe_enabled` | Installs the five-minute probe timer and two probe rules; off removes only the probe artefacts. The shared textfile collector remains active for daily capacity samples |
 | `o11y_inference_probe_client_leaf` | With the probe enabled, sends it straight to the gateway's mutual-TLS listener as a gateway client identity, presenting this declared internal-CA client leaf; places the CA bundle beside the leaf and maps the gateway's name on this host (README, "Gateway client identity") |
 | `o11y_otlp_tls_enabled` | Defaults false. Enables mTLS on the existing OTLP gRPC listener only after the fixed receiver server leaf, same-host journal client leaf, authoritative CA bundle, and required `o11y_otlp_tls_server_name` are issued and validated. The journal collector must migrate with the receiver; source support is not live activation evidence. |

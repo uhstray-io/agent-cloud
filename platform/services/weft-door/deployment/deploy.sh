@@ -35,10 +35,11 @@ CONTAINER=weft-door
 REQUIRED=(WEFT_DOOR_IMAGE WEFT_DOOR_DIR WEFT_DOOR_BIND WEFT_DOOR_PORT WEFT_DOOR_WORKSPACE_URL
   WEFT_DOOR_CLIENT_ADDRESS_HEADER WEFT_DOOR_TRUSTED_PROXIES)
 
-# Staging's mail catcher (compose.mailpit.yml): .env carries WEFT_DOOR_MAILPIT_IMAGE only when the
-# inventory sets weft_door_mailpit, which tasks/weft-door-mail.yml refuses outside staging. .env is
-# the one decision point, so the overlay and the variables it needs cannot disagree. Undeclared,
-# the overlay is not loaded and the stack is the door alone.
+# The mail catcher (compose.mailpit.yml): .env carries WEFT_DOOR_MAILPIT_IMAGE only when the
+# inventory sets weft_door_mailpit, which tasks/weft-door-mail.yml refuses outside staging and, on
+# the rack, once any workspace is a customer's. .env is the one decision point, so the overlay and
+# the variables it needs cannot disagree. Undeclared, the overlay is not loaded and the stack is the
+# door alone.
 SERVICES=(door)
 MAILPIT_IMAGE=$(grep -E '^WEFT_DOOR_MAILPIT_IMAGE=' .env 2>/dev/null | tail -1 | cut -d= -f2- || true)
 if [ -n "$MAILPIT_IMAGE" ]; then

@@ -105,6 +105,11 @@ brew install uv              # Python dependencies and tools are managed with uv
 uv tool install ruff && uv tool install ansible-lint && uv tool install yamllint && uv tool install bandit
 brew install shellcheck bats-core parallel hadolint
 brew install go              # Go 1.26+ for the full test/pre-push suite; also in Brewfile
+brew install cargo-nextest   # the Rust suite's runner (plan 24); also in Brewfile
+brew install rustup          # also in Brewfile; keg-only, so its bin goes on PATH:
+export PATH="$(brew --prefix rustup)/bin:$PATH"   # add to your shell profile; puts cargo, rustc and rustfmt on PATH
+# The toolchain comes from platform/tests/rust-toolchain.toml (the version CI pins, with
+# rustfmt); rustup installs it on first use there (RUSTUP_AUTO_INSTALL, default 1).
 
 # The test suites' dependencies: pyproject.toml's dependency groups, locked in uv.lock.
 # `uv sync --locked` installs Python 3.12 (.python-version) and both groups into .venv,
@@ -174,6 +179,10 @@ means the suites passed on your machine or were skipped, which is not evidence C
 pass — and CI never sees a push the hook stopped.
 
 It skips, with a message, when `SKIP_TESTS=1` is set, when `bats` is not installed, when
+`cargo-nextest` is not installed (the Rust lanes; `lane.sh ci` and `full` fail instead). The
+Brewfile installs `cargo-nextest` and `rustup`; rustup's bin must be on `PATH` (Tool
+Installation, above), and the toolchain comes from `platform/tests/rust-toolchain.toml`. Without
+them the Rust lanes skip the same way. The hook also skips when
 the Python suite is not collectable because pytest or a test dependency is missing, and on
 a branch-deletion push. Failing open like that is deliberate and the opposite of the
 pre-commit secret gate, which fails closed: a leaked secret is irreversible, a skipped test
@@ -256,15 +265,27 @@ The Rust suite in `platform/tests/` is replacing pytest and BATS area by area
 ([plan 24](plan/development/24-rust-test-platform.md)). The rules are
 `plan/architecture/03-testing-ci-quality.md` Part 1. In short:
 
-- One module per area in `platform/tests/suite/`, declared in `suite/main.rs`.
-- List each new module once in `platform/tests/areas.yml`: under an area's tier, or under `always`
-  for the security set. The tier decides which lanes run it (plan 24, D3). The repository test
-  `every_suite_module_is_listed_exactly_once_in_areas_yml` fails a module listed nowhere or twice.
+- One module per area: the modules are the files in `platform/tests/suite/`. `build.rs` declares
+  them, so there is no list to edit.
+- List each new module once, in `platform/tests/areas.yml` or in its own
+  `platform/tests/areas.d/<area>.yml` (see that directory's README): under an area's tier, or under
+  `always` for the security set. The tier decides which lanes run it (plan 24, D3). The repository
+  test `every_suite_module_is_listed_exactly_once_in_areas_yml` fails a module listed nowhere or twice.
+- Format suite files with `rustfmt --edition 2024 platform/tests/suite/*.rs`: `cargo fmt` does not
+  reach them, and the `rust_format` test checks them.
+- A port adds its ledger ratchet lines in `platform/tests/ledger_citation_ratchet.d/<group>.txt` and
+  does not edit `docs/MISTAKES.md` (plan 24, D10; provisional, pending the operator's decision on
+  `docs/MISTAKES.md` 5.29). Each line's reason names the replacing test as `suite/<module>.rs::<fn>`.
 - Read repository YAML with `agent_cloud_tests::yaml`, never a string match. It resolves
   bare `yes`/`no` as YAML 1.1 booleans, as Ansible and podman-compose do, and applies
   anchors and `<<` merge keys. Select a task with `repo::tasks` and assert on that task.
 - Start a process only through `agent_cloud_tests::process`: a scrubbed environment and a
   30-second bound.
+- A playbook-tier module ends in `_playbook` and runs `ansible-playbook` only through
+  `process::ansible_playbook` and `process::run`, which confine and bound it. The `playbook`
+  test-group caps those tests at four at a time (`.config/nextest.toml`).
+- Playbook tests need `ansible-playbook` on `PATH`: run `uv sync --locked`, then put the
+  repository's `.venv/bin` first. They panic without it; they never skip.
 - Arrange, Act, Assert; several input cases are one test over a table.
 - Mutate the guarded code once and watch the test fail before you merge it.
 

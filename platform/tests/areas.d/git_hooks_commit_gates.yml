@@ -1,0 +1,26 @@
+# The git hooks and commit gates (plan 24, Phase 4; AC-949). These guard what the pre-commit and
+# pre-push hooks run and the scripts they call: the commit-msg refusal of AI attribution, the
+# graph-artifact commit gate, the machine-path gate, the pre-push suites (the per-branch lock, the
+# clean git environment, the parallel job shell, the uv locked environment, the fast lane and the
+# Rust push lane), the Bash guard that keeps a secret file off an interpreter's stdin, and the
+# reviewed-checkout playbook's payload cap.
+#
+# The seven modules in `always` guard rules that docs/MISTAKES.md cites, or that a hook enforces.
+# The push and CI lanes run their cli tier; the commit lane runs only the static tier of `always`,
+# which holds none of them. The other modules are selected by the paths below.
+# `reviewed_checkout` is static: it reads the playbook.
+paths:
+  - ".githooks/**"
+  - ".pre-commit-config.yaml"
+  - "scripts/check-machine-paths.sh"
+  - "scripts/check-graph-artifact.sh"
+  - "platform/tests/bin/parallel-job-shell"
+  - "platform/tests/assert_helpers.bash"
+  - ".claude/hooks/guard-secret-stdin.py"
+  - ".claude/settings.json"
+  - "platform/playbooks/require-reviewed-checkout.yml"
+tiers:
+  cli: [pre_push_uv]
+  static: [reviewed_checkout]
+always:
+  cli: [commit_msg_hook, graph_artifact_guard, machine_path_hook, pre_push_branch_lock, pre_push_git_env, pre_push_parallel_sigalrm, semaphore_token_rotation_hook]
