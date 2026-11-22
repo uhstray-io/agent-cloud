@@ -1,8 +1,7 @@
 ---
-# weft-workspace.yml — the play of deploy-weft-workspace.yml, without its empty-group guard. Imported
-# by that launcher ("Deploy weft Workspace", which refuses an empty group first), by Roll Out weft
-# Release and Deploy weft Staging, and by Stand Up weft Workspace, which queues exactly the host it
-# means to deploy.
+# weft-workspace.yml — the play of deploy-weft-workspace.yml, with its empty-group guard. Imported by
+# that launcher ("Deploy weft Workspace"), by Roll Out weft Release and Deploy weft Staging, and by
+# Stand Up weft Workspace, which queues exactly the host it means to deploy.
 #
 # What it does — deploy each workspace to the release it is pinned to, ONE AT A TIME, stopping at
 # the first that fails (serial: 1, max_fail_percentage: 0). A workspace is one company's whole
@@ -26,10 +25,31 @@
 # Inputs:
 #   weft_release           each host's pin, from site-config (<version>@sha256:<digest>); staging
 #                          takes it from Deploy weft Staging's survey
-#   weft_workspace_hosts   the inventory group or host pattern (default weft_workspaces)
+#   weft_workspace_hosts   the inventory group (every importer names one; the guard below reads it
+#                          as a group)
 # Host and group vars from site-config: see platform/services/weft-workspace/deployment/README.md.
 #
 # Run through Semaphore, never by hand on the VM.
+
+# The empty-group guard lives here, not in the launchers, because the import var naming the group
+# reaches every play of this file and no play outside it: a guard in a launcher would have to set
+# the name itself and could test a different group from the one these plays run on
+# (suite/deploy_playbooks_preflight.rs, AC-915). A play with no hosts exits 0, and a deploy that
+# did nothing must not be recorded as a success (MISTAKES 2.21). Every importer names the group;
+# run without one, the guard fails.
+- name: "Pre-flight: the target group is declared and populated"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: "Refuse an empty or undeclared target group"
+      ansible.builtin.assert:
+        that:
+          - groups[weft_workspace_hosts] | default([]) | length > 0
+        fail_msg: >-
+          {{ weft_workspace_hosts | default('(no group named)') }} is not a populated inventory group, so
+          this deploy would do nothing and report success. Declare its hosts in site-config.
 
 - name: "Workspaces, one at a time, each to its pin"
   hosts: "{{ weft_workspace_hosts | default('weft_workspaces') }}"

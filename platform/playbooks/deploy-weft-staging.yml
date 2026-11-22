@@ -22,25 +22,22 @@
 - name: "Refuse extra vars that set internal names"
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
-# Inline rather than preflight-target-group.yml: the plays below target the templated
-# weft_door_hosts and weft_workspace_hosts, which are the names the guard must check.
+# Both groups, before either host moves: weft-door.yml and weft-workspace.yml each refuse their own
+# empty group, but the front door would already be deployed by the time the workspace's guard ran.
 - name: "Pre-flight: the staging pair is declared and populated"
   hosts: localhost
   connection: local
   gather_facts: false
   any_errors_fatal: true
-  vars:
-    weft_door_hosts: weft_staging_door
-    weft_workspace_hosts: weft_staging_workspace
   tasks:
     - name: "Refuse an empty or undeclared staging group"
       ansible.builtin.assert:
         that:
-          - groups[weft_door_hosts] | default([]) | length > 0
-          - groups[weft_workspace_hosts] | default([]) | length > 0
+          - groups['weft_staging_door'] | default([]) | length > 0
+          - groups['weft_staging_workspace'] | default([]) | length > 0
         fail_msg: >-
-          {{ weft_door_hosts }} and {{ weft_workspace_hosts }} must both be populated inventory
-          groups, or this deploy would do nothing and report success. Declare them in site-config.
+          weft_staging_door and weft_staging_workspace must both be populated inventory groups, or
+          this deploy would do nothing and report success. Declare them in site-config.
 
 - name: "Staging: what to deploy"
   hosts: localhost
