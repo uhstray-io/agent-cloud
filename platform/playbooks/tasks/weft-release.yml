@@ -100,7 +100,7 @@
 # Staging only, for a bare commit: a resolve that lies can only name another digest, and cosign
 # checks that digest's signature, the manifest is hashed against it, and release.json must name
 # the commit asked for.
-- name: "Staging: resolve weft-release:{{ _weft_pinned_name }} to a digest"
+- name: "Staging: resolve to a digest weft-release:{{ _weft_pinned_name }}"
   ansible.builtin.command:
     argv: >-
       {{ [container_engine | default('podman'), 'run', '--rm', '--user=0',

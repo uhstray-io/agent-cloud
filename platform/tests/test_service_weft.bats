@@ -302,7 +302,8 @@ PY
   assert_grep -qE '^  max_fail_percentage: 0$' "$pb"
   # And no play after a failure runs: not the next workspace, not staging's GitHub record.
   assert_grep -qE '^  any_errors_fatal: true$' "$pb"
-  [ "$(grep -cE '^  any_errors_fatal: true$' "$PB/weft-door.yml")" -eq 2 ]
+  # Every play of weft-door.yml: its empty-group guard, the repo and key play, and the deploy.
+  [ "$(grep -cE '^  any_errors_fatal: true$' "$PB/weft-door.yml")" -eq 3 ]
 }
 
 @test "weft: a workspace is addressed by its company name, and its id stays a claim audience" {
