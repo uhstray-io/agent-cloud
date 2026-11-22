@@ -1,0 +1,77 @@
+---
+# roll-out-weft-release.yml — move the rack to what site-config pins it to ("Roll Out weft
+# Release"). A person launches it; nothing schedules it.
+#
+# Every rack host carries its own pin, `weft_release` in site-config: a version and the digest of
+# its signed release.json (tasks/weft-release.yml). A person moves a host by changing its pin in a
+# site-config pull request and syncing the inventory, then launches this. So the waves are the hosts
+# whose pins changed, a hold is a pin left where it is, and the previous release of every host is
+# in site-config's history. Nothing here asks GitHub which release is newest or who approved it:
+# the pin is the decision, and the person who wrote it is on the pull request.
+#
+#   1. refuse a rack host whose pin is not <version>@sha256:<digest>, before anything changes
+#   2. the front door first (it must accept the previous release's boards while the rest move)
+#   3. each company workspace ONE AT A TIME, in inventory order, uhstray's own first as the canary
+#      (list it first in weft_workspaces). Each: verify, back up, deploy, health, watch.
+#   4. a host already on its pin is left alone, so a re-launch continues where a run stopped
+#   5. at the first failure the run fails and goes no further; that host is left as it is, and
+#      the run says how to go back (rollback-weft-host.yml)
+#
+# Inventory: weft_door (one host) and weft_workspaces (in rollout order), weft_environment=rack,
+# and each host's weft_release.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight: the rack's workspaces are declared"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: weft_workspaces
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: weft_workspaces
+
+- name: "Roll out: every rack host is pinned to a signed release"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  # A refused pin ends the run here; without this the plays below would still run on the rack.
+  any_errors_fatal: true
+  vars_files:
+    - vars/weft.yml
+  vars:
+    _rack: "{{ (groups['weft_door'] | default([])) + (groups['weft_workspaces'] | default([])) }}"
+
+  tasks:
+    - name: "Require a rack front door"
+      ansible.builtin.assert:
+        that: groups['weft_door'] | default([]) | length == 1
+        fail_msg: "weft_door must hold exactly one host; the rack's front door is deployed first. Nothing was changed."
+
+    - name: "Refuse a rack host that is not pinned to <version>@sha256:<digest>"
+      ansible.builtin.assert:
+        that:
+          - hostvars[item].weft_environment | default('') == 'rack'
+          - hostvars[item].weft_release | default('') | string is match(_weft_pin_pattern)
+          - hostvars[item].weft_release | string is match('^v')
+        fail_msg: >-
+          {{ item }} has weft_environment '{{ hostvars[item].weft_environment | default('') }}' and
+          weft_release '{{ hostvars[item].weft_release | default('') }}'. Every rack host is pinned
+          in site-config to <version>@sha256:<64 hex>. Nothing was changed.
+      loop: "{{ _rack }}"
+
+    - name: "Say what each host is pinned to"
+      ansible.builtin.debug:
+        msg: "{{ _rack | map('extract', hostvars, 'weft_release') | zip(_rack) | map('reverse') | map('join', ': ') | list }}"
+
+- name: "Roll out: the front door"
+  ansible.builtin.import_playbook: weft-door.yml
+  vars:
+    weft_door_hosts: weft_door
+    weft_edge_workspace_hosts: weft_workspaces
+
+- name: "Roll out: the workspaces, one at a time"
+  ansible.builtin.import_playbook: weft-workspace.yml
+  vars:
+    weft_workspace_hosts: weft_workspaces

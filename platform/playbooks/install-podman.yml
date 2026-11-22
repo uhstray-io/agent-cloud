@@ -93,12 +93,18 @@
       # catatonit is the init podman runs for a container with init: true (--init), bind-mounted from
       # the host; podman only RECOMMENDS it too. The launch gate's compose file uses init: true, and its
       # deploy refuses a host without catatonit.
+      #
+      # passt ships pasta, the network mode that keeps the source address of a connection to a
+      # published port (a rootless bridge replaces it with the container's own); podman only
+      # RECOMMENDS it. weft's board and front door run on it, and their deploys refuse a host
+      # without it (tasks/assert-podman-pasta.yml).
       ansible.builtin.apt:
         name:
           - podman
           - podman-compose
           - uidmap
           - catatonit
+          - passt
         state: present
         update_cache: true
 

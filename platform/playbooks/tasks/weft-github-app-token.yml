@@ -1,0 +1,110 @@
+---
+# weft-github-app-token.yml — mint, on the controller, a GitHub App installation token that can
+# write deployments on weft's repository and do nothing else, for the one run that asks. The
+# pattern of refresh-console-github-token.yml, without its store: the token is used within the
+# minute and expires within the hour, so nothing holds it after this run, and there is no
+# long-lived token to leak or rotate.
+#
+# The grant is scoped DOWN at the request: weft's repository alone, deployments write and the
+# metadata read GitHub adds to every grant. platform/lib/github_app_token.py sends that as the
+# request body and refuses to return a token whose reported grant is wider. Both are underscore
+# names, so an extra var cannot widen them (refuse-internal-extra-vars.yml).
+#
+# The App's key and client id live at secret/services/github (weft_app_key, weft_app_client_id),
+# seeded once through Seed OpenBao Key after the App is created and installed on weft. A missing
+# key or client id fails with a named message, never with a blank token.
+#
+# Caller has guarded the OpenBao transport and passes _bao_url. Sets _weft_github_token (no_log).
+
+- name: "Fix the grant"
+  ansible.builtin.set_fact:
+    _wgt_org: "{{ _weft_repo.split('/')[0] }}"
+    _wgt_repository: "{{ _weft_repo.split('/')[1] }}"
+    _wgt_permissions:
+      deployments: write
+      metadata: read
+
+- name: "Authenticate to OpenBao (AppRole)"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/auth/approle/login"
+    method: POST
+    follow_redirects: none
+    body_format: json
+    body:
+      role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+      secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    status_code: [200]
+  register: _wgt_auth
+  no_log: true
+  changed_when: false
+  check_mode: false
+
+- name: "Read the App credentials (a 404 is named by the assert below, not failed here)"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/secret/data/services/github"
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
+    headers:
+      X-Vault-Token: "{{ _wgt_auth.json.auth.client_token }}"
+    status_code: [200, 404]
+  register: _wgt_github_secret
+  no_log: true
+  check_mode: false
+
+- name: "Take the App fields (empty when the path is absent)"
+  ansible.builtin.set_fact:
+    _wgt_app: "{{ _wgt_github_secret.json.data.data if _wgt_github_secret.status == 200 else {} }}"
+  no_log: true
+
+- name: "Require the App key and client id (seeded once, after App creation)"
+  ansible.builtin.assert:
+    that:
+      - (_wgt_app.weft_app_key | default('')) | length > 0
+      - (_wgt_app.weft_app_client_id | default('')) | length > 0
+    fail_msg: >-
+      secret/services/github is missing weft_app_key and/or weft_app_client_id. Create the GitHub
+      App for weft's deployments (Deployments: read and write; installed on {{ _weft_repo }} only)
+      and seed both through Seed OpenBao Key, then re-run.
+
+- name: "Mint the installation token (key via stdin; the grant is the declared map)"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/../lib/github_app_token.py"
+      - installation-token
+      - "--issuer"
+      - "{{ _wgt_app.weft_app_client_id }}"
+      - "--org"
+      - "{{ _wgt_org }}"
+      - "--key"
+      - "-"
+      - "--permissions"
+      - "{{ _wgt_permissions | to_json }}"
+      - "--repository"
+      - "{{ _wgt_repository }}"
+    stdin: "{{ _wgt_app.weft_app_key }}"
+  register: _wgt_mint
+  # The failure reason is the exit code, turned into a named message below; stdout is the token.
+  failed_when: false
+  changed_when: false
+  no_log: true
+  check_mode: false
+
+- name: "Take the signer's exit code (no output leaves this task)"
+  ansible.builtin.set_fact:
+    _wgt_mint_rc: "{{ _wgt_mint.rc | int }}"
+  no_log: true
+
+- name: "Require a clean mint (exit 0); name the over-grant refusal (exit 6) without its output"
+  ansible.builtin.assert:
+    that:
+      - _wgt_mint_rc == 0
+    fail_msg: >-
+      {{ "GitHub granted a wider scope than requested (extra permission, different level, or other repository) — fix the weft App's permissions"
+         if _wgt_mint_rc == 6 else "mint failed (exit " ~ _wgt_mint_rc ~ ")" }}
+    quiet: true
+
+- name: "Take the token"
+  ansible.builtin.set_fact:
+    _weft_github_token: "{{ _wgt_mint.stdout | trim }}"
+  no_log: true

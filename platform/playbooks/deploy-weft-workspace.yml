@@ -1,0 +1,16 @@
+---
+# deploy-weft-workspace.yml — deploy the rack's workspaces to their pins, one at a time ("Deploy
+# weft Workspace"), the launcher a person runs. Inputs, steps and rules are in weft-workspace.yml,
+# whose first play refuses an empty weft_workspaces group: a play with no hosts exits 0, and a
+# deploy that did nothing must not be recorded as a success (MISTAKES 2.21). A workspace already on
+# its pin is left alone. Staging's workspace is deployed by Deploy weft Staging.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Deploy"
+  ansible.builtin.import_playbook: weft-workspace.yml
+  vars:
+    weft_workspace_hosts: weft_workspaces

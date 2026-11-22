@@ -1,0 +1,89 @@
+---
+# weft-bind.yml — refuse a published address or believed peers that pasta would let every process on
+# the VM through, before anything stops.
+#
+# The board and the front door run on pasta (compose.yml), which keeps the source address of a
+# connection to the published port. Published on a wildcard or a loopback address, a process on the
+# VM that connects to 127.0.0.1 arrives as 127.0.0.1 (measured on Ubuntu 24.04's podman 4.9.3), and
+# the board's ingest_from always admits loopback, for its own healthcheck (weft.toml.j2): any local
+# process would be admitted as if it were that healthcheck. Published on the VM's address, the one
+# the edge Caddy reaches, loopback has nothing to connect to. The edge proxies to this same address
+# (caddy-site.j2), so neither a wildcard nor loopback was ever an upstream it could reach.
+#
+# The bind is also the host IP of the published port, and podman takes only an IP literal there: a
+# host name was refused at `compose up`, after the stop, and one that resolved to loopback was never
+# judged at all. So a name is refused here too, ansible_host included when it is the default. An
+# IPv6 bind is written bracketed wherever a port follows it (filter weft_host_for_port).
+#
+# A process or container on the VM that connects to that address arrives as the VM's default gateway
+# (podman 4.9.3) or as 169.254.1.2 (podman 5.3 on). So trusted_proxies names the Caddy host alone, as
+# a /32, and neither it nor ingest_from may hold either address. Addresses are compared by
+# filter_plugins/weft_addresses.py, as addresses: a text match let `::0` and `::ffff:7f00:1` through.
+#
+# Not in local mode (_weft_local, vars/weft.yml): there every host is the operator's own machine at
+# 127.0.0.1, and the edge in front of it is on that machine too.
+#
+# Caller is tasks/weft-release.yml, for both roles, in a deploy and in a rollback.
+
+- name: "Refuse a published address that is not an IP, or is a wildcard or loopback"
+  vars:
+    _wb_name: "{{ 'weft_board_bind' if _weft_role == 'workspace' else 'weft_door_bind' }}"
+    # Named as the variable the value came from: unset, the bind is ansible_host.
+    _wb_source: >-
+      {{ _wb_name if ((weft_board_bind if _weft_role == 'workspace' else weft_door_bind) is defined)
+         else 'ansible_host (' ~ _wb_name ~ ' is unset)' }}
+    # What workspace.env.j2 and door.env.j2 render: the bind, or the host's address.
+    _wb_bind: >-
+      {{ (weft_board_bind | default(ansible_host | default(''))) if _weft_role == 'workspace'
+         else (weft_door_bind | default(ansible_host | default(''))) }}
+    _wb_problems: "{{ _wb_bind | weft_bind_problems(_wb_name) }}"
+  ansible.builtin.assert:
+    that:
+      - _wb_problems | length == 0
+    fail_msg: >-
+      {{ inventory_hostname }}'s {{ _wb_source }} is '{{ _wb_bind }}': {{ _wb_problems | join('; ') }}.
+      Set {{ _wb_name }} to the IP address the edge Caddy host reaches this VM on (the default is
+      ansible_host), never a host name, a wildcard or loopback: podman publishes a port only on an IP
+      address, and the service runs on pasta, which keeps a connection's source address, so through
+      a wildcard or loopback every process on this VM arrives as 127.0.0.1, and the board admits
+      loopback for its healthcheck. Nothing has changed on this host.
+    quiet: true
+  when: not (_weft_local | bool)
+
+# Every weft play runs gather_facts: false, and install-podman-compose.yml gathers only `min`, which
+# has no default route; a rollback does not reach that file at all.
+- name: "Read this VM's default gateway"
+  ansible.builtin.setup:
+    gather_subset: ["!all", "!min", "network"]
+  when:
+    - not (_weft_local | bool)
+    - ansible_facts.default_ipv4 is not defined
+
+- name: "Refuse trusted proxies or ingest sources that hold an address this VM's own processes arrive as"
+  vars:
+    _wb_trusted_name: "{{ 'weft_board_trusted_proxies' if _weft_role == 'workspace' else 'weft_door_trusted_proxies' }}"
+    _wb_trusted: >-
+      {{ (weft_board_trusted_proxies | default([])) if _weft_role == 'workspace'
+         else (weft_door_trusted_proxies | default([])) }}
+    # door.env.j2 trims the door's list and drops blanks; weft.toml.j2 renders the board's as written.
+    # The door has no ingest_from. The board's loopback entries are added by weft.toml.j2 for its
+    # healthcheck, which the bind check above keeps unreachable from anything else.
+    _wb_ingest: "{{ (weft_board_ingest_from | default([])) if _weft_role == 'workspace' else [] }}"
+    _wb_gateways: >-
+      {{ [ansible_facts.default_ipv4 | default({}), ansible_facts.default_ipv6 | default({})]
+         | map(attribute='gateway', default='') | select | list }}
+    _wb_problems: >-
+      {{ _wb_trusted | weft_peer_problems(_wb_ingest, _wb_gateways,
+                                          [_wb_trusted_name, 'weft_board_ingest_from'],
+                                          trimmed=(_weft_role == 'door')) }}
+  ansible.builtin.assert:
+    that:
+      - _wb_problems | length == 0
+    fail_msg: >-
+      {{ inventory_hostname }}: {{ _wb_problems | join('; ') }}. The service runs on pasta, so a
+      process or container on this VM arrives as the default gateway (podman 4.9.3) or 169.254.1.2
+      (podman 5.3 on), and a believed peer is believed about any client it names. List the edge
+      Caddy host alone in trusted proxies, as a /32, and keep ingest sources clear of both addresses.
+      Nothing has changed on this host.
+    quiet: true
+  when: not (_weft_local | bool)

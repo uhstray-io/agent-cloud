@@ -1,0 +1,16 @@
+---
+# deploy-weft-door.yml — deploy the rack's front door to its pin ("Deploy weft Front Door"), the
+# launcher a person runs. Inputs, steps and rules are in weft-door.yml, whose first play refuses an
+# empty weft_door group: a play with no hosts exits 0, and a deploy that did nothing must not be
+# recorded as a success (MISTAKES 2.21). Staging's front door is deployed by Deploy weft Staging.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Deploy"
+  ansible.builtin.import_playbook: weft-door.yml
+  vars:
+    weft_door_hosts: weft_door
+    weft_edge_workspace_hosts: weft_workspaces

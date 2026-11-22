@@ -25,6 +25,7 @@
 //! | enable-linger: accepts an explicit linger_user, defaulting to ansible_user | enable_linger_accepts_an_explicit_linger_user_defaulting_to_ansible_user |
 //! | install-podman: installs catatonit, the init podman bind-mounts for a container with init: true | installs_catatonit_and_uidmap_which_podman_only_recommends |
 //! | install-podman: installs uidmap, without which rootless podman cannot start a container | installs_catatonit_and_uidmap_which_podman_only_recommends |
+//! | install-podman: installs passt, the pasta network mode weft's board and front door run on | installs_passt_the_pasta_network_mode_weft_runs_on |
 //! | install-podman: the shim and the Docker CLI client are refused together | the_shim_and_the_docker_cli_client_are_refused_together |
 //! | install-podman: the Docker CLI client is pinned, client-only, and replaces the shim | the_docker_cli_client_is_pinned_client_only_and_replaces_the_shim |
 //! | docker apt repository: one shared task, used by both install playbooks | the_docker_apt_repository_is_one_shared_task_used_by_both_playbooks |
@@ -509,6 +510,25 @@ fn installs_catatonit_and_uidmap_which_podman_only_recommends() {
         // Assert
         assert!(installed, "{package} is not installed: {why}");
     }
+}
+
+#[test]
+fn installs_passt_the_pasta_network_mode_weft_runs_on() {
+    // Arrange: podman only RECOMMENDS passt. A port published from a rootless bridge reaches the
+    // container from the container's own bridge address; pasta keeps the real one (weft #580), and
+    // weft's deploys refuse a host without it (tasks/assert-podman-pasta.yml).
+    let tasks = repo::tasks(PB);
+
+    // Act
+    let installed = tasks
+        .iter()
+        .any(|t| is_task(t) && apt_names(t).contains(&"passt"));
+
+    // Assert
+    assert!(
+        installed,
+        "passt is not installed: weft's board and front door run on pasta"
+    );
 }
 
 #[test]
