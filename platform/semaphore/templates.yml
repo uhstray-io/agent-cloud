@@ -1095,6 +1095,8 @@ templates:
   - name: Deploy weft Front Door
     playbook: platform/playbooks/deploy-weft-door.yml
     # The rack's front door, to its pin. Introduced on dev; main has no weft code until promotion.
+    # With weft_door_mailpit it is refused once any host in weft_workspaces is not marked
+    # weft_workspace_owner: operator.
     dev_variant: true
     survey_vars:
       - name: service_branch
@@ -1190,6 +1192,9 @@ templates:
     playbook: platform/playbooks/stand-up-weft-workspace.yml
     # After the workspace exists on the front door and its VM is provisioned and hardened:
     # routes <name>.<domain> to it and deploys it to its pin, which must be the front door's.
+    # The host's weft_workspace_owner (operator, or unset for a customer's) is set on the host in
+    # site-config first: a customer's workspace is refused while the rack's front door runs the
+    # mail catcher.
     dev_variant: true
     survey_vars:
       - name: target_host
