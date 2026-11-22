@@ -527,19 +527,19 @@ open to review.
 1. **(a) One machine holds its instance name under two services.** Decided here, as a rule the
    naming scheme does not yet state: the ordinal names the machine within its class, so the same
    ordinal appears under every service the machine is a member of. spark-2 is `dgx02.vllm-primary`
-   (`serves: false`, naming decision 6) and `dgx02.image-primary` (serving). Naming decision 9's
-   declaration already holds `instances` as a list per host, so no shape changes; retiring the
-   machine later takes one `dns_retired_instances` entry per service (the list is keyed by service
-   and instance). The naming change records the rule through a follow-up. The image-server leaf
+   (`serves: false`, naming decision 6) and `dgx02.image-primary` (serving). Both are declared on
+   spark-2's inventory host entry (`dns_instances`, a list per host in naming decision 9; decision 3
+   below), so no shape changes; retiring the machine later takes one `dns_retired_instances` entry
+   per service (the list is keyed by service and instance). The naming change records the rule through a follow-up. The image-server leaf
    carries only the `image-primary` names. Alternatives rejected: *a new ordinal for the image
    instance* (`dgx03.image-primary`), because the ordinal would no longer identify the machine, and
-   decision 5 exists so that a name carries one machine's history; *one spark-2 leaf carrying
-   `dgx02.vllm-primary` too*, because spark-2 serves no vLLM API (decision 6), and a client
+   naming decision 5 exists so that a name carries one machine's history; *one spark-2 leaf carrying
+   `dgx02.vllm-primary` too*, because spark-2 serves no vLLM API (naming decision 6), and a client
    verifying a `vllm-primary` name could then be answered by the image port.
 
-2. **(b) The renewal proof per leaf.** This amends decision 8 for these classes. Decision 8 and the
-   renewal header (`renew-internal-certs.yml:70-72`) leave a leaf whose use cannot be proven alone,
-   unrenewed. Here a leaf whose listener or caller does not use it yet is still renewed with its
+2. **(b) The renewal proof per leaf.** Decision 8 proves each leaf in use after its host's reload.
+   The renewal header (`renew-internal-certs.yml:70-72`) adds that a gateway leaf whose use cannot
+   be proven is left alone, unrenewed; these classes take a different rule. Here a leaf whose listener or caller does not use it yet is still renewed with its
    host, and proven only by checks on its files, which show the files are valid, not that anything
    loaded them. Once a switch says the leaf is in use, decision 8's proof applies unchanged.
    - `vllm-server` and `image-server` get one row each in `vars/renew-listener-servers.yml`, the
@@ -565,7 +565,7 @@ open to review.
      no client certificate, so the gateway never sends the leaf and an old copy held in memory costs
      nothing: reload `none`, proven by the inspect checks. Its directory is under the gateway
      deploy's `certs/`, which the deploy's change check hashes
-     (`platform/services/agentgateway/deployment/deploy.sh:101-122`), so Phase B's gateway deploy
+     (`platform/services/agentgateway/deployment/deploy.sh:22`, `:102-125`), so Phase B's gateway deploy
      loads the current files. From then on its reload is the gateway container's restart, run once
      per host per decision 8; proven by the gateway's readiness after the restart and a handshake
      from the gateway host to vLLM presenting the new files and verifying
@@ -583,8 +583,14 @@ open to review.
      the leaf's own host; *reload `restart` from agent-cloud*, because it would need a privilege on
      dgx-spark's machines that the boundary withholds.
 
-3. **(c) How issuance, renewal and the bundle reach the nodes.** Each node is an inventory host of
-   its own group in site-config, under its own inventory name (`spark-1` is taken by the drill
+3. **(c) How issuance, renewal and the bundle reach the nodes.** This amends naming decision 9
+   (the operator, 2026-11-21). Decision 9 keeps machines this repository does not manage, GPU nodes
+   among them, out of the inventory as records-only entries, so that no play can target them. A
+   machine reached only through its certificates-only account may now be an inventory host: its DNS
+   records move to that host entry, and the protection is the account's key boundary, not absence
+   from the inventory. The render's refusal of a hostname declared both ways needs a build change,
+   and the naming change records the amendment through its own item. Each node is an inventory host
+   of its own group in site-config, under its own inventory name (`spark-1` is taken by the drill
    host), with `ansible_user` the certificates-only account (`vllm-tls`, the same account and key on
    both nodes) and `service_conformance_tracked: false`. A host var names the OpenBao key it
    connects with (`secret/services/ssh/vllm-tls`); `issue-internal-leaf.yml`,
@@ -609,63 +615,35 @@ open to review.
    `renew-internal-certs.yml:73-76`). dgx-spark points `--ssl-ca-certs` and its lifecycle opener at
    it. agent-cloud's own clients keep the bundles their deploys place: the gateway
    `<deploy>/certs/step-ca-bundle.crt`, Caddy `<caddy_certs_dir>/step-ca-bundle.crt`, o11y its own.
-   Alternative rejected: *a copy of the root committed to either repository*, which decision 9
-   forbids.
+   Alternative rejected: *a copy of the root committed to this public repository*, which decision
+   9 forbids; the site-config copy decision 9 keeps is a recovery backup, not a client's bundle.
 
 5. **(e) Name resolution while production internal DNS is not deployed.** No client needs a DNS
    record: each one dials the node's address from inventory and sets the name it verifies
    explicitly, which the scheme already relies on (the gateway's model `tls.hostname`, Caddy's
    `tls_server_name`, Prometheus `tls_config.server_name`, the prover's `server_hostname`). The
    image server's declared client is the gateway (plan 27's image path). When production internal
-   DNS deploys, `image-primary` and `dgx02.image-primary` are declared as spark-2's records-only
-   instances (naming decision 9). Alternatives rejected: *a managed hosts-file line on each
+   DNS deploys, `image-primary` and `dgx02.image-primary` are declared on spark-2's inventory host
+   entry (decision 3's amendment of naming decision 9). Alternatives rejected: *a managed hosts-file line on each
    agent-cloud client*, rejected for the same reason in naming decision 15's 2026-09-29 amendment;
    *waiting for production internal DNS*, which would hold the build on a deploy nothing has
    scheduled. A hosts-file line on a node for dgx-spark's own local callers (as `tls-access.yml`
    writes on spark-1) is dgx-spark's choice.
 
-6. **(f) Order against dgx-spark's tasks.** The sequence is decision 7's launches, after the code
-   of tasks 10.1 to 10.3. Three constraints set it. The leaves exist before dgx-spark's TLS switch,
-   because its launchers refuse to start without the files. The inference-path callers listed in
-   gateway task 6.3's 2026-11-21 note change in dgx-spark's Phase A window (its task 3.3), because a
+6. **(f) Order against dgx-spark's tasks.** Three constraints set the order; the build's first pull
+   request carries the sequence. The leaves exist before dgx-spark's TLS switch, because its
+   launchers refuse to start without the files. The inference-path callers (the gateway's
+   `https://` upstream, Caddy's `/health` transport, Rollback Inference Route's `direct` mode
+   transport, the o11y scrape) change in dgx-spark's Phase A window (its task 3.3), because a
    plain-HTTP caller fails the moment vLLM serves TLS only. Phase B (dgx-spark 4.1 to 4.3) follows
    only after every caller holds its leaf.
 
 7. **(g) Every production launch the build needs.** Each is lane C: the operator approves that exact
-   run, dry run included, in the acting session's chat. Manual launches follow ledger 3.20 and
-   3.22, with the free minutes re-derived from `templates.yml` at launch time.
-   0. The operator-side inventory sync (`scripts/semaphore-sync-inventory.py`, preview, then
-      `--apply`) after the site-config change of task 10.4: the CA, issuance and renewal read
-      Semaphore's copy of the inventory. The same sync follows every later site-config change in
-      this list (launches 7 and 10), before the run that reads it.
-   1. `Deploy step-ca (Dev)`: dry run, then real run. Renders the authority name policy with the
-      six new names before any issuance (ledger 10.20).
-   2. `Issue Internal Leaf (Dev)` on spark-1's group, `leaf_name=vllm-server`: dry run, real run,
-      then `leaf_action=inspect`.
-   3. The same for `vllm-lifecycle` on spark-1.
-   4. The same for `image-server` on spark-2's group.
-   5. The same for `agw-upstream` on the gateway host's group.
-   6. `Renew Internal Certs (Dev)` in check mode: every new leaf is classified and none is refused.
-      The next scheduled run is the first real renewal.
-   7. After dgx-spark serves TLS on a node, one site-config change turns that node's switch on (both
-      nodes in one change when dgx-spark switches both in one window), the inventory sync of launch
-      0, then `Renew Internal Certs (Dev)` with `--tags verify` proves the
-      served serial.
-   8. The rotation drill with dgx-spark (its task 3.4): `Renew Internal Certs (Dev)` with
-      `renew_threshold=1`.
-   9. In dgx-spark's Phase A window (its task 3.3): `Deploy agentgateway (Dev)`, `Manage Caddy Sites
-      (Dev)`, `Deploy o11y (Dev)`, each dry run first; and `Rollback Inference Route (Dev)`
-      `gateway-config` as a dry run only, the read of the route task 6.2's run 5370 made.
-   10. Phase B, in two steps. Before dgx-spark's mutual-TLS restart (its task 4.3), every caller
-       presents its leaf (gateway task 6.3, piece 5): `Deploy agentgateway (Dev)`, `Manage Caddy
-       Sites (Dev)` with the `caddy` leaf on the `/health` and `direct` transports, and `Deploy o11y
-       (Dev)` with the scrape's client leaf. Which leaf the scrape presents is an open build
-       decision (task 10.9): a build task declares it, and launch 1 is re-run to add its name to the
-       policy before it is issued. Each runs dry first. The gateway's real run is needed only when its dry run shows a
-       change: its change check covers `agw-upstream` (decision 2), so "unchanged" means the running
-       gateway started with the current leaf. After dgx-spark's 4.3: the `vllm_tls_require_client`
-       switch, the inventory sync of launch 0, `Renew Internal Certs (Dev)` with `--tags verify`,
-       and gateway task 6.4's remaining legs.
+   run, dry run included, in the acting session's chat, and manual launches follow ledger 3.20 and
+   3.22. `Deploy step-ca (Dev)` renders the CA's name policy with every new name before any issuance
+   (ledger 10.20). Every site-config change is followed by the operator-side inventory sync
+   (`scripts/semaphore-sync-inventory.py`) before the run that reads it. The numbered launch list
+   goes with the build's first pull request.
 
 ## Open Questions
 
