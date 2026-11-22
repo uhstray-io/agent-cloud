@@ -281,7 +281,7 @@
     # No automatic rollback: the previous release is the host's previous pin, a person's choice
     # in site-config, and going back restores data. The host is left as it is, and the run fails so
     # a rollout goes no further.
-    - name: "Fail: {{ _weft_to }} failed on {{ _weft_label }}"
+    - name: "Fail the run: {{ _weft_to ~ ' failed on ' ~ _weft_label }}"
       ansible.builtin.fail:
         msg: >-
           {{ _weft_label }}: {{ _weft_to }} failed '{{ ansible_failed_task.name | default('unknown step') }}'
