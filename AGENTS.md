@@ -36,7 +36,7 @@ config-as-code**. Do the work *through* those mechanisms — not around them:
 
 ### Feature-to-Dev pull-request merges
 
-Before merging a feature PR into `dev`, run `python3 scripts/merge-when-green.py --pr PR_NUMBER --head FULL_HEAD_SHA` and review the exact-head evidence. The command is read-only toward GitHub unless `--merge` is supplied; its release-budget count fetches `main`, `dev` and the `v*` tags into the checkout it runs from, and its dev-drift check fetches the pull request's head (`refs/pull/<n>/head`). It refuses a head when `dev` holds commits the head lacks that change test paths: merge `dev` into the branch, run both review passes on the new head and post their statuses (Branch Workflow steps 4 and 5), get the new head reviewed, and let CI run on it, or pass `--dev-drift-acknowledged` (`docs/MISTAKES.md` 5.23). It refuses a merge over a policy 10 limit unless `--budget-acknowledged` is passed for a release the operator approved going over it (R10). Merge only after one independent final-head approval (a non-author approval on GitHub, or a review receipt passed with `--review-receipt`, whose independence from the author the guard does not check), the `simplify` and `security-review` statuses on the final head (`docs/MISTAKES.md` 5.25), all final-head CI jobs pass, no `dev` commit the head lacks changes a test path (unless `--dev-drift-acknowledged`), review threads are resolved, outstanding changes requests are cleared, and actionable feedback is addressed. When they hold, use `--feedback-addressed --merge` (the Branch Workflow callout below says when an agent may do so without asking); the CLI repeats the gates and supplies `--match-head-commit` to one merge command. See [plan/development/dev-merge-guard.md](plan/development/dev-merge-guard.md).
+Before merging a feature PR into `dev`, run `python3 scripts/merge-when-green.py --pr PR_NUMBER --head FULL_HEAD_SHA` and review the exact-head evidence. The command is read-only toward GitHub unless `--merge` is supplied; its release-budget count fetches `main`, `dev` and the `v*` tags into the checkout it runs from, and its dev-drift check fetches the pull request's head (`refs/pull/<n>/head`). It refuses a head when `dev` holds commits the head lacks that change test paths: merge `dev` into the branch, post both review-pass statuses on the new head, running the passes where Branch Workflow step 4 requires (steps 4 and 5), get the new head reviewed, and let CI run on it, or pass `--dev-drift-acknowledged` (`docs/MISTAKES.md` 5.23). It refuses a merge over a policy 10 limit unless `--budget-acknowledged` is passed for a release the operator approved going over it (R10). Merge only after one independent final-head approval (a non-author approval on GitHub, or a review receipt passed with `--review-receipt`, whose independence from the author the guard does not check), the `simplify` and `security-review` statuses on the final head (`docs/MISTAKES.md` 5.25), all final-head CI jobs pass, no `dev` commit the head lacks changes a test path (unless `--dev-drift-acknowledged`), review threads are resolved, outstanding changes requests are cleared, and actionable feedback is addressed. When they hold, use `--feedback-addressed --merge` (the Branch Workflow callout below says when an agent may do so without asking); the CLI repeats the gates and supplies `--match-head-commit` to one merge command. See [plan/development/dev-merge-guard.md](plan/development/dev-merge-guard.md).
 
 `dev` intentionally has no required-check rule because the main-to-Dev sync workflow pushes directly to it. The CLI is therefore an operator gate, not GitHub-enforced protection; do not substitute `gh pr merge --auto`, `--admin`, or a direct merge command.
 
@@ -623,14 +623,24 @@ the two, and it acts only on what these rules mark:
    - Update the top-level `README.md` if the PR adds features, services, or changes the repo structure
    - Update the most relevant sub-directory `README.md` or `CLAUDE.md` for the area changed
    - Update the root `CLAUDE.md` if the PR adds new conventions, plans, or cross-cutting patterns
-4. Run `/simplify` and `/security-review` on the branch changes, and commit any fixes they make. A fix changes
-   the head the passes reviewed, so run both again after it, until a round changes nothing: the head that
-   round reviewed is the one to push and post
+4. Run `/simplify` and `/security-review` on the branch changes, and commit the fixes they make. The number of
+   rounds is fixed (`docs/MISTAKES.md` 5.25, rule changed 2026-11-21):
+   - Docs-only pull request (every changed path ends in `.md`: `git diff --name-only origin/dev...HEAD`): one
+     round of each pass, once for the pull request, on its first head.
+   - Any other pull request: on its first head, `/simplify` at most twice (a second round only when the first
+     made a fix) and `/security-review` once. On each later head made by a review fix or a `dev` merge, one
+     round of each.
+   - A fix made from a pass's own findings starts no new round.
+   - A finding the owner does not fix is deferred: list it in a pull request comment whose first line starts
+     `simplify: deferred` or `security-review: deferred`, one finding per line with its `file:line`, and file
+     each one as a Plane sub-item of the pull request's item.
 5. Push the branch (`git push -u origin <type>/<description>`), then post each pass as a commit status on the
    pushed head, which GitHub must already hold: `gh api repos/uhstray-io/agent-cloud/statuses/<head sha>
-   -f state=success -f context=<simplify|security-review> -f description='<one line: what it found, fixed or deferred>'`.
-   `scripts/merge-when-green.py` refuses a head without both, so every later push (review fixes, a `dev`
-   merge) needs both passes again on the new head (`docs/MISTAKES.md` 5.25)
+   -f state=success -f context=<simplify|security-review> -f description='<one line>'`. The description names
+   the head the round read: `round 1 of 1 on <sha>: <what it found, fixed or deferred>`. A head that no round
+   read says so: `covered by the round on <sha>: <what changed since>`. `scripts/merge-when-green.py` refuses a
+   head without both statuses, so every later push needs both statuses again; it needs the passes again only
+   where step 4 says so (`docs/MISTAKES.md` 5.25)
 6. Create a PR **into `dev`**: `gh pr create --base dev`
 7. Wait for **all PR checks** (CodeRabbit, CI, linters) to complete
 8. Address all review findings and push fixes
