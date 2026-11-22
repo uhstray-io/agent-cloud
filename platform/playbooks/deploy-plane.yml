@@ -387,9 +387,10 @@
             msg: "workspace service token {{ 'minted' if _plane_token_summary.created else 'already present in Plane' }}; stored in OpenBao (value never shown)"
 
 # ── Phase 3c: Licence ───────────────────────────────────────────────────────
-# Plane gates the Admin role, IdP group sync and the GitHub integration behind the licence. The
+# Plane gates IdP group sync and the GitHub integration behind the licence; its Admin role needs
+# Business or Enterprise, which the Pro licence does not give (docs/MISTAKES.md 1.39). The
 # key is the operator's (Seed OpenBao Key -> secret/services/plane:plane_license_key); activating
-# it needs billing-manage (owner or Admin, and Admin needs the licence), so the automation account,
+# it needs billing-manage (owner or Admin, and Admin is not on Pro), so the automation account,
 # the workspace's owner, activates it and no person needs Admin first.
 - name: "Phase 3c: Licence"
   hosts: plane_svc

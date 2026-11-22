@@ -1,0 +1,9 @@
+# The Cloudflare record task's OpenBao transport guard (AC-936). Its shared task file and the
+# one playbook that includes it. The module guards a rule docs/MISTAKES.md 2.18 cites, so it is
+# in the security set (`always`), which every lane runs.
+paths:
+  - "platform/playbooks/tasks/manage-cloudflare-record.yml"
+  - "platform/playbooks/manage-cloudflare-records.yml"
+tiers: {}
+always:
+  static: [cloudflare_record_bao_transport]

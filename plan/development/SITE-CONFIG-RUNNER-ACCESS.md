@@ -70,7 +70,7 @@ back; a rerun observes current visibility before considering a grant.
 
 | Check | Pass condition |
 |---|---|
-| Focused structural test | `bats platform/tests/test_manage_github_runner_group.bats` passes |
+| Focused structural test | `cd platform/tests && cargo nextest run --locked -E 'test(/^manage_github_runner_group::/)'` passes |
 | Public-repository protection | Playbook still refuses any declared repository whose visibility is public |
 | Semaphore dry run | Reports the intended access list without changing it |
 | App installation access | Check-mode refusal is safe; real grant is additive and independently verified with a fresh App token |

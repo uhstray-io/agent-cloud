@@ -1,13 +1,24 @@
 //! Shared support for the agent-cloud test suite (plan 24).
 //!
-//! - [`repo`]: the repository root, `git ls-files`, and the playbook task walker;
+//! - [`repo`]: the repository root, `git ls-files`, the playbook task walker and the playbook
+//!   file listing of the static scans;
 //! - [`yaml`]: YAML loaded the way Ansible and podman-compose read it (YAML 1.1 scalars,
-//!   anchors, aliases, `<<` merge keys);
-//! - [`process`]: a bounded child process with a scrubbed environment (03 Part 1, rule 11);
+//!   anchors, aliases, `<<` merge keys), and the string and task walks of the static scans;
+//! - [`process`]: bounded child processes with a scrubbed environment, and the confined
+//!   `ansible-playbook` runner (03 Part 1, rule 11);
 //! - [`lanes`]: which tests a lane runs, from `areas.yml` and the changed paths (the
-//!   `testsel` binary and `lane.sh` use it).
+//!   `testsel` binary and `lane.sh` use it);
+//! - [`playbook`]: repository playbooks lifted to JSON with YAML 1.1 types, for running a play's
+//!   tasks through [`process::ansible_playbook`] (AC-943);
+//! - [`seed`]: the fake OpenBao and the seed-playbook runner of `seed_harness.py` (AC-950).
 
+pub mod http;
 pub mod lanes;
+pub mod text;
+
+pub mod forgeries;
+pub mod playbook;
+pub mod seed;
 
 pub mod yaml {
     //! YAML as PyYAML's `SafeLoader` reads it.
@@ -183,13 +194,18 @@ pub mod yaml {
 
     /// The handle yaml-rust2 gives a `!!` core tag. No repository file uses one, so the
     /// loader refuses them all rather than construct some and misread others.
-    const CORE_TAG: &str = "tag:yaml.org,2002:";
+    pub(crate) const CORE_TAG: &str = "tag:yaml.org,2002:";
 
-    // `!!bool` arrives as handle `tag:yaml.org,2002:` plus suffix `bool`; the verbatim
-    // `!<tag:yaml.org,2002:bool>` as an empty handle plus the whole URI. Join them so both match.
+    /// A tag's full text. `!!bool` arrives as handle `tag:yaml.org,2002:` plus suffix `bool`; the
+    /// verbatim `!<tag:yaml.org,2002:bool>` as an empty handle plus the whole URI. Joined, both
+    /// start with [`CORE_TAG`].
+    pub(crate) fn tag_text(tag: &yaml_rust2::parser::Tag) -> String {
+        format!("{}{}", tag.handle, tag.suffix)
+    }
+
     fn refuse_core_tag(tag: Option<&yaml_rust2::parser::Tag>, origin: &str) {
         if let Some(t) = tag {
-            let full = format!("{}{}", t.handle, t.suffix);
+            let full = tag_text(t);
             if let Some(name) = full.strip_prefix(CORE_TAG) {
                 panic!("{origin}: core tag `!!{name}` is not supported by the test loader");
             }
@@ -292,6 +308,70 @@ pub mod yaml {
         );
         docs.into_iter().next()
     }
+
+    /// Every string inside `node`, in [`parse`]'s entry order, and every mapping key's string too
+    /// when `keys`: `playbook_yaml.strings(value, keys)` for the static ports (AC-958).
+    ///
+    /// It yields what the Python yields wherever [`parse`] reads a node as PyYAML does. The main
+    /// difference: a plain number or date (`53`, `0644`, `2026-11-17`) is a string here and is
+    /// yielded, where PyYAML constructs a number or date and its walk skips it. It cannot be told
+    /// apart from a quoted `"53"`, which PyYAML does yield, so dropping it would lose strings the
+    /// Python returns; a scan that matches digits sees these extra values. Mapping keys and tags
+    /// are also read differently in rare cases. `support_scan_python` runs `playbook_yaml.strings`
+    /// with PyYAML's numbers and dates read as their text and holds the two walks to the same
+    /// strings on every scanned repository file.
+    pub fn strings(node: &Node, keys: bool) -> Vec<&str> {
+        fn walk<'a>(node: &'a Node, keys: bool, out: &mut Vec<&'a str>) {
+            match node {
+                Node::Str(s) => out.push(s),
+                Node::Map(entries) => {
+                    for (key, value) in entries {
+                        if keys {
+                            walk(key, keys, out);
+                        }
+                        walk(value, keys, out);
+                    }
+                }
+                Node::Seq(items) => items.iter().for_each(|item| walk(item, keys, out)),
+                Node::Bool(_) | Node::Null => {}
+            }
+        }
+        let mut out = vec![];
+        walk(node, keys, &mut out);
+        out
+    }
+
+    /// Every play, block and task in a document or task list, depth first, each one before its
+    /// children: `playbook_yaml.tasks(node)` for the static ports (AC-958). Only mappings are
+    /// yielded and descended into. Siblings come in list order, and each mapping's task lists in
+    /// the Python's key order, whatever order the file writes them in. Nothing is
+    /// inherited. `support_scan_python` holds it to the Python on every scanned repository file.
+    pub fn tasks(node: &Node) -> Vec<&Node> {
+        const LISTS: [&str; 7] = [
+            "tasks",
+            "pre_tasks",
+            "post_tasks",
+            "handlers",
+            "block",
+            "rescue",
+            "always",
+        ];
+        fn walk<'a>(node: &'a Node, out: &mut Vec<&'a Node>) {
+            for item in node.as_seq().unwrap_or_default() {
+                if matches!(item, Node::Map(_)) {
+                    out.push(item);
+                    for key in LISTS {
+                        if let Some(children) = item.get(key) {
+                            walk(children, out);
+                        }
+                    }
+                }
+            }
+        }
+        let mut out = vec![];
+        walk(node, &mut out);
+        out
+    }
 }
 
 pub mod repo {
@@ -329,14 +409,78 @@ pub mod repo {
         root().join(rel)
     }
 
-    /// `git -C <root> <args>`; panics unless the exit status is at most `max_status`.
-    fn git(args: &[&str], max_status: i32) -> String {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(root())
-            .args(args)
-            .output()
-            .expect("git");
+    /// Every `*.yml` file under `platform/playbooks` and `platform/semaphore`, repository-relative,
+    /// in `playbook_yaml.files()`'s order: sorted by path component, as Python sorts `Path`s, so
+    /// `a/b.yml` comes before `a-c/x.yml` (AC-958). The roots are `playbook_yaml.files()`'s.
+    ///
+    /// Read from the disk, as `Path.rglob` reads it, not from git: an untracked file under the
+    /// roots is listed, as the Python checkers list it ([`ls_files`] lists tracked files only).
+    /// Only the `.yml` extension counts, as in the Python: a `.yaml` file is not listed.
+    ///
+    /// It refuses, by panicking, four things the Python handles otherwise: a root or directory
+    /// that cannot be read (`rglob` yields nothing for a missing root); a name that is not UTF-8;
+    /// any symlink under the roots (`rglob` lists a symlinked `.yml` file but does not descend a
+    /// symlinked directory, whose playbooks a path through the link still reaches, so every guard
+    /// built on this list would skip them); and a directory named `*.yml` (which `rglob` lists and
+    /// `playbook_yaml` then fails to load). None exists under the roots (checked 2026-11-17).
+    pub fn playbook_files() -> Vec<String> {
+        fn walk(dir: &Path, parts: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
+            let entries =
+                std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+            for entry in entries {
+                let entry = entry.unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+                let name = entry.file_name().into_string().unwrap_or_else(|name| {
+                    panic!("{}: a name that is not UTF-8: {name:?}", dir.display())
+                });
+                let kind = entry
+                    .file_type()
+                    .unwrap_or_else(|e| panic!("{}: {e}", entry.path().display()));
+                assert!(
+                    !kind.is_symlink(),
+                    "{}: a symlink under the playbook roots; the scan does not follow one",
+                    entry.path().display()
+                );
+                assert!(
+                    !(kind.is_dir() && name.ends_with(".yml")),
+                    "{}: a directory named like a playbook",
+                    entry.path().display()
+                );
+                parts.push(name);
+                if kind.is_dir() {
+                    walk(&entry.path(), parts, out);
+                } else if parts.last().is_some_and(|n| n.ends_with(".yml")) {
+                    out.push(parts.clone());
+                }
+                parts.pop();
+            }
+        }
+        let mut found = vec![];
+        for base in ["platform/playbooks", "platform/semaphore"] {
+            let mut parts: Vec<String> = base.split('/').map(str::to_owned).collect();
+            walk(&path(base), &mut parts, &mut found);
+        }
+        found.sort();
+        found.into_iter().map(|parts| parts.join("/")).collect()
+    }
+
+    /// `git -C <dir> <args>`; panics unless the exit status is at most `max_status`. The variables
+    /// that locate a repository are removed: a hook exports them and they override `-C`. `lane.sh`
+    /// unsets them too, but a direct `cargo nextest run` does not pass through it (#1169 review).
+    fn git_in(dir: &Path, args: &[&str], max_status: i32) -> String {
+        let mut cmd = Command::new("git");
+        for name in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_PREFIX",
+            "GIT_NAMESPACE",
+        ] {
+            cmd.env_remove(name);
+        }
+        let out = cmd.arg("-C").arg(dir).args(args).output().expect("git");
         assert!(
             out.status.code().is_some_and(|c| c <= max_status),
             "git {args:?} failed: {}",
@@ -348,51 +492,99 @@ pub mod repo {
     /// Tracked files matching git pathspecs, relative to the root. Untracked files are not
     /// part of the repository and never decide a test.
     pub fn ls_files(pathspecs: &[&str]) -> Vec<String> {
-        let args = [&["ls-files", "--"], pathspecs].concat();
-        git(&args, 0).lines().map(str::to_owned).collect()
+        ls_files_in(root(), pathspecs)
     }
 
-    /// `git grep -n -E` over tracked files; the matching lines, empty when none match (git
-    /// grep exits 1 for no match).
+    /// `ls_files` for the repository at `dir`. `-z` keeps each path as it is on disk: without it
+    /// git quotes a non-ASCII name (`caf\303\251.yml`), so a caller's `is_file()` fails (AC-908).
+    /// A path that is not UTF-8 panics, as every other git output here does.
+    pub fn ls_files_in(dir: &Path, pathspecs: &[&str]) -> Vec<String> {
+        let args = [&["ls-files", "-z", "--"], pathspecs].concat();
+        git_in(dir, &args, 0)
+            .split_terminator('\0')
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// `grep_in` at the repository root: an extended regular expression over tracked files, the
+    /// matching lines as `path:line:text`, empty when none match (git grep exits 1 for no match).
+    /// The git flags and the record format are `grep_in`'s.
     pub fn grep(pattern: &str, pathspecs: &[&str]) -> Vec<String> {
-        let args = [&["grep", "-n", "-E", "-e", pattern, "--"], pathspecs].concat();
-        git(&args, 1).lines().map(str::to_owned).collect()
+        grep_in(root(), pattern, pathspecs)
     }
 
-    /// Every task of a task file or play list, depth first, with `block`/`rescue`/`always`
-    /// children included after their parent. Assertions select a task from here and test
-    /// that task, never the whole file (03 Part 1, rule 8).
+    /// `grep` for the repository at `dir`, as `path:line:text` lines. `-z` keeps each path as it
+    /// is on disk, as `ls_files_in` does: without it git quotes a non-ASCII name
+    /// (`"caf\303\251.yml":1:...`), and the caller's path is then not a file (AC-916). `-a` reads
+    /// a binary file as text, so every hit, binary or not, is `path NUL line NUL text NEWLINE`
+    /// and a binary match is reported as its line, never a `Binary file ... matches` notice: a
+    /// caller asserting a pattern is absent still fails on it, and a notice for a path holding a
+    /// newline cannot glue onto the next hit (#1180 review). The path is verbatim and may hold a
+    /// newline, so the two NUL fields are read before the text. `--no-color` and `--no-column` hold
+    /// the format whatever the git configuration says (`color.grep`, `grep.column`). A matched line
+    /// that is not UTF-8 panics in `git_in`; a record without its fields panics here.
+    pub fn grep_in(dir: &Path, pattern: &str, pathspecs: &[&str]) -> Vec<String> {
+        let mut args = vec![
+            "grep",
+            "-z",
+            "-n",
+            "-a",
+            "--no-color",
+            "--no-column",
+            "-E",
+            "-e",
+            pattern,
+            "--",
+        ];
+        args.extend_from_slice(pathspecs);
+        let out = git_in(dir, &args, 1);
+        let mut hits = vec![];
+        let mut rest = out.as_str();
+        while !rest.is_empty() {
+            let mut fields = rest.splitn(3, '\0');
+            let (Some(path), Some(line), Some(tail)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                panic!("a git grep record without path, line and text: {rest:?}");
+            };
+            let (text, after) = tail
+                .split_once('\n')
+                .unwrap_or_else(|| panic!("a git grep record without its newline: {rest:?}"));
+            hits.push(format!("{path}:{line}:{text}"));
+            rest = after;
+        }
+        hits
+    }
+
+    /// Every play, block and task of a task file or play list, depth first, each one's children
+    /// after it: [`yaml::tasks`] on the file. Assertions select a task from here and test that
+    /// task, never the whole file (03 Part 1, rule 8).
     pub fn tasks(rel: &str) -> Vec<Node> {
-        fn walk(items: &[Node], out: &mut Vec<Node>) {
-            for item in items {
-                out.push(item.clone());
-                for section in [
-                    "block",
-                    "rescue",
-                    "always",
-                    "tasks",
-                    "pre_tasks",
-                    "post_tasks",
-                    "handlers",
-                ] {
-                    if let Some(children) = item.get(section).and_then(Node::as_seq) {
-                        walk(children, out);
-                    }
-                }
-            }
-        }
-        let mut out = vec![];
-        if let Some(items) = yaml::load_one(&path(rel)).as_ref().and_then(Node::as_seq) {
-            walk(items, &mut out);
-        }
-        out
+        yaml::load_one(&path(rel))
+            .as_ref()
+            .map(|node| yaml::tasks(node).into_iter().cloned().collect())
+            .unwrap_or_default()
     }
 }
 
 pub mod process {
-    use std::time::Duration;
+    //! Child processes (03 Part 1, rule 11): every program a test starts goes through here.
+    //! [`scrubbed`] and [`bash_with`] start a program with a scrubbed environment and a 30 s
+    //! bound. [`ansible_playbook`] starts `ansible-playbook` confined to one directory, and
+    //! [`run`] and [`run_for`] run any of these to completion, bounded and with no stdin.
+    //! [`output_text`] joins a child's stdout and stderr, and [`fake_bin`]
+    //! builds the PATH of test doubles (`harness_sandbox.py`'s `fake_bin`).
+
+    use std::ffi::OsString;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::ExitStatusExt;
+    use std::path::{Path, PathBuf};
+    use std::process::Output;
+    use std::time::{Duration, Instant};
 
     use assert_cmd::Command;
+
+    use crate::repo;
 
     /// A child bounded by a timeout, with an environment that holds only `PATH`, a C locale,
     /// and a `HOME` and `TMPDIR` inside the directory the caller owns. Nothing from the
@@ -421,7 +613,246 @@ pub mod process {
         cmd
     }
 
+    /// The bound on one playbook run: the Python harness's `DEFAULT_TIMEOUT_SECONDS`.
+    pub const PLAYBOOK_TIMEOUT: Duration = Duration::from_secs(120);
+
+    /// SIGKILL, the signal `assert_cmd` sends a child at its timeout (the same on Linux and macOS).
+    const SIGKILL: i32 = 9;
+
+    /// The kernel sandbox a playbook run is confined by: `sandbox-exec` on macOS and `bwrap` on
+    /// Linux, each when it is on PATH; `None` otherwise. Without one no write is refused by the
+    /// kernel, so a confinement proof must check for it and say so (`support_playbook.rs`).
+    pub fn sandbox() -> Option<&'static str> {
+        if cfg!(target_os = "macos") && on_path("sandbox-exec") {
+            Some("sandbox-exec")
+        } else if cfg!(target_os = "linux") && on_path("bwrap") {
+            Some("bwrap")
+        } else {
+            None
+        }
+    }
+
+    fn on_path(program: &str) -> bool {
+        std::env::var_os("PATH")
+            .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+    }
+
+    /// The environment of a playbook run whose writable state is `dir`. `caller` reads the
+    /// caller's variables; the child gets exactly the list returned, never an inheritance. Ansible's
+    /// own state moves under `dir`. ANSIBLE_CONFIG is never set, so the repository's `ansible.cfg`
+    /// applies from the working directory. Collections stay where the caller's Ansible finds them:
+    /// moving ANSIBLE_HOME would hide the installed `ansible.posix` (`harness_sandbox.py`'s
+    /// `env_for`).
+    pub fn playbook_env(
+        dir: &Path,
+        caller: impl Fn(&str) -> Option<OsString>,
+    ) -> Vec<(&'static str, OsString)> {
+        let state = dir.join(".ansible-state");
+        let collections = caller("ANSIBLE_COLLECTIONS_PATH").unwrap_or_else(|| {
+            let mut home = caller("ANSIBLE_HOME")
+                .filter(|home| !home.is_empty())
+                .unwrap_or_else(|| {
+                    let mut home = caller("HOME").expect("HOME is set");
+                    home.push("/.ansible");
+                    home
+                });
+            home.push("/collections:/usr/share/ansible/collections");
+            home
+        });
+        vec![
+            ("PATH", caller("PATH").unwrap_or_default()),
+            ("LANG", "C".into()),
+            ("HOME", dir.into()),
+            ("TMPDIR", dir.into()),
+            ("ANSIBLE_HOME", state.join("home").into()),
+            ("ANSIBLE_LOCAL_TEMP", state.join("local").into()),
+            ("ANSIBLE_REMOTE_TEMP", state.join("remote").into()),
+            ("ANSIBLE_NOCOLOR", "1".into()),
+            ("ANSIBLE_COLLECTIONS_PATH", collections),
+        ]
+    }
+
+    /// The directories a sandboxed run may write: `dir`, the caller's temp root (TMPDIR, else
+    /// /tmp) and the process's temp directory, each resolved, without repeats.
+    pub fn writable_roots(dir: &Path) -> Vec<PathBuf> {
+        let caller_tmp = std::env::var_os("TMPDIR")
+            .filter(|tmp| !tmp.is_empty())
+            .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+        let mut roots: Vec<PathBuf> = Vec::new();
+        for path in [dir.to_path_buf(), caller_tmp, std::env::temp_dir()] {
+            let resolved = path
+                .canonicalize()
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            if !roots.contains(&resolved) {
+                roots.push(resolved);
+            }
+        }
+        roots
+    }
+
+    /// A sandbox-exec SBPL subpath for `root`. A quote or backslash would end the profile's
+    /// string, so such a path is refused rather than escaped.
+    fn subpath(root: &Path) -> String {
+        let text = root.display().to_string();
+        assert!(
+            !text.contains(['"', '\\']),
+            "{text}: a sandbox path cannot hold a quote or a backslash"
+        );
+        format!("(subpath \"{text}\")")
+    }
+
+    /// The `sandbox-exec` profile of harness_sandbox.py's `_profile`: default allow, every file
+    /// write denied, then the writable roots and /dev allowed.
+    fn sandbox_profile(roots: &[PathBuf]) -> String {
+        let mut profile =
+            String::from("(version 1)(allow default)(deny file-write*)(allow file-write*");
+        for root in roots {
+            profile.push(' ');
+            profile.push_str(&subpath(root));
+        }
+        profile.push_str(" (subpath \"/dev\"))");
+        profile
+    }
+
+    /// `ansible-playbook -i INVENTORY PLAYBOOK`, run from the repository root (so its
+    /// `ansible.cfg` applies), in the environment of [`playbook_env`] and bounded by
+    /// [`PLAYBOOK_TIMEOUT`]. Under a kernel sandbox (see [`sandbox`]) writes are allowed only in
+    /// `dir`, the temp roots and /dev. Run it with [`run`]; add arguments with `.arg`.
+    ///
+    /// Panics when `ansible-playbook` is not on PATH: a test that cannot run a playbook must fail,
+    /// never skip.
+    pub fn ansible_playbook(dir: &Path, inventory: &str, playbook: &str) -> Command {
+        assert!(
+            on_path("ansible-playbook"),
+            "ansible-playbook is not on PATH: run `uv sync --locked` and put .venv/bin first"
+        );
+        for sub in ["home", "local", "remote"] {
+            let path = dir.join(".ansible-state").join(sub);
+            std::fs::create_dir_all(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        }
+        let roots = writable_roots(dir);
+        let mut cmd = match sandbox() {
+            None => Command::new("ansible-playbook"),
+            Some("sandbox-exec") => {
+                let mut cmd = Command::new("sandbox-exec");
+                cmd.arg("-p")
+                    .arg(sandbox_profile(&roots))
+                    .arg("ansible-playbook");
+                cmd
+            }
+            Some("bwrap") => {
+                let mut cmd = Command::new("bwrap");
+                // --die-with-parent: bwrap and its direct child, ansible-playbook, are SIGKILLed when
+                // bwrap's parent dies (bwrap.xml, PR_SET_PDEATHSIG). A process ansible-playbook forks
+                // does not inherit that signal (it is cleared on fork), so a worker can outlive a
+                // killed runner, as it can on every runner path (`run_for`); AC-882 tracks a
+                // process-group kill.
+                cmd.args([
+                    "--ro-bind",
+                    "/",
+                    "/",
+                    "--dev",
+                    "/dev",
+                    "--proc",
+                    "/proc",
+                    "--die-with-parent",
+                ]);
+                for root in &roots {
+                    cmd.arg("--bind").arg(root).arg(root);
+                }
+                cmd.args(["--", "ansible-playbook"]);
+                cmd
+            }
+            Some(other) => panic!("unknown sandbox `{other}`"),
+        };
+        cmd.args(["-i", inventory, playbook])
+            .current_dir(repo::root())
+            .env_clear()
+            .envs(playbook_env(dir, |name| std::env::var_os(name)))
+            .write_stdin(Vec::new())
+            .timeout(PLAYBOOK_TIMEOUT);
+        cmd
+    }
+
+    /// [`run_for`] with [`PLAYBOOK_TIMEOUT`]: the bound a playbook run is held to.
+    pub fn run(cmd: &mut Command) -> Output {
+        run_for(cmd, PLAYBOOK_TIMEOUT)
+    }
+
+    /// Runs `cmd` to completion with no stdin, killed once `timeout` has passed. A timeout panics
+    /// with its bound and nothing the child printed: captured output can hold fixture credentials
+    /// (`harness_sandbox.run`). `assert_cmd` returns a killed child as `Ok`, not as an error, so a
+    /// timeout is a SIGKILL that came at or after the bound. The kill reaches the direct child
+    /// only. A worker `ansible-playbook` forked is not killed and can outlive the timeout on every
+    /// runner path: sandboxed under `sandbox-exec` or `bwrap`, unconfined without either. The Python
+    /// harness has the same limit; AC-882 tracks a process-group kill.
+    ///
+    /// A playbook run (the program, or any argument, is `ansible-playbook`) is held to
+    /// [`PLAYBOOK_TIMEOUT`]: `run_for` refuses any other bound, so [`run`] is the route that passes
+    /// (CONTRIBUTING.md, playbook tier; AC-906). The builder's own `.output()` or `.assert()` skips
+    /// this check and keeps the `PLAYBOOK_TIMEOUT` that [`ansible_playbook`] sets.
+    pub fn run_for(cmd: &mut Command, timeout: Duration) -> Output {
+        let runs_playbook = std::iter::once(cmd.get_program())
+            .chain(cmd.get_args())
+            .any(|arg| Path::new(arg).file_name() == Some("ansible-playbook".as_ref()));
+        assert!(
+            !runs_playbook || timeout == PLAYBOOK_TIMEOUT,
+            "a playbook run is held to PLAYBOOK_TIMEOUT: start it with process::run"
+        );
+        let started = Instant::now();
+        let output = cmd
+            .write_stdin(Vec::new())
+            .timeout(timeout)
+            .output()
+            .unwrap_or_else(|e| panic!("the test command did not start: {e}"));
+        let killed = output.status.signal() == Some(SIGKILL);
+        if killed && started.elapsed() >= timeout {
+            panic!(
+                "test command timed out after {}s; captured output suppressed",
+                timeout.as_secs_f64()
+            );
+        }
+        output
+    }
+
     fn shell_quote(s: &str) -> String {
         format!("'{}'", s.replace('\'', r"'\''"))
+    }
+
+    /// A child's stdout, then its stderr, as one string with no separator between them, like the
+    /// Python tests' `out.stdout + out.stderr`. Two differences from those: Python's `text=True`
+    /// (`harness_sandbox.py`'s `run`) turns `\r\n` and a lone `\r` into `\n`, while this keeps
+    /// every `\r`; and Python raises on bytes its locale's encoding cannot decode, while this
+    /// replaces bytes that are not UTF-8, as `String::from_utf8_lossy` does.
+    pub fn output_text(out: &Output) -> String {
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    }
+
+    /// The test doubles of one run, `harness_sandbox.py`'s `fake_bin`. Each `(name, body)` of
+    /// `scripts` becomes `<dir>/fakebin/<name>`, a `#!/bin/sh` script running `body`, with mode
+    /// 0755 set after the write so the umask cannot narrow it. Returns the PATH value a child gets
+    /// from `.env("PATH", ..)`: `fakebin` first, then this process's own PATH, so a command no
+    /// double replaces still resolves. A caller that needs another tail builds its own from
+    /// `dir.join("fakebin")`. Panics when `fakebin` already exists, as the Python `mkdir()` does.
+    pub fn fake_bin(dir: &Path, scripts: &[(&str, &str)]) -> OsString {
+        let bindir = dir.join("fakebin");
+        std::fs::create_dir(&bindir).unwrap_or_else(|e| panic!("{}: {e}", bindir.display()));
+        for (name, body) in scripts {
+            let script = bindir.join(name);
+            std::fs::write(&script, format!("#!/bin/sh\n{body}"))
+                .unwrap_or_else(|e| panic!("{}: {e}", script.display()));
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .unwrap_or_else(|e| panic!("{}: {e}", script.display()));
+        }
+        let mut entries = vec![bindir.clone()];
+        if let Some(inherited) = std::env::var_os("PATH").filter(|path| !path.is_empty()) {
+            entries.extend(std::env::split_paths(&inherited));
+        }
+        std::env::join_paths(entries)
+            .unwrap_or_else(|e| panic!("PATH cannot hold {}: {e}", bindir.display()))
     }
 }
