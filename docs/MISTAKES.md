@@ -44,7 +44,7 @@ and why.
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
-| 1.15 | **x4** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars (x4: a plan generalised "the guard renders no value" from one name; the guard references three) | Unverified claim | 4 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries, or use `forgeries.by_name` with an assertion of the run-start guard's message; the guard's own test proves it never renders a forged value) |
+| 1.15 | **x4** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars (x4: a plan generalised "the guard renders no value" from one name; the guard references three) (widened by 1.44) | Unverified claim | 4 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries, or use `forgeries.by_name` with an assertion of the run-start guard's message; the guard's own test proves it never renders a forged value) |
 | 1.16 | **x6** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41; x5: a review reply said every failure message carried the read-back result; one did not; x6: the correction of that reply said only the last one did; three did) | Unverified claim | 6 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
@@ -58,7 +58,7 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) — **x2** (2026-11-11: wrote a reviewer's "count at the pinned base" into plan 23 and AC-699 without checking `base.sha`; it does not track `dev`) — **x3** (2026-11-12: relayed a reviewer's "26 live templates point at deleted playbooks" into a PR comment, read from `templates.yml` only; the live catalog held none) — **x4** (2026-11-12: relayed three website-repo "conflicts" from a scout that read a stale branch into a reply and a Plane item; on `main` two were resolved and the third already tracked) — **x5** (2026-11-13: relayed a worker's unchecked guess that adding a Plane work item to a milestone moves it out of its old one; a second worker's read-back showed the add changes nothing while the item is in another milestone) — **x6** (2026-11-16: a credential-scan claim from a review subagent into plan 28) — **x7** (2026-11-16: seven Postiz tasks called hands-on from a scout's label) — **x8** (2026-11-16: a deploy refusal claimed from an AGENTS.md row, not the playbook) — **x9** (2026-11-17: the permission layer's rule stated from one report) | Unverified claim | 9 | Convention; guard proposed (count ≥ 3) |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26; widened by 1.36) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) — **x12** (2026-11-11: told a PR the OIDC promotion verify fails a malformed redirect; it only checks the live list contains the inventory value) — **x13** (2026-11-12: required a stored URL's format without reading the path's other readers) — **x14** (2026-11-12: a handoff said a full-catalog template publish creates the 54 missing templates and its `--check` lists the changes; it would create 73 and an active schedule, and `--check` lists no changes) — **x15** (2026-11-16: a module member from the item's topic) — **x16** (2026-11-16: a new ledger entry briefed without searching for the rule's existing owner) — **x17** (2026-11-16: AC-738 briefed as remaining though Done) — **x18** (2026-11-20: a rule for the override guard's include, without reading the guard's usage contract; three review returns on #1212) | Unverified claim | 18 | Convention; guard proposed (count ≥ 3) |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26; widened by 1.36) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) — **x12** (2026-11-11: told a PR the OIDC promotion verify fails a malformed redirect; it only checks the live list contains the inventory value) — **x13** (2026-11-12: required a stored URL's format without reading the path's other readers) — **x14** (2026-11-12: a handoff said a full-catalog template publish creates the 54 missing templates and its `--check` lists the changes; it would create 73 and an active schedule, and `--check` lists no changes) — **x15** (2026-11-16: a module member from the item's topic) — **x16** (2026-11-16: a new ledger entry briefed without searching for the rule's existing owner) — **x17** (2026-11-16: AC-738 briefed as remaining though Done) — **x18** (2026-11-20: a rule for the override guard's include, without reading the guard's usage contract; three review returns on #1212) — **x19** (2026-11-19, recorded late: a grep match count read as callers) | Unverified claim | 19 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
 | 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) — **x2** (2026-11-10: called a survey a read-only reproduction of a deploy refusal because the category word matched; it failed at a different step) | Unverified claim | 2 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
@@ -71,6 +71,9 @@ and why.
 | 1.39 | Told the operator a paid plan would unlock a vendor role, from the code's flag name, without the vendor's plan matrix; Plane's Admin role is Business-only | Unverified claim | 1 | Convention |
 | 1.40 | Posted an earlier round's reply text in three review threads after a refused command left old files in place | Unverified claim | 1 | Convention |
 | 1.41 | Reported a state carried across a context compaction without reading it again (a mutation result in #1190's description) | Unverified claim | 1 | Convention |
+| 1.42 | Read a send's message id as delivery | Unverified claim | 2 | Convention |
+| 1.43 | Wrote a time into the batch record without reading the clock | Unverified claim | 2 | Convention |
+| 1.44 | A coverage sentence said a check proves more than its fixtures show (widens 1.15) | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -145,9 +148,10 @@ and why.
 | 4.6 | **x3** — A failure-path diagnostic printed the very values the success path was built to keep out of stdout | Secret in transcript | 3 | Test (static guard, `test_no_request_in_loop_items.py`; `test_no_log_error_redaction.py`) + stdout callback (`callback_plugins/redact_requests.py`) |
 | 4.7 | An address edit replaced every matching line and left a production runner declared at the new VM's address | Data handling | 1 | Playbook guard + test (provision-vm address-claim check) |
 | 4.8 | **x2** — A credential-shaped test fixture was pushed; CI's unscoped all-detectors scan let it fail other PRs (the second time the scan was already scoped, and the PR was replaced) | Data handling | 2 | CI (scan scoped to the PR's commits); pre-commit hook flags a staged literal; the fixture rule itself Convention |
-| 4.9 | **x4** — Private site data in public code: Discord destination IDs in a fixture; the operator's account in a Proxmox token fallback, gateway fixtures and path-derived ids; a plan note naming the operator's gateway key field; the production internal zone in a status entry and two PR bodies | Data handling | 4 | Test (`test_no_site_identity.py`, the three account shapes; caught by CI both times it fired); other private values Convention; site-config-derived name scan for commits and PR text proposed (count ≥ 3) |
+| 4.9 | **x4** — Private site data in public code: Discord destination IDs in a fixture; the operator's account in a Proxmox token fallback, gateway fixtures and path-derived ids; a plan note naming the operator's gateway key field; the production internal zone in a status entry and two PR bodies (widened by 4.12) | Data handling | 4 | Test (`test_no_site_identity.py`, the three account shapes; caught by CI both times it fired); other private values Convention; site-config-derived name scan for commits and PR text proposed (count ≥ 3) |
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
+| 4.12 | A brief carried an instance detail (a person) into the public template (widens 4.9) | Data handling | 1 | Convention |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
 | 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard; 2026-11-05: a playbook change past the check-mode contract test; 2026-11-08: a template comment past the check-mode injection guard; 2026-11-09: a template-order test the fast subset skips; 2026-11-11: a new test file past the spawn guard; 2026-11-11: a test-only push under `SKIP_TESTS=1`, past the line-window ratchet; 2026-11-17: a merge go sent in the same step as a CONFLICTING read) | Process | 15 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
@@ -172,7 +176,7 @@ and why.
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | `scripts/merge-when-green.py` (`check_dev_drift`) + test |
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, and six launch-gate PRs, with no pass or a pass on an earlier head | Process | 5 | Superseded by 5.25 |
-| 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on — **x3** (2026-11-16 to 2026-11-17: statuses on merge-only and hand-checked heads across twelve PRs; four merged on them — **x4** (2026-11-18): #1206's statuses on `750f7000` came from agents dispatched by hand, not runs of the two skills) — **x5** (2026-11-17 to 2026-11-18: statuses from Agent dispatches, not Skill-tool runs, on five PRs; four merged) — **x6** (2026-11-17 to 2026-11-18: #1186 statuses on four heads no run of the two skills had covered) — **x7** (2026-11-17: #1204, #1205, #1207, the re-cut of #1185, statuses from Agent dispatches after a compaction; caught before merge) — **x8** (the coordinator read the statuses as success without asking how they were made) | Process | 8 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test; per-head pass receipt proposed (count 3) |
+| 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on — **x3** (2026-11-16 to 2026-11-17: statuses on merge-only and hand-checked heads across twelve PRs; four merged on them — **x4** (2026-11-18): #1206's statuses on `750f7000` came from agents dispatched by hand, not runs of the two skills) — **x5** (2026-11-17 to 2026-11-18: statuses from Agent dispatches, not Skill-tool runs, on five PRs; four merged) — **x6** (2026-11-17 to 2026-11-18: #1186 statuses on four heads no run of the two skills had covered) — **x7** (2026-11-17: #1204, #1205, #1207, the re-cut of #1185, statuses from Agent dispatches after a compaction; caught before merge) — **x8** (the coordinator read the statuses as success without asking how they were made) — **x9** (2026-11-19: an instruction to stop after round N replaced the pass rule) | Process | 9 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test; per-head pass receipt proposed (count 3) |
 | 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories (2026-11-16: also `--budget-acknowledged`) | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
 | 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
 | 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 2 | Convention (a ratchet check on mode variables proposed, AC-865) |
@@ -184,11 +188,15 @@ and why.
 | 5.34 | Fixed a destructive block's failure paths one review finding at a time on #1206; returns 4 and 5 found four more paths in the same block | Process | 1 | Convention (failure table accepted for later briefs, 2026-11-18) |
 | 5.35 | Skipped a skill-pass finding that a port test held wider rows than its original, on a comment saying the filter reads only tag and spec; carried as decided until the third return | Process | 1 | Convention |
 | 5.36 | One batch unit bundled eleven guard-test fixes across five test modules, a BATS test deletion and a plan cell; it went back nine times and was closed and cut into three | Process | 2 | Convention (three-returns rule; split past about three files) |
-| 5.37 | Ran two rounds of four-agent `/simplify` plus security passes on S9 without totalling agent tokens, against a 450k stop never sized from a measured round; spend reached about six times the stop | Process | 3 | Convention (stop set per model class from a measured round; running total before each wave); dispatch check refusing a brief without an ESTIMATE line proposed (count 3, AC-1051) |
+| 5.37 | Ran two rounds of four-agent `/simplify` plus security passes on S9 without totalling agent tokens, against a 450k stop never sized from a measured round; spend reached about six times the stop | Process | 6 | Convention (stop set per model class from a measured round; running total before each wave); dispatch check refusing a brief without an ESTIMATE line proposed (count 3, AC-1051) |
 | 5.38 | Three returns on S9's `ansible.cfg` check: a grammar reader, then a pin with a second unchecked list; no plan said where the fact "this setting loads a directory" was declared | Process | 1 | Test: `lanes` suite (`cfg_dirs_classifies_every_pinned_key_and_refuses_the_rest`) |
 | 5.39 | The pre-push hook tested one commit; a commit made during the hook was pushed untested | Process | 1 | Convention (hook check for a ref that moved during the run proposed, AC-929) |
 | 5.40 | A destructive playbook (#1206) was briefed without an identity for its targets or the reads its decision depends on; three returns | Process | 1 | Convention |
-| 5.41 | The coordinator's question dialog left owner mail unread and the monitor still while it was open | Process | 3 | Convention; pre-dialog step and a dialog time limit proposed (count 3, AC-1052) |
+| 5.41 | The coordinator's question dialog left owner mail unread and the monitor still while it was open | Process | 6 | Convention; pre-dialog step and a dialog time limit proposed (count 3, AC-1052) |
+| 5.42 | Asked the operator to approve a way past a review from the guard's first refusal, without walking every gate | Process | 2 | Convention |
+| 5.43 | A promotion brief asked for Plane keys in a pull request body without saying bare; Plane moved 18 Done items to Todo | Process | 1 | Convention |
+| 5.44 | Relaunched an owner without fencing the old dispatch; two owners held one unit for two minutes | Process | 1 | Convention |
+| 5.45 | A guard was specified by its goal, not by the forms it recognises | Process | 1 | Convention |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -954,6 +962,8 @@ read by its own `when:`); and `test_extra_var_refusal_tests.py` accepts `by_name
 positively asserts the guard's own message (naming the forged name when that name is a literal; a computed name is not cross-checked). A value-reading refusal, a gate run without the guard, and a connection
 variable keep all three spellings.
 
+The rule is widened in 1.44.
+
 ### 1.16 A count written into a committed plan without running the count
 
 **Occurrences: 6** — 2026-09-25, 2026-10-03, 2026-11-02, 2026-11-10, 2026-11-18, 2026-11-18
@@ -1543,7 +1553,7 @@ check this rule asks for. The v0.16.0 handoffs now state the quirk and the remov
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 18** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10, 2026-11-11, 2026-11-12, 2026-11-12, 2026-11-16, 2026-11-16, 2026-11-16, 2026-11-20
+**Occurrences: 19** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10, 2026-11-11, 2026-11-12, 2026-11-12, 2026-11-16, 2026-11-16, 2026-11-16, 2026-11-20, 2026-11-19 (recorded late)
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1721,6 +1731,8 @@ Deploy Caddy's dry run already reports in that shape (10.18, update 2026-10-15).
 The rule is widened in 1.36.
 
 **Occurrence 18 — 2026-11-20.** Brief 32 (#1212, AC-997) told the sudo-password opening check to accept the override-guard include only as a bare include, with no loop, judging it by the resolver include's rule. The guard's usage contract says the opposite: `platform/playbooks/tasks/refuse-var-overrides.yml:16-25` requires `loop` with `loop_control.loop_var: _rvo_name`, and its first task asserts `_rvo_name is defined` (`:28-31`), and every caller loops it. The check accepted a form that fails at run time and refused the only usable one. It took three review returns, the third from CodeRabbit (review 5994608613, three findings on the guard include), before the unit was cut again. Why the rule did not fire: the brief set a rule for a shared task file's include without reading that file's own usage comment. A brief that sets a rule for how a shared task file is included reads that file's usage contract first and cites it. Instance enforced by the shared guard-refusal fixtures in `platform/tests/suite/become_password_resolution.rs` (a bare guard, an import, a missing `loop_control` and the rest are each refused, and the looped guard is accepted); the class stays Convention.
+
+**Occurrence 19 — 2026-11-19 (recorded late).** Brief 32 (row 419, AC-997) told its owner that the helpers `tagged_never` and `when_is_constant_false` "stay used inside `suite/credential_leaks.rs` (10 matches there)", so dropping an import elsewhere left no dead code. The 10 was a count of grep matches, not of callers. Read again on 2026-11-26: `when_is_constant_false` is defined at `platform/tests/suite/credential_leaks.rs:1451`, named in a doc comment at `:1400`, and called only by the file's own assertions from `:1543`, so row 419's change left a helper called only by the file's own tests, with no production caller, in a file outside the unit's OWNS. The owner found it. Why the rule did not fire: a match count stood in for reading what the matches were, the same shortcut as reading a task's name for its behaviour.
 
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
@@ -1989,6 +2001,46 @@ by measurement); this is the reverse, a capability assumed without the documenta
 **The rule.** After a compaction, every state the summary carries (a test result, a GitHub state, a mutation outcome) is read again at its source before it is reported or written down.
 
 **Enforced by.** Convention. The session's compaction instructions say to re-read the files the summary names; nothing checks a reported state against a fresh read.
+
+### 1.42 Read a send's message id as delivery
+
+**Occurrences: 2** — 2026-11-18, 2026-11-19
+
+**What happened.** On 2026-11-18, after the five-hour usage limit reset at 16:00 EST, Orca accepted the coordinator's sends to three limited owners at 16:02 and 16:25 EST and returned a message id for each, but by 16:26 EST none had reached the owners' transcripts; `orca orchestration worker-show` read state ready, liveness live and activity idle (the coordinator's record). The batch skill's monitor table had no row for a send that is accepted and never delivered; its relaunch row assumes a send that fails (coordinator's record).
+
+**Root cause.** A message id says Orca accepted the message, not that a session read it. The coordinator took the id as the end of the send and read nothing on the recipient's side.
+
+**The rule.** A send's message id is not delivery. A send is confirmed by the recipient's transcript moving or by its reply, and only then is an owner reported as resumed or told. After a restart, read each dispatch's liveness before sending to it.
+
+**Enforced by.** Convention.
+
+**Occurrence 2 — 2026-11-19.** At 22:24 EST, after an Orca restart, the coordinator sent resume messages to three owners and told the operator "all three owner sessions are resumed". Two of the three dispatches read `liveness=exited` in `orca orchestration worker-show`; the send had printed a message id for each, and neither message was read before the relaunch (Orca delivered both when it revived the old sessions at about 23:00 EST, 5.44). The monitor tick two minutes later found it (their transcripts had not moved), and both were relaunched at 22:28 EST. Why the rule did not fire: it was not written yet; both occurrences are recorded together, late.
+
+### 1.43 Wrote a time into the batch record without reading the clock
+
+**Occurrences: 2** — 2026-11-19, 2026-11-20
+
+**What happened.** On 2026-11-19, between 07:19 and 07:26 EST, after a context compaction, the coordinator wrote six times into the batch index, its compaction notes, the queue file and two briefs ("07:22", "07:24", "07:35", "07:40", "08:00" and "08:05 EST") without running `date`. The last was 39 minutes ahead of the clock (`date` read 07:26 EST). It was found from a hook's own time stamp and corrected in the same turn, before any session acted on it (coordinator's record).
+
+**Root cause.** After a compaction the session has no clock reading in view, and it wrote what it estimated the time to be.
+
+**The rule.** A time written into a handoff file or stated to the operator comes from `date` run in the same command.
+
+**Enforced by.** Convention.
+
+**Occurrence 2 — 2026-11-20.** Again in the turn after a compaction, the coordinator wrote "01:35 EST" into the header of a message sent to the closing owner, and "01:40 EST" and "sent 01:36 EST" into the index's sequencing note; `date` read 01:29 EST when the next command ran. Both files were corrected in the same turn; the sent message keeps the wrong header, and no step in it depends on the time (coordinator's record). Why the rule did not fire: it was not written yet; both occurrences are recorded together, late.
+
+### 1.44 A coverage sentence said a check proves more than its fixtures show (widens 1.15)
+
+**Occurrences: 1** — 2026-11-20
+
+**What happened.** For S9's second cut (#1213, AC-977), the coordinator sent its owner a wording line for what the lane guard covers. The reviewer returned the pull request on it (return 1 of cut 2, 2026-11-20): no test in the pull request exercised the form the line said was covered (coordinator's record; the return's text was not re-read for this entry).
+
+**Root cause.** The sentence was written from what the guard was meant to do, with no fixture behind it that would go red if the coverage were missing. 1.15's rule covers security guarantees only, so it did not reach a coverage sentence about a test guard.
+
+**The rule.** A coverage sentence in a pull request body, a comment or a doc names the fixture that goes red without the coverage, or it is not written. This widens 1.15 from security guarantees to every coverage claim, whoever writes it.
+
+**Enforced by.** Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -4597,6 +4649,8 @@ pre-push check that, when a site-config checkout is configured, fails on any sta
 private name it derives from that checkout (the internal zone, site label and inventory host names), plus
 the `gh` wrapper proposed in 5.15 running the same check on PR and comment bodies before they are sent.
 
+The rule is widened in 4.12.
+
 ### 4.10 The interpreter read the token file as its program, and its error printed the token
 
 **Occurrences: 4** — 2026-09-25, 2026-09-25, 2026-09-26, 2026-10-12
@@ -4676,6 +4730,18 @@ tested by `platform/tests/test_machine_path_hook.bats`): it refuses an added lin
 Fails closed, like the secret gates.
 
 **Enforcement moved — 2026-11-21.** The BATS file this entry cites was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/machine_path_hook.rs::a_macos_home_directory_is_refused` is its replacement.
+
+### 4.12 A brief carried an instance detail (a person) into the public template (widens 4.9)
+
+**Occurrences: 1** — 2026-11-19
+
+**What happened.** Brief 33's decision 3 (row 420, AC-999, the `kv-pool-trial` alert rule) copied an alert description from another batch verbatim, and that description told a named person to report the same day. agent-cloud is the public template, and `AGENTS.md:57-64` sends people and contacts to site-config. The owner flagged the wording in #1211's body and left it, as the brief said; the coordinator had it changed to "the operator" before the review round. #1211's merged body records the change. No hostname or secret was involved.
+
+**Root cause.** The brief's author copied text from an instance's record into a template brief without reading it against the template rule. The owner followed the brief over the repository's rule.
+
+**The rule.** Text copied into a brief from another batch or an instance record is read against `AGENTS.md`'s template convention before it is sent: a person, a contact, a hostname or an organisation name becomes a role or a placeholder.
+
+**Enforced by.** Convention.
 
 ## 5. Duplication and process
 
@@ -5495,7 +5561,7 @@ PR. None of the six heads carries either commit status, which 5.25's guard now r
 
 ### 5.25 A review pass is a commit status on the head it covered (supersedes 5.24's rule)
 
-**Occurrences: 8** — 2026-11-12, 2026-11-12, 2026-11-16 to 2026-11-17, 2026-11-18, 2026-11-17 to 2026-11-18, 2026-11-17 to 2026-11-18, 2026-11-17, 2026-11-17 to 2026-11-18. The four that earned this rule are 5.24's.
+**Occurrences: 9** — 2026-11-12, 2026-11-12, 2026-11-16 to 2026-11-17, 2026-11-18, 2026-11-17 to 2026-11-18, 2026-11-17 to 2026-11-18, 2026-11-17, 2026-11-17 to 2026-11-18, 2026-11-19. The four that earned this rule are 5.24's.
 
 **What happened.** 5.24's rule (one PR-body line per pass) lived in prose, and its fourth occurrence retired
 `Convention` as its enforcement.
@@ -5584,6 +5650,8 @@ along the skills' lines passed for the skills.
 The batch coordinator's audit of 2026-11-18 found it. A newer `failure` status for both contexts was posted on each head, so the guard refuses them. Each pull request has a comment naming the heads, and the real passes run at each pull request's turn. Why the rule did not fire: the session had invoked both skills on #1185's heads before a context compaction. After it, I reproduced the skills' steps with dispatched agents and counted a Skill call on an earlier head, or a call whose steps I shortened, as the pass. The rule already covers it: a pass status names a complete run of that skill on that head.
 
 **Occurrence 8 — 2026-11-17 to 2026-11-18.** The batch coordinator's part in occurrences 4 to 7. On its merge checks it read the owners' `simplify` and `security-review` statuses as success (#1202's merge line among them) without asking how any was produced, and after occurrence 3 its compaction notes stated "Both review passes are real skill runs" as a standing fact. It asked only when an owner's own wording ("read-only reviewer", #1186, 2026-11-18 12:38 EST) gave it away; the audit that followed found 22 merged pull requests whose statuses had no real pass behind them (brief 28, decision 54). Why the rule did not fire: the coordinator checked what the guard checks (that a status exists, with a description), so its check added nothing, and a sentence in its own notes stood in for asking. During the remediation it also made up an exception to the rule: at 12:44 EST on 2026-11-18 it told the P2 owner that a head whose only change after a real `/simplify` run was `docs/MISTAKES.md` needed no `simplify` rerun. 5.25 had no such exception then (the rule change of 2026-11-21 above now runs one round for a whole docs-only pull request). The owner wrote it into its occurrence on #1201, and CodeRabbit flagged it (review 5963577261 on `cd074709`).
+
+**Occurrence 9 — 2026-11-19.** To stop review passes from growing S9 (#1213, row 418), the coordinator told its owner that if the second security pass found nothing, that head was the push head, with no third `/simplify`, and that `3d88bcbf` was the push head once 5.37 was committed. `/simplify` round 2 had changed code (it produced `3d88bcbf`), and the ledger commit made a new head, `b4af7d2b`. The owner posted both statuses on `b4af7d2b` at 2026-11-20T04:34Z with honest descriptions ("b4af7d2b adds ledger text only"), but no `/simplify` round had read `3d88bcbf` and no pass had read `b4af7d2b`. The coordinator found it when it read the statuses and asked for one confirming round of both passes on `b4af7d2b`. #1212 had the same shape (its round 3 changed code), found the same way (coordinator's record). Why the rule did not fire: the rule then in force ran both passes again until a round changed nothing and had no docs-only exception, and the coordinator's instruction replaced it with "stop after round N" to cap spend. The "Rule changed" paragraph above records the rule that replaced it.
 
 ### 5.26 Release actions follow the operator's standing authorization (supersedes 5.7's rule)
 
@@ -5855,7 +5923,7 @@ batch's later briefs; that is a brief convention, not a check.
 
 ### 5.37 Ran two rounds of four-agent passes without totalling agent tokens; the unit passed its spend stop about six times over
 
-**Occurrences: 3** — 2026-11-19, 2026-11-20, 2026-11-18 (recorded late)
+**Occurrences: 6** — 2026-11-19, 2026-11-20, 2026-11-18 (recorded late), 2026-11-18 (recorded late), 2026-11-19 (recorded late), 2026-11-19 (recorded late)
 
 **What happened.** The S9 brief (`handoffs-v0.17.0/25-lane-guard-s9.md:188-189`, AC-977) says to stop and report at 450k tokens for the unit, executors and passes together, and records that one `/simplify` reviewer on a 1,452-line range cost about 200k. The owner ran `/simplify` round 1 (four agents: about 227k, 254k, 266k and 260k), `/security-review` round 1 (about 184k), `/simplify` round 2 (about 280k, 301k, 260k and 280k) and `/security-review` round 2 (about 284k) on a range of 806 to 940 diff lines. Each agent's result reported its own token count. The owner added them up only after round 2, while re-reading the brief for the pull request body: about 2.6M for the passes alone, before the executor runs. Nothing was pushed past the stop; the owner reported to the coordinator before the push.
 
@@ -5869,7 +5937,15 @@ batch's later briefs; that is a brief convention, not a check.
 
 **Occurrence 3 — 2026-11-18 (recorded late).** The coordinator dispatched six remediation chunks under brief 28, each `/simplify` with four agents plus `/security-review`, while three pull requests ran multi-round real passes. Brief 28 carries no ESTIMATE, which the batch skill requires of every brief, and the spend limit was not checked before dispatch. At 14:16 to 14:18 EST the backup, #1186 and P1 owner sessions stopped on the session limit (decision 60). Why the rule did not fire: the rule sizes one unit's stop from a measured round, and a brief with no estimate gave nothing to size or total. The count of 3 retires Convention; the proposal is in Enforced by.
 
+**Occurrence 4 — 2026-11-18 (recorded late).** Retention PR C (row 320, AC-857) was given a 300k stop, then 150k more (the v0.17.0 batch index, decisions 64 and 65). Neither came from a measured round. By the owner's report, two executors used 402,569 tokens before the first stop, and after the second stop the reuse reviewer of one `/simplify` round used 202,636 tokens by itself on a range of about 1450 lines, so the round stopped incomplete and PR C was parked. Both stops counted every model's tokens alike. Why the rule did not fire: the stops were set by the coordinator during the same evening as occurrence 3, from a guess, before this entry's rule was written.
+
+**Occurrence 5 — 2026-11-19 (recorded late).** At 07:28 EST the closing owner (two `pr-reviewer` rounds planned), the S9 owner and the row 419 owner were started within ten minutes of each other, and all three stopped on the account's seven-day limit with the promotion's round 1 unfinished. The coordinator had not read the remaining weekly allowance before the dispatch, and two of the units could not merge before the promotion anyway (coordinator's record). Why the rule did not fire: the rule totals one unit's spend against its own stop; nothing in it compares the batch's planned spend with the account's remaining allowance.
+
+**Occurrence 6 — 2026-11-19 (recorded late).** Row 419's 350k stop (brief 32, AC-997) counted a Haiku executor's 310,111 tokens like Opus tokens and stopped the unit after one executor run (coordinator's record). Why the rule did not fire: the brief's stop named no model, and the rule that asks for a stop per model class was committed the same night (`b4af7d2b`, 23:14 EST).
+
 ### 5.38 Three returns on one check because no plan said where "which setting loads a directory" was declared
+
+**Occurrences: 1** — 2026-11-20
 
 **What happened.** S9 (AC-977, PR #1213) asked a `lanes` test to select every playbook-tier module when `ansible.cfg` or a plugin directory it loads changes. The first plan had the test read `ansible.cfg`'s grammar. CodeRabbit's round on `b4af7d2b` and the owner's passes on `6b3f0ea2` and `9ea7a578` each found a form of the file the reader did not handle. The coordinator replaced the reader with a pin: `CFG_SETTINGS` held the setting lines whole, and a second constant, `CFG_LOADED`, named the directories they load. The confirming round on `61b16729` found that nothing checked `CFG_LOADED` against the pin. Dropping an entry from `CFG_LOADED`, or adding a plugin directory to `ansible.cfg` and `CFG_SETTINGS` without it, left every check green, while the doc comment, the failure message and `platform/tests/areas.d/README.md` said the test failed until both were updated. The same round showed that trimming leading whitespace let an indented setting line pass the pin, although Ansible's config parser reads it as a continuation of the line above (`ansible-config dump --only-changed` lost `stdout_callback`). That was the third return, and the coordinator cut the unit again.
 
@@ -5905,7 +5981,7 @@ batch's later briefs; that is a brief convention, not a check.
 
 ### 5.41 The coordinator's question dialog stopped its mail and its monitor while it was open
 
-**Occurrences: 3** — 2026-11-17, 2026-11-18, 2026-11-18
+**Occurrences: 6** — 2026-11-17, 2026-11-18, 2026-11-18, 2026-11-18 to 2026-11-19, 2026-11-19 to 2026-11-20, 2026-11-20
 
 **What happened.** At 21:50 EST on 2026-11-17 the coordinator opened an `AskUserQuestion` dialog for #1206's fourth return; the operator answered at 00:05 EST (the v0.17.0 batch index, decision 42). A session cannot read Orca mail while its dialog is open, so #1198's fourth return and three owner reports sat unread for about two hours, and no row held the turn.
 
@@ -5918,6 +5994,62 @@ batch's later briefs; that is a brief convention, not a check.
 **Occurrence 2 — 2026-11-18.** The dialog for #1186's fifth return was open from 09:06 to 12:22 EST (decision 50). #1201's scope question on the lanes guard and #1206's sixth return (CodeRabbit review 5958770229, 14:40:34Z) sat unread for that time. Why the rule did not fire: the practice adopted after the first occurrence (pass the turn and send every owner its next step first) did not cover mail that arrives while the dialog is open.
 
 **Occurrence 3 — 2026-11-18.** A dialog on stalled sessions and #1201's return, opened at 17:03 EST by the coordinator's own record, was answered at 19:48 EST (decisions 59 and 60). No owner was running, so no mail was lost, but the monitor did not tick for that time. Why the rule did not fire: nothing bounds how long a dialog may stay open.
+
+**Occurrence 4 — 2026-11-18 to 2026-11-19.** A dialog about plan 23's release row (decision 71) stayed open overnight, from 23:27 EST to 06:25 EST. #1207's owner sent three stop reports in that window (round 3 not converged) and waited about six hours for a line. Why the rule did not fire: the owner on turn had no standing instruction for its likely stop, and the operator's instruction that every question uses the dialog left no other way to ask.
+
+**Occurrence 5 — 2026-11-19 to 2026-11-20.** The dialog for decision 77 (the merge of #1211) was open from 23:50 EST to about 00:45 EST. Two owner reports waited behind it (S9's return 2, with a question, and row 419's return 2), and S9's owner waited two 30-minute timers for an answer. Why the rule did not fire: the standing instructions sent covered the merge the dialog was about, not a return or a question, which the rule names.
+
+**Occurrence 6 — 2026-11-20.** The dialog for decisions 78 and 79 was open from 01:43 EST to about 09:23 EST. Fourteen Orca messages arrived only after it closed, among them three usage-limit alerts from 00:49 EST and the closing owner's `promotion ready` (coordinator's record). No owner was blocked: the coordinator had read the owners' transcripts at 01:28 EST, before the dialog, and found the stops there. Why the rule did not fire: its step of reading each owner's last reply worked; nothing bounds how long the dialog stays open (AC-1052).
+
+### 5.42 Asked the operator to approve a way past a review from the guard's first refusal, without walking every gate
+
+**Occurrences: 2** — 2026-11-18, 2026-11-20
+
+**What happened.** On 2026-11-18 the coordinator asked the operator to dismiss CodeRabbit's four reviews on #1186 and merge head `bf49ab4a` through the guard, and the question said the guard's only refusal was the outstanding changes-requested reviews (the v0.17.0 batch index, decision 66). It also reported that 14 threads stayed unresolved, without naming thread resolution as a gate. `validate()` in `scripts/merge-when-green.py` stops at its first `Refusal`, and `review_evidence()` raises the changes-requested refusal (`:850-851`) before the unresolved-thread refusal (`:886-887`), so the first refusal said nothing about the gates after it. After the dismissals the guard refused for 3 unresolved threads, and the operator was asked a second time (decision 67).
+
+**Root cause.** The question was built from the guard's refusal message. The guard reports one refusal per run, so the gates behind the first were never read.
+
+**The rule.** Before asking the operator to approve a way past a review, list each gate the merge guard checks (among them approval, changes requests, review threads, commit statuses and checks), read each one against GitHub, and name in the question every gate the approval must cover.
+
+**Enforced by.** Convention.
+
+**Occurrence 2 — 2026-11-20.** The question for decision 81 (#1213) named the dismissal of CodeRabbit's stale changes request and did not name thread resolution; the dev guard needs both, so a second question was needed (decision 82). Why the rule did not fire: it was not written yet; both occurrences are recorded together, late.
+
+### 5.43 A promotion brief asked for Plane keys in a pull request body without saying bare; Plane moved 18 Done items to Todo
+
+**Occurrences: 1** — 2026-11-19
+
+**What happened.** Brief 31 (the v0.17.0 promotion, AC-995) asked for the list of pull requests "with Plane keys" in the body of promotion #1210 and did not say bare. The closing owner bracketed 18 keys. Plane read the body when #1210 opened (2026-11-19T12:20:15Z) and moved all 18 items from Done to Todo through the pull request state mapping. The owner removed the brackets about a minute later and set each item back (owner's report); the coordinator read all 18 back in the completed group with `completed_at` reset to the morning of the promotion, so the original completion dates are lost (coordinator's record). `AGENTS.md:562-568` (Plane work tracking) already says to mention any item other than the pull request's own without brackets, and that Plane reads the description.
+
+**Root cause.** The brief asked for keys in a body without carrying the repository's rule on brackets, and the owner wrote them in the form the title uses.
+
+**The rule.** A brief that asks for Plane keys in a pull request body says "bare keys, no brackets"; only the title carries the pull request's own key in brackets.
+
+**Enforced by.** Convention.
+
+### 5.44 Relaunched an owner without fencing the old dispatch; two owners held one unit for two minutes
+
+**Occurrences: 1** — 2026-11-19
+
+**What happened.** At 22:27 EST `orca orchestration worker-show` read `liveness=exited` for two owner dispatches. The coordinator took that as the owner being gone, relaunched both units in the same worktrees and wrote "dead" in the batch index, without fencing the old dispatches (`orca orchestration worker-stop`) and with its own resume messages of 22:24 EST still queued for them (1.42, occurrence 2). At about 23:00 EST Orca revived both old sessions and delivered that mail; one started re-verifying row 419's branch in the worktree where the new owner was committing. Both were stood down within two minutes and reported read-only work only; the coordinator read #1210's comments and the receipts folder unchanged (coordinator's record).
+
+**Root cause.** "Exited" is a process state, not a stand-down: Orca can revive the session and deliver queued mail to it. The relaunch assumed the old owner could not act again.
+
+**The rule.** Before a relaunch, fence the old dispatch and confirm no message of yours is queued for it.
+
+**Enforced by.** Convention.
+
+### 5.45 A guard was specified by its goal, not by the forms it recognises
+
+**Occurrences: 1** — 2026-11-20
+
+**What happened.** Brief 25 and S9's two later cuts (#1213, AC-977) said what the lane guard must catch and never listed the include and lookup forms it reads. Each review round found one more unlisted form. CodeRabbit's review 5995742919 on `8ee39af6` (2026-11-20T16:12:22Z, changes requested) was one more such round, the cause of cut 2's third return (coordinator's record).
+
+**Root cause.** A goal ("catch every playbook that uses this file") has no end a review can check against. With no list of recognised forms, every reviewer could name another form, and each fix covered only the one named. 5.38 asks where a fact a test needs is declared; this is the same gap for a guard's inputs.
+
+**The rule.** A brief for a guard lists the forms it recognises and states that every other form is refused or is out of scope, so a review finds a gap against a list.
+
+**Enforced by.** Convention.
 
 ## 6. Working from assumptions about files
 
