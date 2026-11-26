@@ -96,10 +96,11 @@
 - [ ] 3.3 Add `platform/playbooks/build-macos-runner-image.yml`: verifies the Xcode
       archive's digest on the host first, runs `packer build` on the host, names the image
       by its inputs, and leaves the current image untouched on failure. With two slots
-      declared, it first holds the second slot (D5): it sets the hold, waits at most
-      `macos_runner_max_job_minutes` plus 10 minutes for the slot to hold no VM, refuses
-      the build if one remains, and releases the hold in an `always` block. Add its
-      Semaphore template.
+      declared, it first holds the second slot (D5): it removes any acknowledgement left by
+      an earlier run, sets the hold, waits at most `macos_runner_max_job_minutes` plus 10
+      minutes for the supervisor's acknowledgement that the slot holds no VM and no clone
+      is in flight, refuses the build without one, and releases the hold and the
+      acknowledgement in an `always` block. Add its Semaphore template.
 - [ ] 3.4 Run the build against a test fixture declaration with a wrong Xcode digest
       (never by editing the real declaration), confirm it aborts before installing Xcode
       and the current image is unchanged. Keep the fixture as a regression test.
@@ -119,7 +120,9 @@
       stop and delete it, and clone a fresh one; the stock template's prune deletes its
       offline runner record. Read the build hold (D5) before every clone: a held slot
       clones nothing, deletes its idle VM at once, and deletes a VM that holds a job once
-      the job ends or reaches its deadline.
+      the job ends or reaches its deadline; a clone in flight when the hold appears is
+      finished and deleted. Only then write the hold's acknowledgement, and start no clone
+      in the slot while the hold is present.
 - [ ] 4.2 Refuse a declaration with more than two slots, naming the licence limit.
 - [ ] 4.3 Log each slot's VM name, runner name, job outcome and lifetime where the verify
       playbook can read them. No credential in any log.
@@ -140,7 +143,8 @@
       an empty stock clones nothing and starts once a configuration arrives; a stocked
       configuration older than the maximum age is discarded, not started; a held slot (D5)
       deletes its idle VM, clones nothing while held, and clones a fresh VM once the hold
-      is released.
+      is released; a hold set while a clone is in flight is acknowledged only after that
+      clone's VM is deleted.
 - [ ] 4.6 Validation gate: spec scenarios **"An over-limit declaration is refused"** and
       **"A cancelled job's machine is destroyed"** verified (4.5 plus a live cancellation).
 
@@ -188,7 +192,7 @@
 - [ ] 6.4 Build a second image with a changed input, smoke it in one slot, promote it by
       declaration, and confirm the other slot picks it up on its next VM. Run that build
       with both slots serving and confirm the hold (D5): the second slot's VM is deleted
-      before Packer starts, the slot clones nothing during the build, and it clones a fresh
+      and the hold acknowledged before Packer starts, the slot clones nothing during the build, and it clones a fresh
       VM after it. Then start a build while the held slot runs a job that outlasts the
       wait (the wait set low for the test) and confirm the build is refused before Packer
       starts and the hold is released.

@@ -65,10 +65,13 @@ slot empty so that the build and the slots together stay within the limit.
 - **GIVEN** a host declared with two slots
 - **WHEN** an image build starts
 - **THEN** the supervisor deletes the held slot's idle machine, or lets its running job
-  finish within the job deadline and then deletes the machine, and clones nothing into
-  that slot until the build releases the hold
-- **AND** a build whose held slot still has a machine when that wait ends is refused
-  before it starts a machine, and releases the hold
+  finish within the job deadline and then deletes the machine, finishes and deletes any
+  machine it was already cloning, and clones nothing into that slot until the build
+  releases the hold
+- **AND** the build starts its machine only after the supervisor acknowledges that the
+  held slot has no machine and no clone in flight
+- **AND** a build that has no acknowledgement when its wait ends is refused before it
+  starts a machine, and releases the hold
 - **AND** the hold is released when the build ends, whether it succeeded or failed, and
   the slot clones a fresh machine
 

@@ -373,17 +373,21 @@ always knows which image it runs.
 
 **The build holds a slot.** Packer starts a macOS VM on the host, and the licence and the
 framework allow two macOS guests in all (D2), so with two slots declared a build would
-fail at start, or make a slot's refill fail. The build playbook therefore first sets a
-**hold** on the second slot: a marker in the supervisor's state directory, written by
-Ansible as the supervisor account, that the supervisor reads before every clone. A held
-slot clones nothing. Its idle VM is stopped and deleted at once; a
-VM running a job keeps it to the end of the job or the job deadline (D2), and is then
-deleted. The playbook waits for the slot to hold no VM, for at most
-`macos_runner_max_job_minutes` plus 10 minutes. If a VM is still there, the build is
-refused before Packer starts, and the hold is released. The hold is released in the
-playbook's `always` block, success or failure, and the slot then clones a fresh VM. The
-other slot serves throughout. With one slot declared, the build needs no hold, because
-one guest is already free.
+fail at start, or make a slot's refill fail. The build playbook therefore first removes
+any acknowledgement left by an earlier run, then sets a **hold** on the second slot: a
+marker in the supervisor's state directory, written by Ansible as the supervisor account,
+that the supervisor reads before every clone. A held slot clones nothing. Its idle VM is
+stopped and deleted at once; a VM running a job keeps it to the end of the job or the job
+deadline (D2), and is then deleted. Only when the held slot has no VM and no clone in
+flight does the supervisor write an **acknowledgement** of the hold beside the marker, and
+once it has, it starts no clone in that slot while the marker is present. A clone already
+in flight when the hold is set is finished and then deleted like an idle VM before the
+acknowledgement is written. The playbook waits for the acknowledgement, not for the slot
+to look empty, for at most `macos_runner_max_job_minutes` plus 10 minutes. Without it, the
+build is refused before Packer starts, and the hold is released. The hold is released in
+the playbook's `always` block, success or failure, together with the acknowledgement, and
+the slot then clones a fresh VM. The other slot serves throughout. With one slot declared,
+the build needs no hold, because one guest is already free.
 
 **Rollout.** A new image is built beside the current one, smoke-tested in one slot
 (task 6.4), then promoted by changing the declared image name. The previous image is kept
@@ -600,7 +604,7 @@ Each check is a scenario of this change's spec delta, verified where the last co
 | Administration inside the VM does not reach the host | The connection fails and nothing on the host changed | task 6.1 |
 | A third job queues | It waits for a slot and no third VM starts | task 6.6 |
 | An over-limit declaration is refused | The supervisor deploy refuses, naming the limit | task 4.5 |
-| An image build holds a slot for its own machine | The held slot's VM is deleted before Packer starts and refilled after; a build whose slot does not empty in time is refused and releases the hold | tasks 4.5, 6.4 |
+| An image build holds a slot for its own machine | The held slot's VM is deleted and the hold acknowledged before Packer starts, and the slot is refilled after; a build with no acknowledgement in time is refused and releases the hold | tasks 4.5, 6.4 |
 | The image is rebuilt from code | An image with the declared versions, built with no interactive step beyond the Xcode archive | task 3.5 |
 | An Xcode archive with the wrong digest aborts the build | The build fails before installing it; the current image is unchanged | task 3.4 |
 | The platform interior is unreachable from a macOS job | The connection fails | tasks 1.3, 6.1 |
