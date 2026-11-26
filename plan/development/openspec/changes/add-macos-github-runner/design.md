@@ -363,7 +363,7 @@ The image is named by its inputs (macOS version, Xcode version, build date), so 
 always knows which image it runs.
 
 **Rollout.** A new image is built beside the current one, smoke-tested in one slot
-(task 6.3), then promoted by changing the declared image name. The previous image is kept
+(task 6.4), then promoted by changing the declared image name. The previous image is kept
 until the new one has run a release, then deleted.
 
 **Cadence.** GitHub stops queueing jobs to a runner 30 days after a newer runner release,
@@ -379,7 +379,7 @@ promotion inside the window. It is also rebuilt on every Xcode or macOS bump, by
   Apple ID, under the Xcode licence, so a human downloads it and declares its version and
   SHA-256; the playbook refuses an archive whose digest differs.
 - **The promotion is the image rollout above.** Build beside the current image, smoke-test
-  in one slot (task 6.3), run a release dry run, then promote by changing the declared
+  in one slot (task 6.4), run a release dry run, then promote by changing the declared
   image name. Acceptance: the smoke workflow and the dry run pass on the new image, and
   `xcodebuild -version` in a job reports the declared version.
 

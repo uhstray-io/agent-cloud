@@ -130,8 +130,9 @@ Staged, each stage independently sufficient, matching the Linux change:
    stocked configuration can start a runner; remove the stock under
    `C:\ProgramData\github-runner\jit\`; then reset the account (D7) and remove the
    supervisor and its seed. The records go before the reset, so a reset that cannot verify
-   still leaves the host withdrawn. Unlike the Linux leave path, it registers no persistent
-   runner afterwards. The Linux pool is untouched: the runner group is shared, but each
+   still leaves the host withdrawn. It takes the Linux leave path's steps in a different
+   order (Linux resets before it prunes) and, unlike it, registers no persistent runner
+   afterwards. The Linux pool is untouched: the runner group is shared, but each
    runner record belongs to one host.
 3. **Revoke identity.** Unchanged from the Linux change: revoking the application stops
    every runner in the group. Use stage 2 when only Windows must stop.

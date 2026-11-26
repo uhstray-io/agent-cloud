@@ -117,7 +117,7 @@ storage (`SharedISOs`) that every node can read.
 - **The controller has no Windows tooling.** Collections installed are
   `community.hashi_vault` and `ansible.posix`. Repository CI pins ansible-core 2.19.14;
   the version inside the Semaphore runner image is not recorded anywhere in this
-  repository and is checked by task 2.1.
+  repository and is checked by task 1.1.
 - **Hypervisor CPUs are Ivy Bridge Xeons on the candidate nodes** (crabnebula: E5-2690 v2,
   alphacentauri: E5-2667 v2). They have AVX but **not AVX2**. Windows Server 2025 runs on
   them (its processor requirement is x64 with SSE4.2 and POPCNT); Windows 11 lists them as
@@ -368,7 +368,7 @@ platform already has:
   as a last resort. SSH needs only a collection, installed through the existing
   requirements file.
 - **Supported, not experimental.** ansible-core 2.18 made Windows over SSH an officially
-  supported connection. Task 2.1 confirms the orchestrator runs 2.18 or later; if it does
+  supported connection. Task 1.1 confirms the orchestrator runs 2.18 or later; if it does
   not, upgrading the orchestrator image is the fix, not falling back to WinRM.
 - **Smaller exposed surface.** The host listens on one administrative port (22), the same
   as every Linux host, and the firewall rules stay identical in shape.
@@ -568,10 +568,11 @@ follow-up from the Linux change, and this host is one more reason to do it.
 host in the order the Linux lifecycle uses (`tasks/github-runner-lifecycle.yml`): it stops
 the supervisor service, so no further runner starts, while the runner it started keeps
 running (whether stopping the service leaves its child running on this edition is settled
-by task 1.6); then it drains as `deploy.sh quiesce` does, waiting until the listener has no
-worker process, that is no job in flight, bounded by the longest Windows job timeout (180
-minutes; D11), and stopping the listener gracefully, with a bounded grace and a forced stop
-after it. An idle listener stops at once; a job still running at the bound, or assigned in
+by task 1.6); then it drains in the shape of `deploy.sh quiesce`, waiting until the account
+has no worker process, that is no job in flight, and stopping the listener gracefully, then
+by force. The bounds are Windows' own: the wait is the longest Windows job timeout (180
+minutes; D11) where Linux defaults to 600 seconds, and the grace before the forced stop is
+300 seconds, as on Linux. An idle listener stops at once; a job still running at the bound, or assigned in
 the instant before the stop, is cancelled and reported, as on Linux. Only then does it
 install updates, reboot if required, start the supervisor (which resets the account before
 its first runner, D7), and verify a runner is online with its declared labels. A run that
@@ -676,7 +677,7 @@ an `ubuntu:22.04` container on both.
   release. The Linux pin (2.336.0) is already behind 2.337.0 (2026-08-26) and 2.338.0
   (2026-10-06). → The plane-wide `github_runner_version` is bumped within 14 days of every
   runner release, a deadline independent of the monthly template rebuild (D3), and
-  verification (task 8.1) reports a pending release and any runner within a week of the
+  verification (task 8.3) reports a pending release and any runner within a week of the
   window closing. The rule is shared with `add-macos-github-runner`.
 - **GitHub could start charging for self-hosted minutes.** It announced a per-minute
   charge on self-hosted runners in private repositories for 2026-03-01, then postponed

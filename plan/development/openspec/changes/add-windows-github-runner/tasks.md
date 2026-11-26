@@ -51,8 +51,8 @@ under the decision it settles.
       supervisor service leaves the runner it started running (the drain, D9, depends on
       it). Time each step of the reset
       (kill, hive unload, the owned-path sweep of `C:` and `D:`, the seed digest check, the
-      seed copy) with a seed carrying the declared toolchains and a `D:\z` left by a full
-      build. Acceptance: the whole reset finishes in under 5 minutes; if it does not, the
+      seed copy) with stand-in files of the expected sizes (a seed of a few gigabytes, a
+      `D:\z` of a full build's file count), and time it again on the real host at task 7.5. Acceptance: the whole reset finishes in under 5 minutes; if it does not, the
       sweep or the digest check is redesigned (for example, a digest of the seed's
       manifest instead of every file) before phase 6 depends on it.
 - [ ] 1.7 Validation gate: every unknown in the design's Risks section that phase 1 owns
@@ -228,7 +228,7 @@ under the decision it settles.
 - [ ] 6.8 Add or extend the Semaphore templates (deploy, drain, verify), run the deploy from
       Semaphore, then re-run it unchanged. Give the Windows deploy a leave path for a host
       no longer declared `ephemeral`, in the order of `proposal.md` rollback stage 2 (the
-      Windows form of the Linux leave path; the Linux task file itself is POSIX-only).
+      Linux leave path's steps, reordered there; the Linux task file is POSIX-only).
       Prove it once on this host before it serves any repository's work, then restore the
       declaration and redeploy.
 - [ ] 6.9 Validation gate: the runner shows in the group with labels
@@ -258,7 +258,8 @@ under the decision it settles.
       and `ggml.dll` import `VCRUNTIME140.dll`; and that the shipped `ggml` CPU variant set
       matches a hosted build of the same commit (the AVX2 risk).
 - [ ] 7.5 Record wall time per step against the hosted figures in the design, peak memory,
-      and peak `D:` use, and write them into D2. Adjust the declaration if the evidence
+      and peak `D:` use, and write them into D2. Time the account reset after the dry run
+      against task 1.6's 5-minute bound. Adjust the declaration if the evidence
       says so, and converge with `resize-vm.yml`.
 - [ ] 7.6 Licence before production use: convert the evaluation to the licensed edition
       the owner chose, with the key from the secret store, and update the declaration's

@@ -90,7 +90,7 @@ None. The plane is `platform/github-actions-runners`.
   commands differ (for example, `pf` in place of UFW).
 - **Shared library**: the existing App-token helper (`platform/lib/github_app_token.py`) is
   reused on the host; a small just-in-time configuration step is added beside it.
-- **Secret store**: one new location for a macOS-only App private key (recommended,
+- **Secret store**: one new location for a macOS-only App private key (required,
   D4) and the host's administrative bootstrap.
 - **Private inventory**: one host declaration with its address, sizing, labels, VM
   concurrency, image pins (macOS, Xcode, runner) and the shared egress list.
