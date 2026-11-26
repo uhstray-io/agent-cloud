@@ -87,3 +87,9 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1226 (AC-1034).
 - **DERIVED:** A review pass costs about the same whatever the size of the diff, because each pass agent starts with about 130k tokens of context before it reads the change. A two-line docs pull request took 1,524,367 reported tokens for two `/simplify` rounds, one `/security-review` and one review (coordinator's sum; `docs/MISTAKES.md` 5.25). Estimate pass cost as rounds × agents × that starting context, with the round counts of `AGENTS.md` Branch Workflow step 4.
 - **APPLIES TO:** briefs and batch plans that estimate or cap review-pass tokens; any rule that sets how many `/simplify` or `/security-review` rounds a pull request runs.
+
+### L-015 · 2026-11-26 · platform
+
+- **ACCEPTED:** #1218 (AC-1025).
+- **DERIVED:** An internal-CA leaf for a listener that another repository starts must exist, and stay current, before that listener serves TLS, because its launcher refuses to start TLS without the files (declared by that repository, not checked by this one). The renewal's "not in use, left alone" rule for a leaf nothing uses yet (`platform/playbooks/renew-internal-certs.yml:70-72`) would let such a leaf expire before the other side switches. A plan for such a leaf gives it an inventory switch meaning "the listener serves TLS now", and renews it with its host while the switch is off. The switch is declared, not read from the node, so the plan says that while it is off nothing compares the served leaf with the issued one, and how the build will close that gap (`production-internal-ca` design, decision 2 of 2026-11-21).
+- **APPLIES TO:** planning any leaf in `internal_leaves` whose user is not deployed by this repository (the DGX Spark nodes today), and any change to the renewal's proof classes.
