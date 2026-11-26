@@ -111,24 +111,27 @@ declaration for its own traffic.
   submits to Apple's notarisation service
 - **THEN** the connection succeeds
 
-### Requirement: The macOS host's runner credential never enters a job's machine
+### Requirement: The runner application key never reaches the macOS host
 
-The application credential used to mint macOS runner configurations SHALL be held only by
-the host's supervisor, SHALL be placed there by automation from the secret store, and SHALL
-NOT be present in any virtual machine. Each runner configuration SHALL be minted per
-virtual machine, used once, and not persisted.
+The application credential that mints macOS runner configurations SHALL stay on the
+orchestrator, as it does for the Linux and Windows members, and SHALL NOT be present on the
+macOS host or in any virtual machine. The host SHALL receive only configurations minted for
+it, each bound to one runner name and the host's declared labels, stored where no virtual
+machine can read it, used by one virtual machine once, and discarded unused once older than
+the declared maximum age.
 
 #### Scenario: A job cannot read the application key
 
-- **WHEN** a macOS job searches its virtual machine for the application private key
-- **THEN** it is not present
+- **WHEN** a macOS job searches its virtual machine, and verification searches the host,
+  for the application private key
+- **THEN** it is not present in either
 
-#### Scenario: Revoking the macOS credential stops only macOS
+#### Scenario: Withdrawing the macOS host stops only macOS
 
-- **GIVEN** a macOS member using its own application credential
-- **WHEN** that credential is revoked
-- **THEN** no new macOS runner can register, and the Linux and Windows members keep serving
-  work
+- **GIVEN** a macOS host stocked with configurations by the orchestrator
+- **WHEN** its stock declaration is removed, its stocked configurations are deleted and its
+  runner records are pruned
+- **THEN** no macOS runner can start, and the Linux and Windows members keep serving work
 
 ### Requirement: The macOS member has a one-variable hosted fallback
 

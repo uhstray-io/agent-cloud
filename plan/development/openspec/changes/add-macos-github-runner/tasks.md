@@ -36,9 +36,10 @@
       and the Tart plugin, then install an operator-downloaded Xcode 26 archive. Record the
       build time and image size. If IPSW automation fails, record why and fall back to the
       Cirrus Labs vanilla base (D5).
-- [ ] 1.5 Just-in-time runner: mint a configuration with the first draft of the task 5.2
-      helper (a pytest-covered script on this branch, not an ad-hoc command), start the runner in the spike VM with it, dispatch a trivial
-      job, and confirm the runner disappears from the group after the job.
+- [ ] 1.5 Just-in-time runner: mint a configuration on the orchestrator with the existing
+      stock task (`platform/playbooks/tasks/github-runner-jit-stock.yml`), not an ad-hoc
+      command, start the runner in the spike VM with it, dispatch a trivial job, and
+      confirm the runner disappears from the group after the job.
 - [ ] 1.6 Confirm the third-VM limit: start a third macOS VM while two run, and record the
       error.
 - [ ] 1.7 Validation gate: every unverified item in the design (headless reboot, Softnet
@@ -109,23 +110,23 @@
 
 - [ ] 4.1 Write the supervisor under `platform/services/macos-runner/deployment/` (D3):
       per slot, clone the declared image to a unique name, boot headless on Softnet with
-      the declared size, mint a just-in-time configuration (task 5.2), pass it to the
-      runner in the VM over SSH standard input, wait for the runner to exit, stop and
+      the declared size, take the oldest stocked configuration (D4; discard any older than
+      `github_runner_jit_max_age_minutes`, and wait for the next stock run when none is
+      left), pass it to the runner in the VM over SSH standard input, wait for the runner to exit, stop and
       delete the VM, repeat. Delete the VM on every exit path, including a supervisor
       restart (on start, delete any VM it owns that is not in a live slot). Recycle a warm
       VM that has taken no job within `macos_runner_max_idle_minutes` (default 1200, D2):
-      stop and delete it, remove its runner record, clone a fresh one. Read the build hold
-      (D5) before every clone: a held slot clones nothing, deletes its idle VM with its
-      runner record at once, and deletes a VM that holds a job once the job ends or reaches
-      its deadline.
+      stop and delete it, and clone a fresh one; the stock template's prune deletes its
+      offline runner record. Read the build hold (D5) before every clone: a held slot
+      clones nothing, deletes its idle VM at once, and deletes a VM that holds a job once
+      the job ends or reaches its deadline.
 - [ ] 4.2 Refuse a declaration with more than two slots, naming the licence limit.
 - [ ] 4.3 Log each slot's VM name, runner name, job outcome and lifetime where the verify
       playbook can read them. No credential in any log.
-- [ ] 4.4 Run tasks 5.1 to 5.3 first: this task reads the App key 5.1 stores and the
-      group id 5.3 records, and on a fresh installation neither exists yet.
-      Add `platform/playbooks/deploy-macos-runner.yml`: place the App key (`0400`,
-      owned by the supervisor account) from the secret store, render the supervisor's
-      configuration and launchd service, start it, verify that exactly the declared number
+- [ ] 4.4 Run tasks 5.1 to 5.3 first: a slot starts a VM only from a stocked
+      configuration, and on a fresh installation the host has none until 5.1's stock
+      template runs. Add `platform/playbooks/deploy-macos-runner.yml`: render the
+      supervisor's configuration and launchd service, start it, verify that exactly the declared number
       of slots (one or two; more is refused by 4.2) register.
 - [ ] 4.5 Tests: the slot-limit refusal; the JIT configuration never appears in an
       argument position on the host or in the guest (the runner's command line inside the
@@ -135,31 +136,35 @@
       cancelled job leaves a wedged child process (the slot's deadline destroys the VM, D2);
       a failed slot recovers once its VM deletion succeeds; a listener update exit (code 3
       or 4) is relaunched with the same configuration and its job completes; an idle VM
-      older than the idle bound (set low for the test) is deleted with its runner record
-      and replaced; a held slot (D5) deletes its idle VM with its runner record, clones
-      nothing while held, and clones a fresh VM once the hold is released.
+      older than the idle bound (set low for the test) is deleted and replaced; a slot with
+      an empty stock clones nothing and starts once a configuration arrives; a stocked
+      configuration older than the maximum age is discarded, not started; a held slot (D5)
+      deletes its idle VM, clones nothing while held, and clones a fresh VM once the hold
+      is released.
 - [ ] 4.6 Validation gate: spec scenarios **"An over-limit declaration is refused"** and
       **"A cancelled job's machine is destroyed"** verified (4.5 plus a live cancellation).
 
-## 5. Establish the macOS credential
+## 5. Stock the host from the orchestrator
 
-- [ ] 5.1 Check in the macOS App's manifest (required, D4) (name, the
-      single permission organisation self-hosted runners read and write, no webhook) and a
-      playbook that renders the manifest-flow URL from it, so the App's definition is code.
-      An organisation owner completes the one approval click GitHub requires to create and
-      install an App (it cannot be done with an API token, by GitHub's design), then the
-      key is stored at `secret/services/github-runner-macos` through the additive seeding
-      path. (The key never transits a chat or a log.)
-- [ ] 5.2 Add a just-in-time step beside `platform/lib/github_app_token.py`: given an
-      installation token, the group id, a runner name and labels, call
-      `generate-jitconfig` and print only the encoded configuration. pytest for the
-      request shape and for a clear failure naming a missing input.
+- [ ] 5.1 Extend the scheduled stock template (`stock-github-runner-jit.yml`,
+      `add-ephemeral-github-runners` D3) to the macOS host, as Windows task 6.6 does for
+      Windows: add `macos_runner_svc` to its hosts, select the host on its
+      `github_runner_lifecycle: ephemeral` declaration, mint with the plane's existing App
+      key (no new App, D4) for the host's runner group and macOS labels, write each
+      configuration `0600` into a `0700` stock directory owned by the supervisor account
+      (creating it if absent), and have the prune keep the runner names the supervisor
+      reports as running (4.3).
+- [ ] 5.2 Tests for the macOS branch: the stock reaches the declared count and no more;
+      each file's mode and owner; the prune deletes an offline, idle macOS record and
+      keeps a stocked or running one; nothing the template writes to the host is the App
+      key.
 - [ ] 5.3 Converge the runner group with `manage-github-runner-group.yml` (unchanged
-      access list) and record the group id the supervisor reads.
+      access list) and record the group id the stock template mints with.
 - [ ] 5.4 Validation gate: spec scenarios **"A job cannot read the application key"**
-      (searched from inside a job, 6.1) and **"Revoking the macOS credential stops only
-      macOS"** (suspend the macOS App's installation, confirm no macOS runner registers
-      while a Linux job still runs, then restore) verified.
+      (searched from inside a job, 6.1, and on the host, 7.1) and **"Withdrawing the macOS
+      host stops only macOS"** (remove the host's ephemeral declaration, delete its stock
+      and prune its records, confirm no macOS runner starts while a Linux job still runs,
+      then restore) verified.
 
 ## 6. Prove it with real work
 
@@ -200,7 +205,7 @@
 ## 7. Verification, operations and documentation
 
 - [ ] 7.1 Add `verify-macos-runner.yml`: exactly the declared number of slots registered,
-      each idle or busy, image
+      each idle or busy, the stock level, the App key absent from the host, image
       age and inputs, runner version against the 30-day window and any upstream release older than 14 days
       that the image does not carry yet, Tart licence core total
       against the free tier (warn at 80, D9), FileVault and power settings as declared.
@@ -214,7 +219,7 @@
 - [ ] 7.4 Write `platform/services/macos-runner/CLAUDE.md` and `context/`: the first-boot
       exception, the slot model, the isolation table (D8, including what does not hold),
       the credential flow, the image rollout, the fallback, and gotchas from phases 1 to 6.
-- [ ] 7.5 Update root `AGENTS.md` (new playbooks, `secret/services/github-runner-macos`),
+- [ ] 7.5 Update root `AGENTS.md` (new playbooks),
       `README.md`, and the plane's label contract in
       `platform/services/github-runner/CLAUDE.md` so the three operating systems are
       documented in one place.

@@ -42,9 +42,9 @@ active one before bundling: the disk does not otherwise fit the build.
   pinned runner preinstalled. Rebuilt on a cadence and on every Xcode bump.
 - **Reused: the runner group, the label vocabulary and the credential chain's shape.** The
   VMs join `uhstray-selfhosted` with labels `self-hosted`, `macOS`, `ARM64`, `uhstray-lan`.
-  The credential chain is the existing one, signed with a separate macOS App (D4) and with
-  its last link swapped: an installation token is exchanged for a single-job just-in-time
-  configuration instead of a registration token.
+  The credential chain is the Linux and Windows one, unchanged: the orchestrator mints
+  single-job just-in-time configurations with the plane's App and stocks them on the host
+  (D4). The App key never reaches the Mac.
 - **Reused: the egress-denial declaration.** VM traffic is confined by the host's virtual
   network (no route to private addresses), which is the only control on it: the host's
   packet filter enforces the same `firewall_deny_egress` list for the host's own traffic,
@@ -90,10 +90,9 @@ None. The plane is `platform/github-actions-runners`.
 - **New playbooks**: host baseline and hardening for macOS, golden-image build, supervisor
   deploy, verify. Shared host-access playbooks gain a macOS branch where their Linux
   commands differ (for example, `pf` in place of UFW).
-- **Shared library**: the existing App-token helper (`platform/lib/github_app_token.py`) is
-  reused on the host; a small just-in-time configuration step is added beside it.
-- **Secret store**: one new location for a macOS-only App private key (required,
-  D4) and the host's administrative bootstrap.
+- **Stock template**: the scheduled stock template (`stock-github-runner-jit.yml`) is
+  extended to the macOS host. No new credential code and no new App (D4).
+- **Secret store**: one new location, for the host's administrative bootstrap.
 - **Private inventory**: one host declaration with its address, sizing, labels, VM
   concurrency, image pins (macOS, Xcode, runner) and the shared egress list.
 - **`zerds`**: the macOS jobs select the runner by repository variable, and their
@@ -106,14 +105,16 @@ Staged, each stage independently sufficient:
 
 1. **Stop routing work.** Set the `zerds` repository variable that selects the macOS runner
    back to the JSON array `["macos-15"]`. Every macOS job runs hosted again, unchanged. No platform change.
-2. **Withdraw availability.** Stop the supervisor service on the host. No new VM registers,
+2. **Withdraw availability.** Remove `github_runner_lifecycle: ephemeral` from the host's
+   declaration so the stock template skips it, remove the stocked configurations, then
+   delete the host's runner records with the stock task's prune mode (`grs_prune_only`).
+   Stop the supervisor service on the host. No new VM registers,
    any running job finishes, and the just-in-time runners vanish from the group on their
    own after their one job.
-3. **Revoke identity.** Revoke the macOS App's installation; it is separate from the Linux
-   and Windows App (design D4), so that stops only macOS. After that the host
-   cannot register a runner even if the supervisor is running.
+3. **Revoke identity.** Unchanged from the Linux change: revoking the App stops every
+   runner in the group. Use stage 2 when only macOS must stop.
 4. **Retire the host.** Wipe the Mac mini and remove its declaration. The hardware is a
    general-purpose computer with resale value; nothing in the estate depends on it.
 
 No schema, no shared datastore, no change to any existing host. The durable artefacts are
-the Mac mini, its image store, one secret-store location and one App installation.
+the Mac mini, its image store and one secret-store location.

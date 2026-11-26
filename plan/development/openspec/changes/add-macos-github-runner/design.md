@@ -28,8 +28,8 @@ job in a virtual machine created for it and destroyed after it. The full motivat
    written down as exceptions with their reasons (D5, D7).
 2. **A fresh machine per job** -- the job may administer its VM because no later job runs in
    it; the VM is destroyed after one job and its wait is bounded (D2, D8).
-3. **Credentials are scoped to what they can stop** (section 3) -- a macOS-only App key that
-   never enters a VM, so revoking it stops macOS alone (D4).
+3. **Credentials stay on the orchestrator** (section 3) -- the App key never reaches the Mac;
+   the host receives only single-use configurations minted for it (D4).
 4. **Adopt the standard tool where the platform has no mechanism** (section 2) -- Packer and
    Tart for the image, a thin supervisor owned in this repository for the loop (D3, D5).
 5. **Licences are declared facts** -- at most two macOS VMs per host, and the Tart core count
@@ -151,7 +151,7 @@ host runs two.
 flowchart TD
     CLONE["Clone the declared golden image<br/>(APFS copy-on-write)"]
     BOOT["Boot the VM headless on Softnet"]
-    MINT["Supervisor mints a just-in-time configuration<br/>(macOS-only App key, on the host)"]
+    MINT["Slot takes the oldest stocked configuration<br/>(minted on the orchestrator)"]
     RUN["Runner in the VM, one job<br/>(configuration over SSH standard input)"]
     IDLE{"Job taken before the idle bound?"}
     DONE{"Runner exited before the job deadline?"}
@@ -161,7 +161,7 @@ flowchart TD
 
     CLONE --> BOOT --> MINT --> RUN
     RUN --> IDLE
-    IDLE -->|"no: recycle, remove the runner record"| DEL
+    IDLE -->|"no: recycle"| DEL
     IDLE -->|"yes"| GH
     GH --> DONE
     DONE -->|"yes"| DEL
@@ -226,7 +226,7 @@ not depending on the included allowance, of a faster gate, and of control.
 
 **Decision.** The host runs two **slots**. Each slot loops: clone the current golden image
 to a uniquely named VM, boot it headless on Softnet, start the runner inside it with a
-just-in-time configuration minted for that VM, wait for the runner to exit after its one
+just-in-time configuration from the host's stock (D4), wait for the runner to exit after its one
 job, then stop and delete the VM. A slot keeps one VM booted and registered while idle, so
 a queued job starts in seconds rather than waiting for a boot.
 
@@ -251,7 +251,8 @@ throughout.
 **The idle VM is bounded too.** A warm VM that has taken no job within the declared
 `macos_runner_max_idle_minutes` (default 1200, the same figure as the stock's
 `github_runner_jit_max_age_minutes`, chosen for freshness here, not linked to it) is stopped
-and deleted, and its runner record removed, and the slot clones a fresh one. That keeps a
+and deleted, and the slot clones a fresh one; the stock template's prune deletes its runner
+record, now offline (D4). That keeps a
 promoted image and a bumped runner version from waiting behind an idle VM indefinitely.
 GitHub does not bound it for us: its documentation says a just-in-time runner that never
 runs a job is removed automatically, but names no interval, and the one-day removal it
@@ -283,18 +284,19 @@ weaker than a fresh clone and no cheaper here).
 **Decision.** The slot loop in D2 is a small script in
 `platform/services/macos-runner/deployment/`, run by launchd, rendered and installed by
 Ansible, with its configuration (slots, VM size, image name, labels, group) read from the
-declaration. It calls `tart` and the platform's App-token helper, and nothing else.
+declaration. It calls `tart` and reads the stock (D4), and nothing else.
 
 **Why.** The loop is a few dozen lines of logic, and every part of it is something the
 platform already has a rule for: the credential chain, pinned versions, declared
 configuration, and logs that are not hidden. Owning it keeps it reviewable and keeps the
-App key in the platform's own code path.
+runner configurations in the platform's own code path.
 
 **Alternatives considered.**
 
 - *Tartelet or Cilicon.* Open-source Mac apps that do exactly this loop. Rejected because
   their configuration lives in an app's settings (Tartelet) or a file the app owns, they
-  hold the App key in their own storage, and they are GUI-first, so "declared and applied by
+  mint with an App key held in their own storage, which D4 keeps off the host, and they are
+  GUI-first, so "declared and applied by
   a playbook" would be a wrapper around someone else's state. Recorded as the fastest path
   if the supervisor proves harder than expected.
 - *Orchard* (Cirrus Labs' orchestrator for Tart). Free up to four hosts, built for fleets.
@@ -305,43 +307,50 @@ App key in the platform's own code path.
   Rejected for now as a larger moving part; the warm-slot model is simpler and the idle VM
   costs only memory.
 
-### D4: Credentials: just-in-time configurations minted on the host, from a macOS-only App
+### D4: Credentials: just-in-time configurations minted on the orchestrator and stocked on the host
 
-**Decision.** The supervisor mints a just-in-time configuration per VM: it signs the App
-assertion with the platform helper, exchanges it for an installation token, then calls
-`generate-jitconfig` with the VM's name, the runner group's id and the declared labels.
-The configuration is passed into the VM over SSH standard input and used once. Inside the
-guest the runner is started with the configuration in the `ACTIONS_RUNNER_INPUT_JITCONFIG`
-environment input, never with `--jitconfig`: the runner removes that variable from its
-own environment once read, whereas an argument stays in the process's command line, which
-every local user can read for the life of the process. This is the input the Linux
-ephemeral supervisor uses (`add-ephemeral-github-runners`). The image pins a runner
-version that clears the variable (2.336.0 or later). The guest's launcher, not `run.sh`,
-starts `bin/Runner.Listener run`: it reads the configuration from standard input into a
-shell variable it does **not** export, and hands it to the listener's environment alone,
-so no wrapper keeps it in its own environment. It keeps the stock wrapper's one other duty:
-when the listener exits for a self-update (exit codes 3 and 4), it waits for the update to
-finish and relaunches the listener with the same configuration, so an update during the
-job does not drop it. Task 4.5 tests the guest's process arguments, the environment of
-every guest process, and an update exit followed by a completed job. The App
-private key is placed on the host by Ansible (secret store to Ansible memory to a `0400`
-file owned by the supervisor account), and **never enters a VM**.
+**Decision.** The macOS host is stocked the way the Linux and Windows hosts are
+(`add-ephemeral-github-runners`, D3). The scheduled stock template on the orchestrator
+reads the plane's App key from the secret store and mints configurations for the host up
+to its declared `github_runner_jit_stock`, each with a runner name under the host's
+prefix, the runner group's id and the macOS labels. It writes each one over SSH into the
+supervisor's stock directory on the host: mode `0600`, owned by the supervisor account, in
+a `0700` directory. Before each clone a slot takes the oldest stocked configuration and
+deletes its file; one older than `github_runner_jit_max_age_minutes` is discarded, not
+started. With an empty stock the slot clones nothing until the next stock run, so a job
+queues rather than fails. The configuration is passed into the VM over SSH standard input
+and used once. Inside the guest the runner is started with the configuration in the
+`ACTIONS_RUNNER_INPUT_JITCONFIG` environment input, never with `--jitconfig`: the runner
+removes that variable from its own environment once read, whereas an argument stays in the
+process's command line, which every local user can read for the life of the process. This
+is the input the Linux ephemeral supervisor uses (`add-ephemeral-github-runners`). The
+image pins a runner version that clears the variable (2.336.0 or later). The guest's
+launcher, not `run.sh`, starts `bin/Runner.Listener run`: it reads the configuration from
+standard input into a shell variable it does **not** export, and hands it to the
+listener's environment alone, so no wrapper keeps it in its own environment. It keeps the
+stock wrapper's one other duty: when the listener exits for a self-update (exit codes 3
+and 4), it waits for the update to finish and relaunches the listener with the same
+configuration, so an update during the job does not drop it. Task 4.5 tests the guest's
+process arguments, the environment of every guest process, and an update exit followed by
+a completed job. The App key never reaches the host or a VM.
 
-**A separate App for macOS, required**, installed on the organisation with the same
-single permission, its key at `secret/services/github-runner-macos`. Sharing the Linux and
-Windows App is not an option: this host holds the key it mints with, so with a shared App
-a Mac compromise could mint registrations for every member of the plane, and revoking it
-would stop Linux and Windows CI too. The spec requires that revoking the macOS credential
-stop only macOS.
+**One App, the plane's own.** A separate macOS App was required while the host held the
+key it minted with. It did not bound what that key could do: the App's organisation-level
+runner permission mints a configuration for any group with any labels, and also
+administers the runner groups, so a key taken from the Mac could have registered runners
+for the Linux and Windows labels or widened the group's access list. With minting on the
+orchestrator, a compromised Mac holds only its stock: at most `github_runner_jit_stock`
+single-use configurations, each bound to a macOS runner name and the macOS labels, so it
+can take macOS jobs and cannot register for another fleet or change the group. A second
+App would add a key to protect and rotate without narrowing that, so there is none. Stopping macOS alone is withdrawing the host from
+the stock (Rollback Plan, stage 2); revoking the App stops the whole plane, as it does for
+Linux and Windows.
 
-**Why the key is on this host when the Linux design keeps it off runner hosts.** Minting
-must happen per job, continuously, which the orchestrator (a batch system) cannot do.
-On this host the code that executes repository-authored work is the **VM**, not the host:
-the host plays the role the Proxmox node plays for the Linux runners, and the VMs are the
-semi-trusted runners. The Linux rule's intent (the key never reaches where job code runs)
-holds. What changes is that the host is a higher-value target, so: the VM cannot reach the
-host (Softnet), the host accepts only administrative SSH from the declared ranges, and a
-separate App means a compromised Mac can be revoked without stopping Linux and Windows CI.
+**Why the orchestrator can serve a per-job host.** Minting happens ahead of need, not per
+job: the stock decouples the two, and a stock of 6 refilled every 10 minutes covers more
+jobs than two slots can run in that time (`add-ephemeral-github-runners`, D3, Throughput).
+On this host the code that executes repository-authored work is the **VM**, and the VM
+cannot reach the host (Softnet, D6), so the stock is out of a job's reach as well.
 
 **Why not a registration token.** A registration token creates a persistent registration
 that must later be removed, and its lifetime outlasts the job. A just-in-time
@@ -367,7 +376,7 @@ framework allow two macOS guests in all (D2), so with two slots declared a build
 fail at start, or make a slot's refill fail. The build playbook therefore first sets a
 **hold** on the second slot: a marker in the supervisor's state directory, written by
 Ansible as the supervisor account, that the supervisor reads before every clone. A held
-slot clones nothing. Its idle VM is stopped and deleted with its runner record at once; a
+slot clones nothing. Its idle VM is stopped and deleted at once; a
 VM running a job keeps it to the end of the job or the job deadline (D2), and is then
 deleted. The playbook waits for the slot to hold no VM, for at most
 `macos_runner_max_job_minutes` plus 10 minutes. If a VM is still there, the build is
@@ -465,8 +474,8 @@ device enrolment; that is unnecessary for one host and is the recorded next step
 fleet grows to several Macs.
 
 **FileVault and unattended restart.** With FileVault on, a Mac that loses power waits at a
-pre-boot unlock screen. With it off, the App private key on the disk is protected only by
-the disk's physical security. The spike (task 1.2) measures whether the supervisor can run
+pre-boot unlock screen. With it off, the stocked runner configurations on the disk are protected
+only by the disk's physical security. The spike (task 1.2) measures whether the supervisor can run
 headless after a reboot with FileVault on (planned reboots can use an authenticated
 restart). The decision is an owner question (Open Questions 4).
 
@@ -484,8 +493,8 @@ network, and the host grants the VM nothing. The spec delta states this as a sco
 exception, not as a silent relaxation.
 
 **What holds:** a fresh machine per job (files, processes, keychains, installed software);
-no route from a job to the host or to the platform's private network; the App key never in
-a VM; at most two concurrent VMs.
+no route from a job to the host or to the platform's private network; the App key never on
+the host or in a VM; at most two concurrent VMs.
 
 **What does not hold, stated plainly:**
 
@@ -496,8 +505,8 @@ a VM; at most two concurrent VMs.
    reaches every job until the image is rebuilt. Hence pinned inputs, a checked-in template
    and a smoke test before promotion.
 3. **A VM escape is a host compromise.** Apple's hypervisor is the boundary, and an escape
-   would reach the host and the App key. Mitigated by keeping the host patched and the App
-   separate, not eliminated.
+   would reach the host and its stock of single-use macOS configurations, not the App key.
+   Mitigated by keeping the host patched, not eliminated.
 
 ### D9: Tart's licence is a declared fact
 
@@ -536,8 +545,9 @@ documented response to a host outage.
   macOS version; a new version is a reviewed bump; the Cirrus vanilla base is the fallback.
 - **Xcode needs a human download.** → Accepted and written down: the operator downloads the
   archive under the licence, the automation verifies its digest and does the rest.
-- **The App key lives on this host** (D4). → Separate App, `0400` file, no VM route to the
-  host, revocable independently.
+- **The host holds a stock of runner configurations** (D4). → Single-use, macOS names and
+  labels only, discarded after the maximum age, `0600` in a `0700` directory no VM can
+  reach; the App key stays on the orchestrator.
 - **The 30-day runner version window applies fleet-wide.** → The release-triggered rebuild
   (within 14 days, at most every 21) covers macOS; the same rule must be adopted for the
   Linux and Windows pins, which
@@ -554,7 +564,7 @@ documented response to a host outage.
    a just-in-time runner in a hand-made VM, an IPSW-based Packer build with Xcode.
 3. **Bring the host under automation** (phase 2): declaration, key access, hardening, `pf`.
 4. **Build the golden image** (phase 3), **deploy the supervisor** (phase 4) with the
-   macOS App (phase 5).
+   host stocked from the orchestrator (phase 5).
 5. **Prove it** (phase 6): smoke, then the CI jobs and a release dry run from a `zerds`
    branch with `MACOS_RUNNER` pointed at the host.
 6. **Make it the default** in `zerds`, keep the fallback documented (phase 7).
@@ -573,7 +583,7 @@ acceptance criterion.
 | 2. Bring the host under automation | Declared, key-only, hardened and firewalled; the bootstrap repeatable | task 2.9 |
 | 3. Build the golden image as code | The image built from pinned inputs | task 3.5 |
 | 4. Deploy the supervisor | The slot loop, its limits and its teardown | task 4.6 |
-| 5. Establish the macOS credential | The macOS-only App and its just-in-time step | task 5.4 |
+| 5. Stock the host from the orchestrator | The stock template extended to the macOS host | task 5.4 |
 | 6. Prove it with real work | Smoke, the CI jobs and a release dry run; the hosted fallback | task 6.6 |
 | 7. Verification, operations and documentation | Verification, the image rebuild schedule, documentation | task 7.7 |
 | 8. Review and promotion | The change on `main` with the slots serving work | task 8.10 |
@@ -595,24 +605,24 @@ Each check is a scenario of this change's spec delta, verified where the last co
 | An Xcode archive with the wrong digest aborts the build | The build fails before installing it; the current image is unchanged | task 3.4 |
 | The platform interior is unreachable from a macOS job | The connection fails | tasks 1.3, 6.1 |
 | Build egress from a macOS job still works | The connection succeeds | tasks 6.2, 6.3 |
-| A job cannot read the application key | It is not present in the VM | task 6.1 |
-| Revoking the macOS credential stops only macOS | No macOS runner registers while Linux and Windows keep serving | task 5.4 |
+| A job cannot read the application key | It is not present in the VM or on the host | tasks 6.1, 7.1 |
+| Withdrawing the macOS host stops only macOS | No macOS runner starts while Linux and Windows keep serving | task 5.4 |
 | Switching to hosted runners is one change | The next run completes on a hosted runner with no workflow edit | task 6.5 |
 
 ## Security Considerations
 
-- **Credential handling.** The macOS App's private key is placed on the host by Ansible from
-  the secret store as a `0400` file and never enters a VM; each VM gets a just-in-time
-  configuration over SSH standard input, held in the runner's environment and never an
-  argument (D4). A separate App means a compromised Mac is revoked without stopping Linux or
-  Windows CI (D4).
+- **Credential handling.** The App key stays on the orchestrator; the host receives
+  single-use configurations minted for it, stocked `0600` in a `0700` directory. Each VM
+  gets one over SSH standard input, held in the runner's environment and never an argument
+  (D4). Withdrawing the host from the stock stops macOS without stopping Linux or Windows
+  CI (D4).
 - **Blast radius.** A job administers only its own VM, which is destroyed after one job or at
   its deadline (D2, D8). What does not hold: signing secrets are in the release job's VM, as
   on a hosted runner; a defect in the golden image reaches every job until it is rebuilt; a
-  VM escape reaches the host and the App key (D8).
+  VM escape reaches the host and its stock, not the App key (D8).
 - **Access control.** The host is managed only over SSH with the platform's issued keys,
   hardened after a key-only proof; first boot is a written exception (D7). FileVault's
-  trade-off between the key at rest and unattended recovery is an owner decision (Open
+  trade-off between the stock at rest and unattended recovery is an owner decision (Open
   Question 4).
 - **Network exposure.** Softnet keeps a VM from reaching other VMs, the host and private
   address ranges; the host's packet filter enforces the plane's egress denial list for the
@@ -633,11 +643,12 @@ Each check is a scenario of this change's spec delta, verified where the last co
    UPS if one exists, in the server room rather than an office. **Recommendation: the
    server room, on the UPS**, with a declared address from the same allocation process
    as every host.
-4. **FileVault.** On (protects the App key at rest; an unplanned power loss needs a human to
-   unlock) or off (unattended recovery; the key is protected only physically).
+4. **FileVault.** On (protects the stocked configurations at rest; an unplanned power loss
+   needs a human to unlock) or off (unattended recovery; the stock is protected only
+   physically).
    **Recommendation: on, plus the UPS**, unless the spike shows the supervisor cannot run
-   headless after an authenticated restart; then off, with the key's exposure accepted
-   explicitly and the separate App making revocation cheap.
+   headless after an authenticated restart; then off, with the stock's exposure accepted
+   explicitly: single-use configurations that can take macOS jobs only.
 5. **Slot sizing.** **Recommendation: two slots at just under half the cores and 24 GB
    each**, re-measured after the first month (task 7.3).
 
