@@ -39,7 +39,7 @@ and why.
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | 1 | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | 1 | Test |
 | 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | 1 | OPA branch rule (`agent_actions.rego`; inert until callers send fields) |
-| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused (2026-11-15: called CodeRabbit "paused" on #1152 from `gh pr checks`' `skipping` bucket, to the operator and in a dismissal message; the check's own title read "Review rate limited", and reviews were already on the PR; 2026-11-17: told the coordinator and the operator CodeRabbit was skipping #1206 from the same bucket, after a push, without listing reviews; it had requested changes on the previous head) — **x4** (2026-11-17: called #1203's head review-ready over an outstanding changes request) | Unverified claim | 4 | Convention; guard proposed in occurrence 3; readiness report quoting the read-only `scripts/merge-when-green.py` run on that head proposed (occurrence 4) |
+| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused (2026-11-15: called CodeRabbit "paused" on #1152 from `gh pr checks`' `skipping` bucket, to the operator and in a dismissal message; the check's own title read "Review rate limited", and reviews were already on the PR; 2026-11-17: told the coordinator and the operator CodeRabbit was skipping #1206 from the same bucket, after a push, without listing reviews; it had requested changes on the previous head) — **x5** (2026-11-17: called #1203's head review-ready over an outstanding changes request; 2026-11-17: reported #1202's resolved threads as unresolved from a compaction summary) | Unverified claim | 5 | Convention; guard proposed in occurrence 3; readiness report quoting the read-only `scripts/merge-when-green.py` run on that head proposed (occurrence 4) |
 | 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | 1 | Test (synthetic OpenBao, mutation-proven)  |
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
@@ -70,7 +70,7 @@ and why.
 | 1.38 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
 | 1.39 | Told the operator a paid plan would unlock a vendor role, from the code's flag name, without the vendor's plan matrix; Plane's Admin role is Business-only | Unverified claim | 1 | Convention |
 | 1.40 | Posted an earlier round's reply text in three review threads after a refused command left old files in place | Unverified claim | 1 | Convention |
-| 1.41 | Reported a test result and a review-thread state carried across a context compaction, without reading them again | Unverified claim | 2 | Convention |
+| 1.41 | Reported a state carried across a context compaction without reading it again (a mutation result in #1190's description) | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -184,11 +184,11 @@ and why.
 | 5.34 | Fixed a destructive block's failure paths one review finding at a time on #1206; returns 4 and 5 found four more paths in the same block | Process | 1 | Convention (failure table accepted for later briefs, 2026-11-18) |
 | 5.35 | Skipped a skill-pass finding that a port test held wider rows than its original, on a comment saying the filter reads only tag and spec; carried as decided until the third return | Process | 1 | Convention |
 | 5.36 | One batch unit bundled eleven guard-test fixes across five test modules, a BATS test deletion and a plan cell; it went back nine times and was closed and cut into three | Process | 2 | Convention (three-returns rule; split past about three files) |
-| 5.37 | Ran two rounds of four-agent `/simplify` plus security passes on S9 without totalling agent tokens, against a 450k stop never sized from a measured round; spend reached about six times the stop | Process | 3 | Convention (stop set per model class from a measured round; running total before each wave); dispatch check refusing a brief without an ESTIMATE line proposed (count 3) |
+| 5.37 | Ran two rounds of four-agent `/simplify` plus security passes on S9 without totalling agent tokens, against a 450k stop never sized from a measured round; spend reached about six times the stop | Process | 3 | Convention (stop set per model class from a measured round; running total before each wave); dispatch check refusing a brief without an ESTIMATE line proposed (count 3, AC-1051) |
 | 5.38 | Three returns on S9's `ansible.cfg` check: a grammar reader, then a pin with a second unchecked list; no plan said where the fact "this setting loads a directory" was declared | Process | 1 | Test: `lanes` suite (`cfg_dirs_classifies_every_pinned_key_and_refuses_the_rest`) |
 | 5.39 | The pre-push hook tested one commit; a commit made during the hook was pushed untested | Process | 1 | Convention (hook check for a ref that moved during the run proposed, AC-929) |
 | 5.40 | A destructive playbook (#1206) was briefed without an identity for its targets or the reads its decision depends on; three returns | Process | 1 | Convention |
-| 5.41 | The coordinator's question dialog left owner mail unread and the monitor still while it was open | Process | 3 | Convention; pre-dialog step in the batch skill proposed (count 3) |
+| 5.41 | The coordinator's question dialog left owner mail unread and the monitor still while it was open | Process | 3 | Convention; pre-dialog step and a dialog time limit proposed (count 3, AC-1052) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -783,7 +783,7 @@ indexes, and the regression asserts a sentinel argument is absent from output.
 
 ### 1.10 Reported that a review had started, from a keyword match on a comment I never read
 
-**Occurrences: 4** — 2026-09-23, 2026-11-15, 2026-11-17, 2026-11-17
+**Occurrences: 5** — 2026-09-23, 2026-11-15, 2026-11-17, 2026-11-17, 2026-11-17
 
 **What happened.** On 2026-09-23 at 15:13Z I posted review requests to CodeRabbit on four
 PRs and sorted its replies with a `jq` keyword test. My patterns for a started review
@@ -837,6 +837,8 @@ and make that output the only source an owner session quotes when it reports a r
 batch report ("row green", a return, a hold).
 
 **Occurrence 4 — 2026-11-17.** At 16:26 EST #1203's owner reported head `35f3ee1e` to the coordinator as ready for review. CodeRabbit's review 5946641917 on `2f106ab0` (21:07:53Z, CHANGES_REQUESTED) was still outstanding, with two threads unanswered by the owner's own account; the coordinator found it on GitHub. Why the rule did not fire: occurrence 3's rule binds a report that names a reviewer's state, and this report named none: "ready" read as a statement about the owner's work, not about the pull request's reviews. Guard proposal, for this form: a readiness report quotes the read-only `scripts/merge-when-green.py` run on that head (it reads changes requests and threads).
+
+**Occurrence 5 — 2026-11-17.** At 21:33 EST #1202's owner told the coordinator that CodeRabbit's thread on #1202 was answered and unresolved, so a dismissal needed the operator's decision. It took that state from its pre-compaction summary. A GraphQL read showed both threads resolved by `coderabbitai[bot]`, which the standing dismissal rule covers; the coordinator's own read caught it before the operator was asked. The coordinator's first reply had repeated that the operator's word was needed, before it read the threads, and was corrected one message later. Why the rule did not fire: occurrence 3's rule reads a reviewer's state again before every report that names it, but a state carried in a compaction summary read as already known (1.41).
 
 ### 1.14 A fact about the private inventory read from the public template
 
@@ -1262,7 +1264,7 @@ loaded it".
 
 **Occurrence 6 — 2026-11-17.** The batch coordinator asked the operator to approve a production check-mode run of `Manage Cloudflare Records` as the way to see #1182's transport guard pass in production (the v0.17.0 batch index, decision 37, a lane C approval). The guard sits in the per-record task file (`platform/playbooks/tasks/manage-cloudflare-record.yml:56-60`), which runs only through the loop over the declared records (`platform/playbooks/manage-cloudflare-records.yml:59-67`, `loop: "{{ _records }}"`). Task 17708 succeeded and reached no record, so the guard never ran and stays unproven in production (AC-978). The same claim was in brief 30 and the index's owed-run line. Why the rule did not fire: the check was chosen by its template name, and what it selects (the declared records, possibly none) was not read before the approval was asked for.
 
-**Occurrence 7 — 2026-11-17.** At 16:03 EST the coordinator told the operator, and wrote into the v0.17.0 batch index (decision 36) and brief 25, as a verified gap, that the firewall and cloudflare-edge areas run playbooks importing `refuse-internal-extra-vars.yml` without claiming it. The import lines are real (`platform/playbooks/apply-firewall.yml:240`, `platform/playbooks/apply-cloudflare-tofu.yml:28`), but those areas' tests load the plays through `playbook::plays`, which returns them "without its leading extra-var guard import" (`platform/tests/src/playbook.rs:100-121`), so the tests never run it. Only the filter-plugin half held. S9's owner found it on reading the brief, before any code; decision 36 was corrected at 17:20 EST. Why the rule did not fire: the facts around the claim (the import lines, the area files) were read, and what the tests load was not.
+**Occurrence 7 — 2026-11-17.** At 16:03 EST the coordinator told the operator, and wrote into the v0.17.0 batch index (decision 36) and brief 25, as a verified gap, that the firewall and cloudflare-edge areas run playbooks importing `refuse-internal-extra-vars.yml` without claiming it. The import lines are real (`platform/playbooks/apply-firewall.yml:240`, `platform/playbooks/apply-cloudflare-tofu.yml:28`), but those areas' tests load the plays through `playbook::plays`, which returns them "without its leading extra-var guard import" (`platform/tests/src/playbook.rs:100-121`), so the tests never run it. The other half of the claim, that those areas do not claim the filter plugins, was real. S9's owner found it on reading the brief, before any code; decision 36 was corrected at 17:20 EST. Why the rule did not fire: the facts around the claim (the import lines, the area files) were read, and what the tests load was not.
 
 ### 1.22 A runner's tool version stated twice without reading the running system
 
@@ -1972,11 +1974,11 @@ by measurement); this is the reverse, a capability assumed without the documenta
 
 **Enforced by.** Convention. No hook compares a posted body with the file just written; 1.28's proposed hook checks a body's Evidence lines, not its bytes.
 
-### 1.41 Reported a state read before a context compaction, after it, without reading it again
+### 1.41 Reported a state carried across a context compaction without reading it again
 
-**Occurrences: 2** — 2026-11-17, 2026-11-17
+**Occurrences: 1** — 2026-11-17
 
-**What happened.** (1) #1190's owner wrote into the pull request description that the repository comparison (`support_scan_python`) turns red on both `yaml::tasks` mutations, from a note made before a context compaction. The `pr-reviewer` round ran both mutations again on `04ad9cbc`: only the fixture tests went red. It was #1190's second return (PR comment 6963982662, 2026-11-17 23:24Z). (2) At 21:33 EST the same day #1202's owner told the coordinator that CodeRabbit's thread on #1202 was answered and unresolved, so a dismissal needed the operator's decision, from its pre-compaction summary. A GraphQL read showed both threads resolved by `coderabbitai[bot]`, which the standing dismissal rule covers; the coordinator's own read caught it before the operator was asked. The coordinator's first reply had repeated that the operator's word was needed, before it read the threads, and was corrected one message later.
+**What happened.** #1190's owner wrote into the pull request description that the repository comparison (`support_scan_python`) turns red on both `yaml::tasks` mutations, from a note made before a context compaction. The `pr-reviewer` round ran both mutations again on `04ad9cbc`: only the fixture tests went red. It was #1190's second return (PR comment 6963982662, 2026-11-17 23:24Z). The same day #1202's owner reported a review-thread state the same way; that report is recorded as 1.10's occurrence 5, the rule for a reviewer's state.
 
 **Root cause.** A compaction summary carries results as statements. After it they read as known, though the state they describe (a test outcome, a thread on GitHub) was never re-read and may have changed or never held.
 
@@ -5841,11 +5843,11 @@ batch's later briefs; that is a brief convention, not a check.
 
 **The rule.** A brief's spend stop is set per model class from one measured round of the passes it allows. Before each wave of agents, the owner adds the token counts the earlier agents reported, plus the next wave's estimate, and compares the sum with the stop. Over the stop, the owner reports to the coordinator before dispatching, with what is done and what is left.
 
-**Enforced by.** Convention (a stop sized per model class from a measured round; a running total before each wave).
+**Enforced by.** Convention (a stop sized per model class from a measured round; a running total before each wave). Proposed (count 3): a dispatch check refuses a brief with no ESTIMATE line (AC-1051).
 
 **Repeat (2026-11-20).** The confirming round on S9's head `61b16729` (four `/simplify` agents and one `/security-review`) was briefed with a cap of about 100k tokens per agent. Each agent reported 166k to 214k, about 944k for the round. The owner added the counts after the round, as the rule asks, and reported the total to the coordinator before anything was pushed. The rule did not cover this case: it sizes the stop and keeps a running total between waves, but a cap written into a prompt does not stop an agent inside its wave. Within one wave, only the agent's own report shows the spend, and only after the fact. The next cut sizes its pass stop from this measured round (about 944k for one round, stop at 1.2M).
 
-**Occurrence 3 — 2026-11-18 (recorded late).** The coordinator dispatched six remediation chunks under brief 28, each `/simplify` with four agents plus `/security-review`, while three pull requests ran multi-round real passes. Brief 28 carries no ESTIMATE, which the batch skill requires of every brief, and the spend limit was not checked before dispatch. At 14:16 to 14:18 EST the backup, #1186 and P1 owner sessions stopped on the session limit (decision 60). Why the rule did not fire: the rule sizes one unit's stop from a measured round, and a brief with no estimate gave nothing to size or total. Three occurrences retire Convention: proposed, a dispatch check refuses a brief without an ESTIMATE line.
+**Occurrence 3 — 2026-11-18 (recorded late).** The coordinator dispatched six remediation chunks under brief 28, each `/simplify` with four agents plus `/security-review`, while three pull requests ran multi-round real passes. Brief 28 carries no ESTIMATE, which the batch skill requires of every brief, and the spend limit was not checked before dispatch. At 14:16 to 14:18 EST the backup, #1186 and P1 owner sessions stopped on the session limit (decision 60). Why the rule did not fire: the rule sizes one unit's stop from a measured round, and a brief with no estimate gave nothing to size or total. The count of 3 retires Convention; the proposal is in Enforced by.
 
 ### 5.38 Three returns on one check because no plan said where "which setting loads a directory" was declared
 
@@ -5891,7 +5893,7 @@ batch's later briefs; that is a brief convention, not a check.
 
 **The rule.** Before opening a dialog, the coordinator passes the turn, sends every live owner its next step and standing instructions for a return or a question, and reads each live owner's last reply. A dialog does not stay open without bound while the batch runs.
 
-**Enforced by.** Convention. Proposed (count 3): the batch skill's pre-dialog step sends each live owner its next step and standing instructions for a return or a question, and the coordinator reads each live owner's last reply before opening the dialog.
+**Enforced by.** Convention. Proposed (count 3): the rule above as a pre-dialog step in the batch skill, plus a limit on how long a dialog stays open (AC-1052).
 
 **Occurrence 2 — 2026-11-18.** The dialog for #1186's fifth return was open from 09:06 to 12:22 EST (decision 50). #1201's scope question on the lanes guard and #1206's sixth return (CodeRabbit review 5958770229, 14:40:34Z) sat unread for that time. Why the rule did not fire: the practice adopted after the first occurrence (pass the turn and send every owner its next step first) did not cover mail that arrives while the dialog is open.
 
