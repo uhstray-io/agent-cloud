@@ -544,7 +544,10 @@ open to review.
    files (`issue-internal-leaf.yml -e leaf_action=inspect`), which shows the files are valid, not
    that anything loaded them. Which leaves are in use is not read from the nodes: it is chosen by
    switches the operator declares in site-config, described below. Once a switch says a leaf is in
-   use, decision 8's proof applies unchanged.
+   use, the proof named in that leaf's bullet below applies, and each bullet says what it reads
+   and what it does not: for `vllm-server` and `image-server`, the serial the listener serves; for
+   `vllm-lifecycle` and `agw-upstream`, that vLLM accepts the new files, not that the process
+   holding the leaf loaded them.
    - Three states this decision does not read are an open build decision (AC-1041): whether a
      listener really serves what its switch declares; where agent-cloud reads
      `vllm_tls_require_client`, the name dgx-spark gives its switch for requiring client
@@ -596,7 +599,8 @@ open to review.
      Phase B, unless the gateway server leaf already restarts the gateway or the drill shows a
      reload, each renewal of the gateway host (about every 20 days) restarts it and drops open
      streams. Alternatives rejected: *the gateway's rule, "not in use, left alone", while a listener
-     does not serve TLS*, because dgx-spark's launcher refuses to start TLS without the files, so
+     does not serve TLS*, because dgx-spark's launcher refuses to start TLS without the files (declared by
+     dgx-spark, not checked by this repository), so
      the leaf must exist and stay current for an unknown time before anything serves it; *proving
      `vllm-server` from the gateway host with `agw-upstream`* (dgx-spark's proposal), because it
      ties a head-node renewal to a second host and a second leaf, where the listener class proves from
@@ -653,7 +657,8 @@ open to review.
 
 6. **(f) Order against dgx-spark's tasks.** Three constraints set the order; the build's first pull
    request carries the sequence. The leaves exist before dgx-spark's TLS switch, because its
-   launchers refuse to start without the files. The inference-path callers (the gateway's
+   launchers refuse to start without the files (declared by dgx-spark, not checked by this
+   repository). The inference-path callers (the gateway's
    `https://` upstream, Caddy's `/health` transport, Rollback Inference Route's `direct` mode
    transport, the o11y scrape) change in dgx-spark's Phase A window (its task 3.3), because a
    plain-HTTP caller fails the moment vLLM serves TLS only. Phase B (dgx-spark 4.1 to 4.3) follows
