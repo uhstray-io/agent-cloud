@@ -15,6 +15,29 @@ The platform SHALL maintain a reviewable coverage declaration for every deployed
 - **WHEN** a source directory exists without a deployed target declaration
 - **THEN** the coverage report lists it as planned or unclassified and does not assert live telemetry
 
+### Requirement: Operator inventory synchronization preserves stdin isolation and the canonical lifecycle
+
+The operator inventory-sync frontend SHALL read credentials only from stdin and pass them to the canonical inventory-sync play only through a named pipe in a private (0700) temporary directory that is removed when the run ends. It SHALL NOT place credential values in argv, environment, files, or visible output. The existing parsed-inventory and transport checks SHALL run for every authentication route. Existing callers SHALL retain their declared environment/AppRole behavior.
+
+Proposal intent remains unchanged. Production deployment, template/repository mutation, retention expansion, VM growth, PBS operations and backup/restore acceptance are outside these additions.
+
+#### Scenario: Stdin credential reaches only the canonical child input
+- **WHEN** a synthetic operator credential is supplied to the frontend
+- **THEN** the actual canonical child input receives it through that named pipe, and inspected arguments, environment, files and visible output do not contain it
+- **AND** invalid input refuses before any API write.
+
+#### Scenario: Validated synchronization is idempotent and preserves metadata
+- **WHEN** the source is nonempty valid YAML with actual Ansible hosts and the declared existing record is selected
+- **THEN** matching content performs no PUT; differing content performs at most one PUT and requires exact content readback
+- **AND** id, name, project, type and SSH/become key bindings remain preserved
+- **AND** empty, malformed or hostless sources and missing records refuse without a write.
+
+#### Scenario: Uncertain write acknowledgement requires reconciliation
+- **WHEN** a possible inventory write fails or loses its acknowledgement
+- **THEN** the outcome remains uncertain until read-only reconciliation
+- **AND** the frontend neither retries automatically nor claims that no write occurred
+- **AND** readback mismatch refuses success without exposing private inventory, credentials, headers or raw responses.
+
 ### Requirement: Required telemetry is collected and correlated
 Every deployed target SHALL declare applicable logs, metrics, health, and traces with a verified source or a reviewed exclusion reason. Supported host and application logs SHALL be queryable; metrics-capable targets SHALL expose verified metrics; request-serving targets SHALL provide traces when their runtimes support safe instrumentation. The same declared service identity and inventory-derived environment SHALL join applicable logs, metrics, and traces, and verification SHALL use a fresh signal from the exact target.
 
@@ -31,6 +54,45 @@ Every deployed target SHALL declare applicable logs, metrics, health, and traces
 #### Scenario: Instrumentation is unsupported
 - **WHEN** automatic tracing is incompatible with a target runtime or would violate its security boundary
 - **THEN** the declaration records the reason and an approved alternative signal or manual instrumentation plan, without claiming trace coverage
+
+### Requirement: Optional legacy gateway canary obeys the shared trace rollout gate
+Before the optional legacy gateway canary captures a receiver timestamp,
+inspects remote TLS material, resolves the listener or emits traffic, its
+existing play SHALL include `tasks/assert-o11y-trace-rollout.yml` in
+`pre_tasks`, guarded by the existing `_canary_on` legacy-plus-boolean-emit
+condition. Fact gathering SHALL remain disabled, and the existing first
+`tasks` entry SHALL remain the receiver-clock capture. The shared gate and
+its receiver-host prerequisite lookup SHALL remain unchanged; missing or
+ambiguous receivers and missing/invalid prerequisites SHALL refuse before any
+canary operation. Strict mode and legacy nonemitting verification SHALL NOT
+acquire these canary prerequisites. String `"false"` SHALL remain nonemitting.
+
+This source follow-up SHALL preserve strict selectors, freshness, transport,
+TLS verification, verifier leaf/CA use, read-only name resolution and the
+credential-free 100 GET `/v1/models` requests expecting 401 with proxy/netrc
+use disabled. It SHALL NOT change templates, surveys, repository bindings or
+invent launcher/API flags. Source tests SHALL execute the actual Ansible
+preflight/include/assertions and play conditions with synthetic inventory,
+receiver-only prerequisite values and safe progression sentinels; they SHALL
+NOT execute real network, secret, VM, container, command or remote-inspection
+operations. A copied predicate or include-presence assertion alone SHALL NOT
+satisfy this source gate. Source closure SHALL NOT establish launch provenance,
+a runtime request cohort, three-signal acceptance or parent 1.1/1.3/1.4 closure.
+
+#### Scenario: Legacy emitting canary refuses before any canary operation
+- **WHEN** legacy mode emits the canary and each shared receipt/budget prerequisite is omitted separately, a flag is disabled, a prerequisite is invalid under the existing shared predicate, or the receiver set has zero or multiple hosts
+- **THEN** actual Ansible execution of the shared preflight refuses before timestamp, TLS inspection, resolution and traffic progression sentinels
+- **AND** the source regression fails against a temporary gate-removed copy; no live action is used to establish RED or GREEN
+
+#### Scenario: Complete canary prerequisites permit progression
+- **WHEN** legacy emit is true, exactly one receiver has every valid shared prerequisite, and gateway/localhost do not carry substitute prerequisite values
+- **THEN** the real shared assertions pass and the safe harness reaches progression sentinels
+- **AND** existing TLS tests and the BATS first-task clock assumption remain satisfied; this is source evidence only, not traffic or delivery proof
+
+#### Scenario: Strict and nonemitting verification skip the canary gate
+- **WHEN** legacy emit is absent, boolean false or string `"false"`, or strict mode is selected with either emit value
+- **THEN** the new preflight include and canary operations skip without requiring trace-rollout prerequisites
+- **AND** existing strict target/selector/freshness validation and nonemitting checks retain their own unchanged contracts
 
 ### Requirement: Endpoint availability probes are reviewed, isolated, and bounded
 Continuous HTTP(S) endpoint availability MAY be enabled only for targets with a
@@ -78,7 +140,7 @@ recheck them immediately inside that lifecycle. Pod membership or an IP/path
 string alone SHALL NOT prove namespace identity. The availability overlay
 SHALL declare top-level `x-podman.in_pod=false`; loopback binding alone SHALL
 NOT count as isolation. Unknown, unstable, unreadable, conflicting, shared, or
-host-network identity; an effective published listener; or provider/process
+host-network identity; an effective published Alloy admin listener; or provider/process
 drift SHALL refuse before the handler is enabled. A failed privilege or
 inspection read SHALL remain unverified, never trigger a permission bypass.
 Pre-apply proof SHALL NOT require a future native sample; post-apply source
@@ -152,6 +214,152 @@ Profile candidate acceptance SHALL use the same validated private availability
 projection and fixed profile target address as deployment. It SHALL validate
 the rendered candidate before writing temporary configuration, and SHALL
 preserve the existing profile-operation gates and restoration behavior.
+
+Native forwarded-sample timestamp queries SHALL use one exact-name selector
+per requested fixed family, apply `timestamp()` directly to each selector,
+restore that family's fixed `__name__` with `label_replace`, and combine
+branches with `or on(__name__)`. Every identity matcher and returned label
+SHALL be preserved. Value-query PromQL expressions SHALL remain unchanged;
+HTTP evaluation-time binding SHALL follow the snapshot contract below. Raw sample time
+SHALL NOT be replaced with evaluation time. The existing exact parser,
+identity/uniqueness, freshness, required-metric and positive body-evidence
+checks SHALL remain authoritative, including loaded `extra_metrics=true`.
+Missing native body evidence SHALL NOT receive a legacy unavailable-body
+exception. The six-API-call ceiling, 4096-character path ceiling, aggregate
+byte and deadline limits SHALL remain unchanged; oversized paths SHALL refuse.
+
+Every related native and legacy value/raw-timestamp HTTP query within one
+current-source invocation SHALL reuse one validated positive non-boolean integer
+receiver UTC evaluation snapshot T, encoded as exactly one canonical `time`
+parameter. No per-request clock capture, extra clock API request or public
+launch clock override SHALL be introduced. Native raw sample time SHALL remain
+strictly later than the maximum of process start, preapply bound and T minus
+freshness, and no later than T; legacy SHALL retain its existing applicable
+lower bounds and strict future bound. Response evaluation timestamps SHALL NOT
+replace raw timestamp values. Exact identities, uniqueness, required families,
+loaded `extra_metrics=true` and positive native body evidence SHALL remain
+mandatory. Missing body evidence SHALL NOT acquire an optional-metric or
+legacy acceptance exception.
+
+The existing live DETAIL batch SHALL use separate finite positive fractional
+receiver UTC observation bounds D0 at entry and D at completion. Neither SHALL
+be truncated or rounded to integer seconds. Booleans, invalid types,
+nonfinite/nonpositive observations, D < D0 and existing monotonic deadline
+exhaustion SHALL refuse. DETAIL scrape timestamps SHALL be later than the
+applicable process/preapply bounds and D minus the unchanged applicable
+freshness width, and no later than D. T SHALL remain independent: D SHALL NOT
+refresh sample evaluation time, and comparing D with T SHALL NOT replace the
+D0/D within-batch regression check. Internal clock seams MAY be injected or
+patched for deterministic tests; no public schema, clock override, tolerance or
+window-width change is permitted. The two observation domains SHALL NOT be
+claimed as an atomic configuration/sample transaction.
+
+The snapshot repair SHALL retain native two/four sample requests and at most
+six composed current-source sample requests, the existing legacy pair, 4096
+encoded-path cap, aggregate response bytes and shared deadlines. Actual maximum
+encoded paths including `time` SHALL be measured during implementation; an
+estimated length SHALL NOT be reported as observed. It SHALL add no collector
+retry, extra API, receiver restart/deploy/upgrade or native network, port, mount,
+image or engine dependency. That snapshot repair's source changes SHALL be limited to the three
+existing planning artifacts, existing helper, baseline Python tests and native
+runner; the BATS entry point, CONTRIBUTING, playbooks, workflow, merge
+guard/fixtures, Compose, dependencies and unrelated files SHALL remain
+unchanged unless a demonstrated necessary interface adjustment is returned to
+root before scope expansion.
+
+The required native semantic regression SHALL enter through one BATS test and
+a Python runner outside pytest discovery in the existing Bash Tests job. It
+SHALL evaluate expressions from the actual production query builder using
+`/bin/promtool` from the literal fallback Prometheus image in committed
+Compose, without deployment environment overrides. Workflow, merge guard and
+fixtures, Compose and dependency declarations SHALL remain unchanged for this
+bounded repair. Engine/image/evaluator unavailability SHALL fail, never skip.
+Use supported Docker in CI and prefer usable existing Podman locally; no new
+engine package or standalone promtool installation is required. The full BATS
+prerequisite SHALL be documented with the repository's BATS/Python prerequisites.
+Discovery, at most one image acquisition, three evaluator runs and cleanup
+SHALL fit within 300 seconds total with reserved cleanup time and capped output.
+Evaluation SHALL use `--rm -i --network none --pull=never --entrypoint
+/bin/promtool <image> test rules /dev/stdin`, unique invocation-owned names and
+ownership labels. No bind mounts, named/shared volumes, host network, published
+ports, privilege, VM/daemon start, connection change or image deletion/prune is
+permitted. Failure/timeout cleanup SHALL remove only exact containers proven
+owned by this invocation, accounting for their anonymous storage.
+
+Ordinary deployment with availability disabled SHALL retain the staged Compose
+path whenever legacy self-metrics source review is required. Only the staged
+availability namespace invocation SHALL be conditional on literal
+`O11Y_AVAILABILITY_ENABLED=true`; unique current-source verification, strict
+receipt validation, pre-apply source/container hash/epoch and fresh post-apply
+producer proof SHALL remain mandatory for that source-reviewed path. Enabled
+availability SHALL retain initial, final pre-start and post-apply namespace
+checks, with final refusal before Compose execution.
+
+Effective-Compose validation SHALL permit the existing required Alloy OTLP
+publications to container ports `4317` and `4318`, including the reviewed
+configured host mapping. It SHALL refuse publication of the `12345` admin
+listener even through a different host port, use of host port `12345`, and
+malformed or ambiguous port data. Supported normalized mappings and narrow
+unambiguous short forms SHALL be validated without a broad parser rewrite;
+unsupported shapes SHALL remain refused. This compatibility correction SHALL
+preserve every other candidate/provider, namespace/network, command, image,
+mount, parser, producer, identity, freshness and work-budget gate. Existing OTLP
+ingress SHALL NOT count as an admin-listener publication or weaken enabled
+private-listener isolation. Synthetic source proof SHALL NOT establish an
+installed-provider result, real deployment or profile delivery.
+
+#### Scenario: Disabled availability retains staged source-reviewed deployment
+- **WHEN** availability is false and a source-review declaration is supplied to the actual shell lifecycle
+- **THEN** valid unique synthetic source evidence reaches staged mocked Compose without invoking namespace proof, while invalid source evidence refuses before Compose
+- **AND** pre-apply source/container-hash/epoch output and the existing fresh post-apply producer boundary remain required; disabled availability cannot bypass producer validation
+- **AND** executable regressions distinguish the unmodified failing dispatch from the correction without a real deploy
+
+#### Scenario: Enabled availability retains every namespace checkpoint
+- **WHEN** availability is literal true and source-reviewed lifecycle dispatch runs
+- **THEN** executable regression observes initial, final pre-start and post-apply namespace checks in order
+- **AND** a failed final check prevents Compose execution; enabled private-listener, topology, network and current-producer gates remain strict
+
+#### Scenario: Effective Compose retains OTLP without publishing the admin listener
+- **WHEN** the actual effective-Compose helper reads synthetic normalized base OTLP `4317`/`4318` publications or narrow supported unambiguous short forms in either availability mode
+- **THEN** those port representations pass the port contract while all remaining mode-specific candidate gates still apply
+- **AND** admin `12345` publication, including remapped publication, host port `12345`, malformed mappings/types/values and ambiguous short forms refuse
+- **AND** existing namespace/network/parser/current-producer regressions remain authoritative, with no installed-provider or runtime acceptance inferred
+
+#### Scenario: Native timestamp queries preserve families, identities, and raw sample times
+- **WHEN** the production builder's timestamp expressions are evaluated for the three self families and six health families across multiple identities
+- **THEN** the native evaluator returns every present fixed family with its complete original labels and restored exact metric name
+- **AND** timestamp values equal raw source sample times distinct from the later evaluation time; missing families remain absent
+- **AND** an unexpected extra label survives query evaluation and the unchanged exact-label consumer rejects that row
+
+#### Scenario: Native timestamp repair preserves strict refusal and work limits
+- **WHEN** required native body evidence is absent, identities or samples are invalid/stale/ambiguous, or an encoded path exceeds 4096 characters
+- **THEN** the unchanged strict consumer or work-budget gate refuses; query repair does not establish producer acceptance
+- **AND** supported maximum-context self and six-family health paths are covered without increasing API-call, aggregate-byte or deadline limits
+- **AND** no optional body metric, native legacy exception or changed value-query PromQL expression bypasses refusal
+
+#### Scenario: Delayed sample queries share one receiver evaluation snapshot
+- **WHEN** native self-only, health/self, legacy or composed current-source reads are delayed while fixed sample histories gain newer observations
+- **THEN** EVERY actual production-built value/raw-timestamp URL carries exactly one canonical HTTP `time` with the same validated receiver T, and selects matching values/raw times at T despite request delay
+- **AND** the fake API selects from fixed histories according to actual production URLs, rather than returning fixtures based only on the expression; current missing-time behavior must produce RED and the corrected binding GREEN
+- **AND** no per-request time recapture or extra clock API call is used
+
+#### Scenario: Snapshot binding preserves raw-time refusal and work limits
+- **WHEN** raw time is future-to-T, genuinely stale despite later arrivals, equal to process/preapply bounds, or evidence has missing families, missing/zero native body, malformed/duplicate/wrong identities or invalid snapshot inputs
+- **THEN** strict validation refuses even when a response evaluation timestamp is fresh
+- **AND** oversized paths, aggregate-byte exhaustion and deadlines remain refusers; supported maximum contexts including time are measured without increasing the six-call/4096-path/byte/deadline budgets
+- **AND** the existing native Promtool positive and grouped-timestamp/plain-`or` semantic mutant kills, 20-series fixture and six identity decoys remain covered; native runner changes require only URL-context coverage for time
+
+#### Scenario: Live DETAIL uses fractional entry and completion observations
+- **WHEN** the existing live DETAIL reader/parser/validator observes a valid fractional scrape time between its fractional entry D0 and completion D
+- **THEN** unchanged freshness/process/preapply/future checks use D without integer truncation, and meaningful current-code RED becomes corrected GREEN
+- **AND** future-to-D, stale, process/preapply equality, D < D0, malformed/type-invalid/nonfinite/nonpositive clock observations and deadline exhaustion refuse
+- **AND** T remains independent, with no public clock override, tolerance, new schema or atomic configuration/sample claim
+
+#### Scenario: Native semantic regression detects the actual query defects
+- **WHEN** synthetic expression tests run through the actual production builder and native PromQL evaluator
+- **THEN** the repaired positive expression passes complete-label/raw-time expectations, and original grouped-timestamp and plain-`or` mutants fail those same expectations from duplicate output or expected-label/result mismatch
+- **AND** engine, image, evaluator, syntax or fixture-setup failures cannot count as successful mutation detection
+- **AND** the bounded exact container invocation must be executed successfully during implementation; source support alone is not execution evidence
 
 #### Scenario: Probe activation remains gated without a reviewed target and isolation
 - **WHEN** a target declaration, endpoint contract, finite budget, actual pre-placement namespace proof, or effective handler isolation is missing or unverified
@@ -513,6 +721,24 @@ For each backend, forecast inputs SHALL include seven timestamped complete UTC 2
 The receipt SHALL distinguish controller/deployed-receiver Git SHAs from the 64-character effective-inventory digest; these values SHALL NOT be substituted for one another. Only a trusted verifier SHALL bind task attribution, target, observations, and revisions to authoritative controller, deployment, inventory, and Semaphore state. Sanitized receipts SHALL omit private topology, raw backend responses, task/target identifiers, credentials, and exception text. Source fixtures/tests SHALL establish evaluator behavior only and SHALL NOT close baseline, calibration, or live acceptance gates. Live acceptance SHALL require a fresh read-only Dev-bound Semaphore receipt tied to reviewed source and effective-inventory evidence. Forecast evaluation SHALL NOT mutate retention, VM capacity, or senders. Any separately authorized resize SHALL still require VM/guest readback, verified backup and isolated restore, and telemetry-preservation gates.
 
 When the forecast lacks headroom, the wave SHALL wait for a reviewed, non-destructive capacity change and post-change readback.
+
+#### Scenario: Retained history observations do not close baseline or forecast acceptance
+- **WHEN** a private structured history receipt reports `ready_for_separate_forecast_review` with canonical source-event span, freshness/gap observations, receiver-host and five fixed backend summaries
+- **THEN** receipt accounting accepts only those history observations and keeps evaluation-point counts distinct from independent source events
+- **AND** historical sample ages do not establish current freshness, and backend stored-byte changes do not establish calibrated persisted-byte conversion
+- **AND** representative baseline, isolated calibration, forecast, backup/restore, retention and disk-growth acceptance remain separate open gates; source tests and point-query proof cannot close them
+
+#### Scenario: Current legacy producer and point budgets do not accept native rollout or capacity expansion
+- **WHEN** fresh source-specific readback verifies the current legacy Prometheus producer, its existing unavailable-body category, exact target membership and point retention/series/volume/headroom budgets
+- **THEN** only those observations are accepted; split loaded limits remain unverified when the receipt cannot prove them, even when split on-disk limits match reviewed source
+- **AND** earlier Alloy ExtraMetrics hypotheses do not become a current diagnosis or authorize a native-body workaround; native positive body evidence and all native gates remain unchanged
+- **AND** a receiver checkout HEAD remains separate from loaded revision/configuration and image identity; merged source validation closes only its source child, not representative seven-day baseline, calibration/forecast, backup/immutable isolated restore, retention expansion or growth acceptance
+
+#### Scenario: Drop counter created only on its first drop is absent
+- **WHEN** the baseline reads `otelcol_exporter_enqueue_failed_spans_total` (job `alloy`) or `loki_discarded_samples_total` (job `loki`), whose pinned upstream sources create a series only on the first drop, and the family returns no samples
+- **THEN** the family reports `absent_lazy_counter` with reason `liveness_series_present` only when a fresh liveness series is present for every expected target of the same job: `otelcol_exporter_queue_size{data_type="traces"}` for Alloy, `loki_distributor_lines_received_total` for Loki
+- **AND** without that liveness series, or when the liveness read fails, the family stays `missing_or_stale`
+- **AND** `absent_lazy_counter` never counts as `observed_zero`; it means no drop since that process last started, and the rule that missing data is unavailable is unchanged for every other family
 
 #### Scenario: Wave exceeds capacity
 - **WHEN** the forecasted wave exceeds a declared capacity or retention budget

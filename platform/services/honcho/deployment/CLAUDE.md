@@ -15,12 +15,12 @@ honcho — Plastic Labs memory API for agents. A four-container rootless-podman 
 
 ## LLM — Gemini interim, skynet later
 
-Every text-gen feature (deriver, summary, all dialectic levels, dream) is pointed at Gemini via `*_MODEL_CONFIG__TRANSPORT=gemini` + `honcho_llm_model` (default `gemini-2.5-flash`); the key is a `_shared_reads` from nemoclaw. Embeddings are OFF (`EMBED_MESSAGES=false`; upstream default transport is openai and no OpenAI key exists here). The skynet swap is config-only: flip transports to `openai` + `*_MODEL_CONFIG__OVERRIDES__BASE_URL=<skynet /v1>` — see `templates/env.j2`.
+Every text-gen feature (deriver, summary, all dialectic levels, dream) is pointed at Gemini via `*_MODEL_CONFIG__TRANSPORT=gemini` + `honcho_llm_model` (default `gemini-2.5-flash`); the key is `secret/services/honcho:gemini_api_key`, an operator-seeded field (`seed-openbao-key.yml`, Seed OpenBao Key) that `deploy-honcho.yml` declares `type: existing` and requires, so a missing key fails before any write. Embeddings are OFF (`EMBED_MESSAGES=false`; upstream default transport is openai and no OpenAI key exists here). The skynet swap is config-only: flip transports to `openai` + `*_MODEL_CONFIG__OVERRIDES__BASE_URL=<skynet /v1>` — see `templates/env.j2`.
 
 ## Conventions specific to this service
 
 - **deploy.sh is lifecycle only** (Critical Deployment Rule #2). `deploy-honcho.yml` renders `.env` from OpenBao via `manage-secrets`; `deploy.sh` pulls, runs `compose_up_if_changed` (`platform/lib/common.sh`), waits for `honcho-api` healthy. env_file changes are not compose-spec changes, so it hashes `.env` and the compose files and recreates only when that digest or an image changed, printing `DEPLOY_CHANGED=true|false`, which `deploy-honcho.yml` reads into `changed_when` and the `service-deploy` step result's `changed_on_rerun`. The Semaphore survey `deploy_force_recreate=true` forces a recreate anyway.
-- **Prebuilt GHCR image** (wisbot pattern): `.github/workflows/build-honcho.yml` builds `plastic-labs/honcho` at a pinned ref → `ghcr.io/uhstray-io/honcho:<ref>`. Never built on the VM; bump the pin deliberately.
+- **Prebuilt GHCR image**: `.github/workflows/build-honcho.yml` builds `plastic-labs/honcho` at a pinned ref → `ghcr.io/uhstray-io/honcho:<ref>`. Never built on the VM; bump the pin deliberately.
 - **Only the api publishes a port** — env-driven in the base compose via `HONCHO_BIND`/`HONCHO_PORT` (`.env`); db/redis/deriver have no host ports (no firewall rules needed for them). The overlay only adds mem caps, `label=disable`, and the `local-dev` network on the api.
 - **Stable secrets**: the JWT secret and DB password are generated once into OpenBao and reused — rotating the JWT secret invalidates every minted token; rotating the DB password locks the app out of the existing volume.
 
@@ -37,5 +37,5 @@ Every text-gen feature (deriver, summary, all dialectic levels, dream) is pointe
 - Deploy playbooks: [`../../../playbooks/deploy-honcho.yml`](../../../playbooks/deploy-honcho.yml), [`../../../playbooks/clean-deploy-honcho.yml`](../../../playbooks/clean-deploy-honcho.yml)
 - Authentik forward_auth blueprint: [`../../authentik/deployment/blueprints/honcho-docs-forward-auth.yaml`](../../authentik/deployment/blueprints/honcho-docs-forward-auth.yaml)
 - Image build workflow: [`../../../../.github/workflows/build-honcho.yml`](../../../../.github/workflows/build-honcho.yml)
-- Plan: [`../../../../plan/development/11-tududi-honcho-deployment.md`](../../../../plan/development/11-tududi-honcho-deployment.md) (Service B — honcho)
+- Plan: [`../../../../plan/development/11-honcho-deployment.md`](../../../../plan/development/11-honcho-deployment.md) (Service B — honcho)
 - Root conventions: [`../../../../CLAUDE.md`](../../../../CLAUDE.md)

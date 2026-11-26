@@ -40,7 +40,7 @@ def test_a_template_parses_and_holds_no_bearer_value_or_key_shaped_string(name):
 
 
 def test_only_the_two_templates_exist_and_both_are_scanned():
-    # Files only: a template is a file here. pi-provider/ is a package (its own tests), not a template.
+    # Files only: a template is a file here; a subdirectory is not one.
     assert sorted(p.name for p in CLIENTS.iterdir() if p.is_file()) == ["claude-code.json", "pi-mcp.json"]
 
 

@@ -5,6 +5,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 from jinja2 import Environment
@@ -898,6 +899,127 @@ def test_live_expected_target_contract_must_match_validated_previous_ownership(d
         })
 
 
+def _exec_state(document, state):
+    """Set the error state on every generated expected-target rule of a rendered document."""
+    for rule in _service_rules(document):
+        # Active rules only: paused tombstones keep their OK state.
+        if rule["uid"].startswith("o11y_missing_") and rule["isPaused"] is False:
+            rule["execErrState"] = state
+    return document
+
+
+def _alerting_readback(document):
+    """Grafana readback of active rules placed before the KeepLast change: still Alerting."""
+    live = _live_rules(document)
+    for rule in live:
+        if rule["isPaused"] is False:
+            rule["execErrState"] = "Alerting"
+    return live
+
+
+def _two_targets():
+    return [_expected(), _expected(uid="o11y_missing_api_backup", instance="api-backup.example.test:9100")]
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_first_deploy_accepts_live_alerting_previous_owners_against_keeplast_render(grouped):
+    # First deploy after the KeepLast change: prod Grafana still holds the Alerting rules
+    # the previous placement wrote, and the new render says KeepLast. The live Alerting
+    # readback is the previous owner's state, so it must not be refused as drift.
+    targets = _two_targets()
+    if grouped:
+        previous = _exec_state(_grouped_render(targets), "Alerting")
+        pending = _grouped_render(targets)
+    else:
+        previous = _exec_state(_render(o11y_expected_metrics_targets=targets), "Alerting")
+        pending = _render(o11y_expected_metrics_targets=targets)
+    prepared = _transition(
+        previous, pending=pending, enabled=True, targets=targets,
+        mode="grouped" if grouped else "legacy", live=_alerting_readback(previous),
+    )
+    # The transition accepted the live Alerting owners: an enabled, prepared result, no refusal.
+    assert prepared["status"] == "prepared" and prepared["reason"] == "enabled"
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_interrupted_first_deploy_recovers_when_live_alerting_and_placed_file_keeplast(grouped):
+    # An interrupted deploy wrote the KeepLast file in Phase 1 and failed before deploy.sh
+    # reloaded Grafana, so the live rules still say Alerting. The rerun must accept that
+    # instead of refusing live_target_drift on every retry.
+    targets = _two_targets()
+    if grouped:
+        previous = _grouped_render(targets)
+        pending = _grouped_render(targets)
+    else:
+        previous = _render(o11y_expected_metrics_targets=targets)
+        pending = _render(o11y_expected_metrics_targets=targets)
+    prepared = _transition(
+        previous, pending=pending, enabled=True, targets=targets,
+        mode="grouped" if grouped else "legacy", live=_alerting_readback(previous),
+    )
+    assert prepared["status"] == "prepared" and prepared["reason"] == "enabled"
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_interrupted_deploy_recovers_when_live_keeplast_and_placed_file_alerting(grouped):
+    # The reverse order: the placed file still says Alerting while Grafana has already
+    # reloaded KeepLast. The rerun accepts the live rules in either state.
+    targets = _two_targets()
+    if grouped:
+        previous = _exec_state(_grouped_render(targets), "Alerting")
+        pending = _grouped_render(targets)
+    else:
+        previous = _exec_state(_render(o11y_expected_metrics_targets=targets), "Alerting")
+        pending = _render(o11y_expected_metrics_targets=targets)
+    prepared = _transition(
+        previous, pending=pending, enabled=True, targets=targets,
+        mode="grouped" if grouped else "legacy", live=_live_rules(pending),
+    )
+    assert prepared["status"] == "prepared" and prepared["reason"] == "enabled"
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_transition_refuses_a_live_error_state_that_no_owner_placed(grouped):
+    # A placement writes only Alerting or KeepLast. Any other live state on an active rule
+    # is still drift, so the relaxed error-state check cannot hide a foreign rule.
+    targets = _two_targets()
+    previous = _grouped_render(targets) if grouped else _render(o11y_expected_metrics_targets=targets)
+    live = _live_rules(previous)
+    for rule in live:
+        if rule["isPaused"] is False:
+            rule["execErrState"] = "OK"
+    with pytest.raises(SURVEY.Refusal, match="live_target_drift"):
+        _transition(
+            previous, enabled=True, targets=targets, mode="grouped" if grouped else "legacy", live=live,
+        )
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_post_deploy_readback_still_requires_keeplast_on_active_rules(grouped):
+    # After the first deploy the rules are rendered KeepLast; a live Alerting rule at the
+    # active readback is refused, so a placement that never converged cannot pass.
+    targets = _two_targets()
+    document = _grouped_render(targets) if grouped else _render(o11y_expected_metrics_targets=targets)
+    input_document = {
+        "reviewed": True,
+        "mode": "grouped" if grouped else "legacy",
+        "targets": targets,
+        "retired_uids": [],
+        "live_rules": _live_rules(document),
+        "live_folders": [{"uid": "agent-cloud-folder", "title": "agent-cloud"}],
+    }
+    if grouped:
+        # Per-target tombstones render inert beside the group rule and are owned as paused rows.
+        input_document["paused_uids"] = [target["uid"] for target in targets]
+        input_document["tombstones"] = [SURVEY._as_tombstone({"_kind": "target", **target}) for target in targets]
+    assert SURVEY.validate_active_expected_target_rules(input_document)["status"] == "validated"
+    for rule in input_document["live_rules"]:
+        if rule["isPaused"] is False:
+            rule["execErrState"] = "Alerting"
+    with pytest.raises(SURVEY.Refusal, match="live_target_drift"):
+        SURVEY.validate_active_expected_target_rules(input_document)
+
+
 @pytest.mark.parametrize("drift", ["condition", "datasource", "threshold"])
 def test_live_expected_target_preflight_rejects_complete_query_contract_drift(drift):
     previous = _render(o11y_expected_metrics_targets=[_expected()])
@@ -1480,7 +1602,7 @@ def test_deploy_preflight_precedes_placement_and_survey_output_is_protected():
         for task in receiver["tasks"]
         if task.get("name") == "Survey expected-target coverage with private input protected"
     )
-    assert task["no_log"] is True
+    assert task["block"][2]["no_log"] is True
     assert task["when"] == "not ansible_check_mode"
     native_source = next(
         task for task in receiver["tasks"]
@@ -1515,6 +1637,167 @@ def test_deploy_preflight_precedes_placement_and_survey_output_is_protected():
     assert "_expected_target_coverage | to_json" in report["ansible.builtin.debug"]["msg"]
     assert "prometheus_target_coverage" in report["ansible.builtin.debug"]["msg"]
     assert "native_availability_source" in report["ansible.builtin.debug"]["msg"]
+
+
+def test_expected_target_survey_uses_reviewed_payload_short_argv_and_always_cleanup():
+    survey = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-expected-metrics-targets.yml").read_text())
+    receiver = next(
+        play for play in survey if play.get("name") == "Compare the declaration with active Prometheus targets"
+    )
+    task = next(
+        task
+        for task in receiver["tasks"]
+        if task.get("name") == "Survey expected-target coverage with private input protected"
+    )
+    assert task["when"] == "not ansible_check_mode"
+    stage = next(step for step in task["block"] if step.get("name") == "Stage the exact reviewed helper bytes")
+    copy = stage["ansible.builtin.copy"]
+    assert "hostvars['localhost']['_reviewed_checkout_payloads']" in copy["content"]
+    assert "platform/playbooks/files/summarize-o11y-scrape-baseline.py" in copy["content"]
+    assert "b64decode" in copy["content"]
+
+    command = next(
+        step for step in task["block"]
+        if step.get("name") == "Survey expected-target coverage with private input protected"
+    )
+    argv = command["ansible.builtin.command"]["argv"]
+    assert argv[0] == "python3" and argv[-1] == "--expected-target-coverage"
+    assert "_expected_target_helper_workspace.path" in argv[1]
+    assert "-c" not in argv and "lookup('ansible.builtin.file'" not in str(argv)
+    assert "targets" in command["ansible.builtin.command"]["stdin"]
+    assert command["register"] == "_expected_target_coverage_raw"
+    assert command["no_log"] is True
+    assert command["failed_when"] is False
+    assert command["changed_when"] is False
+    assert command["check_mode"] is False
+
+    cleanup = task["always"][0]
+    assert cleanup["ansible.builtin.file"]["path"] == "{{ _expected_target_helper_workspace.path }}"
+    assert cleanup["ansible.builtin.file"]["state"] == "absent"
+    assert cleanup["when"] == "(_expected_target_helper_workspace | default({})).path is defined"
+
+
+def _run_expected_target_survey_fixture(tmp_path, helper_bytes, *, expect_parse_failure):
+    tmp_path.mkdir(parents=True)
+    survey = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-expected-metrics-targets.yml").read_text())
+    receiver = next(
+        play for play in survey if play.get("name") == "Compare the declaration with active Prometheus targets"
+    )
+    task = next(
+        task for task in receiver["tasks"]
+        if task.get("name") == "Survey expected-target coverage with private input protected"
+    )
+    # The real survey uses receiver /tmp. Keep the local Ansible fixture's temp write
+    # inside harness_sandbox's approved test directory.
+    task["block"][0]["ansible.builtin.tempfile"]["path"] = str(tmp_path)
+    parse = next(
+        task for task in receiver["tasks"]
+        if task.get("name") == "Keep the validated coverage receipt private until projection"
+    )
+    marker = "private-target-marker"
+    declaration = {"reviewed": False, "targets": [_expected(service=marker)]}
+    tasks = [
+        {
+            "name": "Supply only the synthetic reviewed helper payload",
+            "ansible.builtin.set_fact": {
+                "_reviewed_checkout_payloads": {
+                    "platform/playbooks/files/summarize-o11y-scrape-baseline.py": base64.b64encode(
+                        helper_bytes
+                    ).decode("ascii")
+                }
+            },
+            "no_log": True,
+        }
+    ]
+    if expect_parse_failure:
+        tasks.append({
+            "block": [task, parse],
+            "rescue": [
+                {
+                    "name": "Prove helper cleanup after parse failure",
+                    "ansible.builtin.stat": {"path": "{{ _expected_target_helper_workspace.path }}"},
+                    "register": "workspace_after_failure",
+                },
+                {
+                    "name": "Require the parse failure after unconditional cleanup",
+                    "ansible.builtin.assert": {
+                        "that": [
+                            "ansible_failed_task.name.startswith('Keep the validated coverage receipt')",
+                            "not workspace_after_failure.stat.exists",
+                        ],
+                        "fail_msg": "The helper parse failure did not leave a cleaned workspace.",
+                        "quiet": True,
+                    },
+                },
+            ],
+        })
+    else:
+        tasks.extend([
+            task,
+            parse,
+            {
+                "name": "Require the existing fixed receipt contract",
+                "ansible.builtin.assert": {
+                    "that": [
+                        "_expected_target_coverage == expected_receipt",
+                        "_expected_target_coverage.keys() | list | sort == expected_receipt.keys() | list | sort",
+                    ],
+                    "fail_msg": "The survey receipt differs from its existing fixed schema.",
+                    "quiet": True,
+                },
+            },
+            {
+                "name": "Prove helper cleanup after successful projection",
+                "ansible.builtin.stat": {"path": "{{ _expected_target_helper_workspace.path }}"},
+                "register": "workspace_after_success",
+            },
+            {
+                "name": "Require cleanup after success",
+                "ansible.builtin.assert": {
+                    "that": "not workspace_after_success.stat.exists",
+                    "fail_msg": "The helper workspace remains after a successful projection.",
+                    "quiet": True,
+                },
+            },
+        ])
+
+    play = {
+        "name": "Exercise the production expected-target helper transport locally",
+        "hosts": "localhost",
+        "connection": "local",
+        "gather_facts": False,
+        "vars": {
+            "o11y_expected_metrics_targets_reviewed": False,
+            "o11y_expected_metrics_targets": declaration["targets"],
+            "expected_receipt": SURVEY.expected_target_coverage(b"", declaration),
+        },
+        "tasks": tasks,
+    }
+    playbook = tmp_path / "survey-fixture.yml"
+    playbook.write_text(yaml.safe_dump([play]))
+    result = harness_sandbox.run(
+        ["ansible-playbook", "-i", "localhost,", "-c", "local", str(playbook)],
+        tmp_path,
+        cwd=ROOT,
+        env=harness_sandbox.env_for(tmp_path),
+    )
+    assert marker not in result.stdout + result.stderr
+    return result
+
+
+def test_expected_target_survey_real_ansible_block_preserves_receipt_and_cleans_on_parse_failure(tmp_path):
+    success = _run_expected_target_survey_fixture(tmp_path / "success", HELPER.read_bytes(), expect_parse_failure=False)
+    assert success.returncode == 0, success.stdout + success.stderr
+
+    malformed_json = _run_expected_target_survey_fixture(
+        tmp_path / "malformed-json", b"print('not-json')\n", expect_parse_failure=True,
+    )
+    assert malformed_json.returncode == 0, malformed_json.stdout + malformed_json.stderr
+
+    command_failure = _run_expected_target_survey_fixture(
+        tmp_path / "command-failure", b"syntax error\n", expect_parse_failure=True,
+    )
+    assert command_failure.returncode == 0, command_failure.stdout + command_failure.stderr
 
 
 def test_native_expected_target_survey_preserves_legacy_source_omission_and_skipped_registers():

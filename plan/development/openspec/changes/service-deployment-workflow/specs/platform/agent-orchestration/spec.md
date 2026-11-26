@@ -10,8 +10,7 @@ responsibility for the inference hostname.
 The OPA catalog SHALL define `infra-agent`, `security-agent`, `o11y-agent`,
 `service-agent` and `network-agent` (added 2026-10-04 for the edge-dns step), each with an explicit list of Semaphore templates it may launch. A launch of
 any template outside the caller's list MUST be denied. Destructive templates MUST still
-require an attested human approval. `netclaw` and `nemoclaw` MUST remain in the catalog,
-unchanged, and MUST NOT be used as workflow agents.
+require an attested human approval.
 
 #### Scenario: Role launches only its own steps
 - **WHEN** `o11y-agent` requests `run_task` on the firewall template

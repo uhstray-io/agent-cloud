@@ -1,0 +1,8 @@
+# Rendered per deploy by the launch-gate deploy playbook from OpenBao and the inventory. Never committed.
+.env
+# The rendered gate config (templates/config.json.j2): the URLs, the allowlist and the caller-to-agent map
+# for this host. Rendered per deploy, never committed.
+config.json
+# The step-ca server leaf and the trust bundle, placed per host. Issued, never committed. Listed so the
+# rsync filter in tasks/place-monorepo.yml neither copies nor deletes them.
+certs/

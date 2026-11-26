@@ -21,7 +21,7 @@ import playbook_yaml
 import pytest
 import seed_harness
 import yaml
-from fake_http import DrainingHandler
+from fake_http import SHUTDOWN_POLL_SECONDS, DrainingHandler, refused_port, serve
 
 REPO = playbook_yaml.REPO
 PLAYBOOK = REPO / "platform/playbooks/probe-agentgateway-isolation.yml"
@@ -67,7 +67,8 @@ class Gateway(ThreadingHTTPServer):
         self.budgets, self.refuse, self.status, self.never = dict(budgets or {}), refuse, status or {}, never
         self.seen: list[dict] = []
         self.url = f"http://127.0.0.1:{self.server_port}"
-        threading.Thread(target=self.serve_forever, daemon=True).start()
+        threading.Thread(target=self.serve_forever, kwargs={"poll_interval": SHUTDOWN_POLL_SECONDS},
+                         daemon=True).start()
 
     def stop(self):
         self.shutdown()
@@ -128,7 +129,7 @@ def _run(tmp: Path, gw: Gateway, *, extra=None, host=None, check=False, store=No
     """Run the playbook once; returns (returncode, output, bao requests)."""
     Bao.requests = []
     Bao.store = dict(KEYS if store is None else store)
-    with seed_harness.serve(Bao) as address:
+    with serve(Bao) as address:
         host_vars = {"ansible_connection": "local", "ansible_python_interpreter": sys.executable,
                      "service_name": "agentgateway", "agw_clients": [BURST, CONTROL],
                      "agw_models": [{"name": "m"}], "agw_verify_base_url": gw.url,
@@ -243,9 +244,10 @@ def test_a_control_identity_that_is_refused_too_fails_the_run(tmp_path, gateway)
 
 def test_a_gateway_that_is_not_listening_fails_with_no_http_answer(tmp_path, gateway):
     gw = gateway()
-    gw.stop()
+    gw.url = f"http://127.0.0.1:{refused_port()}"  # not gw.stop(): a freed port can go to another test
     rc, out, _ = _run(tmp_path, gw)
     assert rc != 0 and "no HTTP answer" in out, out
+    assert gw.seen == []
 
 
 def test_a_blank_control_survey_value_takes_the_first_other_identity(tmp_path, gateway):

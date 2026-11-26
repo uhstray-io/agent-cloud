@@ -60,17 +60,15 @@ Skills for git workflow, parallel execution, and branch management.
 
 ### Memory and Context
 
-Skills for preserving session state and searching past work.
+Project memory lives in two stores, and skills do not replace them. The codebase-memory graph answers what the code is; the Hindsight bank `agent-cloud-750a33b9` answers why it is that way. See the "Memory & specs" section of the root `AGENTS.md`. MemPalace (`memory*` skills) is retired from routing.
 
-| Skill | Source | Use When |
-|-------|--------|----------|
-| `memory` | mempalace | General memory operations: store, recall, and organize knowledge about the codebase. |
-| `memory-mine` | mempalace | Mine projects and conversations into the MemPalace. Useful after completing significant work to preserve learnings. |
-| `memory-search` | mempalace | Search memories across the MemPalace using semantic search. Find past decisions, patterns, or context. |
-| `memory-status` | mempalace | Show current state of the memory palace: wings, rooms, drawer counts. |
-| `remember` | remember | Save session state for clean continuation in the next session. Use at the end of long sessions. |
+| Tool or skill | Source | Use When |
+|---------------|--------|----------|
+| `search_graph`, `trace_path`, `get_code_snippet`, `query_graph`, `get_architecture`, `search_code`, `detect_changes` | codebase-memory-mcp | Structural questions about the code: callers, blast radius, definitions, routes, dead code. Project `agent-cloud`. |
+| `recall`, `reflect`, `sync_retain` | Hindsight | Past decisions, rejected alternatives, failures and outcomes. Pass `bank_id` on every call. |
+| `session-save`, `session-resume` | session-save, session-resume | Write a continuation file at the end of a long session, then resume from it in the next one. |
 
-**Recommended workflow:** At the end of significant development sessions, run `remember` to save state. After completing major features, run `memory-mine` to preserve learnings about the codebase.
+**Recommended workflow:** When a decision, failed attempt or completed task is worth keeping, retain one self-contained paragraph with `sync_retain`. Keep code structure out of Hindsight; the graph regenerates it. Save session state with `session-save` before a session ends.
 
 ---
 
@@ -100,8 +98,8 @@ The following skills are currently available in the local Claude Code installati
 - `review` — PR review
 - `code-review:code-review` — PR code review
 - `init` — initialize CLAUDE.md
-- `remember` — session state persistence
-- `mempalace:*` — memory palace (search, status, mine, help, init)
+- `session-save` / `session-resume` — session state persistence
+- codebase-memory-mcp and Hindsight tools — see Memory and Context (MemPalace is retired from routing)
 - `caveman:*` — token-efficient communication mode
 - `claude-md-management:*` — CLAUDE.md audit and improvement
 - `claude-code-setup:claude-automation-recommender` — automation setup analysis

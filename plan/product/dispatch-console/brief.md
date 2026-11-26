@@ -76,7 +76,7 @@ become proposals that pass guardrails before automation executes them.
 | Chat | The Work composer asks about current work; "New request" is a secondary mode. The Topology composer is aimed at the selection |
 | Plans | Execution and plans are vertical steppers; every step names its owning role |
 | Telemetry | Per-service, per-node, per-host and per-VM charts link to Grafana; the console draws tenant / org / site / cluster rollups only |
-| Agents | skynet roles `infra-agent`, `security-agent`, `service-agent`, `o11y-agent` (plan 15 D7); `net-agent` is planned; NetClaw and NemoClaw are not used |
+| Agents | skynet roles `infra-agent`, `security-agent`, `service-agent`, `o11y-agent` (plan 15 D7); `net-agent` is planned |
 | AI Gateway | "Agents" page renamed AI Gateway; production gateway (→ vLLM on spark-pair) and development gateway (local-dev → LM Studio) |
 | LLM access | Stays its own page; key requests pick target scopes (gateway groups) then agents; default 250,000,000 tokens/hour; user identity comes from Access |
 | Policy | Proposing a change drafts a plan and creates a work item that needs approval |

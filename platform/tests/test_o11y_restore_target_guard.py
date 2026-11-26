@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import ansible_python, needs_ansible
@@ -238,6 +239,7 @@ def _flatten(tasks):
         "provision-pbs-debian-template.yml",
         "resize-vm.yml",
         "destroy-vm.yml",
+        "migrate-vm.yml",
         "snapshot-vm.yml",
         "attach-pbs-data-disk.yml",
     ],
@@ -347,6 +349,7 @@ def test_credential_free_preflight_is_first_and_pins_only_private_destination():
         "provision-pbs-debian-template.yml",
         "resize-vm.yml",
         "destroy-vm.yml",
+        "migrate-vm.yml",
         "snapshot-vm.yml",
         "attach-pbs-data-disk.yml",
     ],
@@ -422,6 +425,7 @@ print(json.dumps([
         capture_output=True,
         check=True,
         env=env,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     merged = json.loads(proc.stdout)
     assert merged[0]["headers"] == {}

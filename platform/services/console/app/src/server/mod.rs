@@ -1,18 +1,38 @@
 //! Server core: state, session layer, router and the background OIDC discovery.
 
+pub mod access;
 pub mod api;
 pub mod auth;
+pub mod catalog;
 pub mod config;
+pub mod delivery;
+pub mod gate;
+pub mod gateway;
+pub mod github;
+pub mod grafana;
+pub mod inventory;
+pub mod netbox;
+pub mod openbao;
+pub mod policies;
 pub mod prefs;
+pub mod proposals;
+pub mod proxmox;
 pub mod scope;
+pub mod secrets;
 pub mod semaphore;
 pub mod sessions;
+pub mod telemetry;
 pub mod work;
 
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use dioxus::server::axum::extract::{Request, State};
+use dioxus::server::axum::http::{header, HeaderMap, Method, StatusCode};
+use dioxus::server::axum::middleware::{self, Next};
+use dioxus::server::axum::response::Response;
 use dioxus::server::axum::routing::{any, get, post};
 use dioxus::server::axum::Router;
 use tower_sessions::cookie::time::Duration as CookieDuration;
@@ -39,6 +59,42 @@ pub struct AppState {
     pub work: Arc<tokio::sync::RwLock<work::WorkCache>>,
     /// Registry steps for roles and run steppers. Empty when `CONSOLE_WORKFLOW_FILE` is unset.
     pub workflow: Vec<work::Step>,
+    /// NetBox and Proxmox reads. The refresh task writes it; `/v1/tenants/{t}/inventory`,
+    /// `/services` and `/v1/network` only read it.
+    pub inventory: tokio::sync::RwLock<inventory::InventoryCache>,
+    /// Client for Proxmox: the shared settings plus `CONSOLE_PROXMOX_CA_FILE` roots, if set.
+    pub proxmox_http: reqwest::Client,
+    /// The data-flow catalogue `GET /v1/flows` answers.
+    pub flows: inventory::FlowSet,
+    /// The agentgateway clients, budgets and models `GET /v1/gateway` answers (task 8.3a).
+    pub gateway: gateway::GatewaySet,
+    /// The deployable services `GET /v1/catalog` answers (task 8.4, D38). Members get names; admins also get host counts.
+    pub catalog: catalog::CatalogSet,
+    /// The gateway's last-hour token use per client (D39). The refresh task writes it; `/v1/gateway` only reads it.
+    pub usage: tokio::sync::RwLock<grafana::UsageCache>,
+    /// OpenBao client for run-time reads (plan 17 D27). Logs in on first use, never at boot.
+    /// `None` when `CONSOLE_OPENBAO_*` is unset.
+    pub openbao: Option<openbao::Openbao>,
+    /// The OpenBao metadata walk for the Secrets page (plan 17 D35). The refresh task writes it;
+    /// `/v1/secrets` only reads it.
+    pub secrets: tokio::sync::RwLock<secrets::SecretsCache>,
+    /// The Authentik directory for the Access page (plan 17, 8.2b). The refresh task writes it;
+    /// `/v1/access` only reads it.
+    pub access: tokio::sync::RwLock<access::AccessCache>,
+    /// The Access Level -> per-service role map, read once at startup. Empty when `CONSOLE_ROLE_MAP_FILE` is unset.
+    pub role_map: access::RoleMap,
+    /// The OPA and OpenBao policy files for the Policy page (plan 17, 8.4, D36). The refresh task writes it;
+    /// `/v1/policies` only reads it.
+    pub policies: tokio::sync::RwLock<policies::PoliciesCache>,
+    /// Required checks, the promotion path and open pull requests for the CI/CD page (plan 17, 9.1, D42). The
+    /// refresh task writes it; `/v1/delivery` only reads it.
+    pub delivery: tokio::sync::RwLock<delivery::DeliveryCache>,
+    /// Target health and Grafana alerts by environment, cluster and service for the Telemetry page (plan 17, 9.2,
+    /// D43). The refresh task writes it; `/v1/telemetry/rollups` only reads it.
+    pub telemetry: tokio::sync::RwLock<telemetry::TelemetryCache>,
+    /// The launch-gate client proposals are decided and launched through (D49, D51). `None` when
+    /// `CONSOLE_LAUNCH_GATE_*` is unset.
+    pub gate: Option<gate::GateClient>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -64,33 +120,57 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         )
     })?;
 
-    let mut builder = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(20));
-    if let Some(path) = &config.extra_ca_file {
-        let pem = fs::read(path).map_err(|err| {
-            format!(
-                "CONSOLE_EXTRA_CA_FILE: cannot read {}: {err}",
-                path.display()
-            )
-        })?;
-        let certs = reqwest::Certificate::from_pem_bundle(&pem)
-            .map_err(|err| format!("CONSOLE_EXTRA_CA_FILE: not a PEM bundle: {err}"))?;
-        if certs.is_empty() {
-            return Err("CONSOLE_EXTRA_CA_FILE: no certificates found".to_string());
-        }
-        for cert in certs {
-            builder = builder.add_root_certificate(cert);
-        }
-    }
-    let http = builder
-        .build()
-        .map_err(|err| format!("cannot build the HTTP client: {err}"))?;
+    let http = client_with_roots(config.extra_ca_file.as_deref(), "CONSOLE_EXTRA_CA_FILE")?;
+    let proxmox_http = client_with_roots(
+        config
+            .proxmox
+            .as_ref()
+            .and_then(|proxmox| proxmox.ca_file.as_deref()),
+        "CONSOLE_PROXMOX_CA_FILE",
+    )?;
 
     let workflow = match &config.workflow_file {
         Some(path) => work::load_workflow(path)?,
         None => Vec::new(),
     };
+    let flows = match &config.flows_file {
+        Some(path) => inventory::FlowSet::configured(inventory::load_flows(path)?),
+        None => inventory::FlowSet::unconfigured(),
+    };
+    let gateway = match &config.gateway_file {
+        Some(path) => gateway::GatewaySet::configured(gateway::load_gateway(path)?),
+        None => gateway::GatewaySet::unconfigured(),
+    };
+    let catalog = match &config.catalog_file {
+        Some(path) => catalog::CatalogSet::configured(catalog::load_catalog(path)?),
+        None => catalog::CatalogSet::unconfigured(),
+    };
+    let usage =
+        grafana::UsageCache::new(config.grafana_token.is_some() && config.grafana_url.is_some());
+    let openbao = match &config.openbao {
+        Some(settings) => Some(
+            openbao::Openbao::new(settings.clone())
+                .map_err(|err| format!("CONSOLE_OPENBAO_URL: {err}"))?,
+        ),
+        None => None,
+    };
+    let secrets_cache = secrets::SecretsCache::new(openbao.is_some());
+    let access_cache = access::AccessCache::new(config.authentik.is_some());
+    let role_map = match &config.role_map_file {
+        Some(path) => access::load_role_map(path)?,
+        None => access::RoleMap::empty(),
+    };
+    let policies_cache = policies::PoliciesCache::new(openbao.is_some() && config.github.is_some());
+    let delivery_cache = delivery::DeliveryCache::new(openbao.is_some() && config.github.is_some());
+    let telemetry_cache = telemetry::TelemetryCache::new(
+        config.grafana_token.is_some() && config.grafana_url.is_some(),
+    );
+    let gate = config
+        .launch_gate
+        .as_ref()
+        .map(|settings| gate::GateClient::new(&settings.url, settings.token.clone(), http.clone()));
+    let inventory_cache =
+        inventory::InventoryCache::new(config.netbox.is_some(), config.proxmox.is_some());
     let work_cache = if config.semaphore.is_some() {
         work::WorkCache::awaiting_first_poll()
     } else {
@@ -105,7 +185,48 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         prefs,
         work: Arc::new(tokio::sync::RwLock::new(work_cache)),
         workflow,
+        inventory: tokio::sync::RwLock::new(inventory_cache),
+        proxmox_http,
+        flows,
+        gateway,
+        catalog,
+        usage: tokio::sync::RwLock::new(usage),
+        openbao,
+        secrets: tokio::sync::RwLock::new(secrets_cache),
+        access: tokio::sync::RwLock::new(access_cache),
+        role_map,
+        policies: tokio::sync::RwLock::new(policies_cache),
+        delivery: tokio::sync::RwLock::new(delivery_cache),
+        telemetry: tokio::sync::RwLock::new(telemetry_cache),
+        gate,
     }))
+}
+
+/// The client every upstream call shares: no redirects, a 20 s timeout, and the roots of a
+/// PEM bundle when `extra_ca` is set. Verification stays on in every case. `var` names the
+/// setting in an error.
+pub(crate) fn client_with_roots(
+    extra_ca: Option<&Path>,
+    var: &str,
+) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(20));
+    if let Some(path) = extra_ca {
+        let pem = fs::read(path)
+            .map_err(|err| format!("{var}: cannot read {}: {err}", path.display()))?;
+        let certs = reqwest::Certificate::from_pem_bundle(&pem)
+            .map_err(|err| format!("{var}: not a PEM bundle: {err}"))?;
+        if certs.is_empty() {
+            return Err(format!("{var}: no certificates found"));
+        }
+        for cert in certs {
+            builder = builder.add_root_certificate(cert);
+        }
+    }
+    builder
+        .build()
+        .map_err(|err| format!("cannot build the HTTP client: {err}"))
 }
 
 /// Starts OIDC discovery in the background. The server is already listening,
@@ -146,7 +267,16 @@ pub fn spawn_discovery(state: SharedState) {
 }
 
 /// Session cookie `console_session`: Secure, HttpOnly, SameSite=Lax, 8h of inactivity.
+/// `always_save` re-saves a live session on every request, which is what resets an
+/// `OnInactivity` expiry. tower-sessions saves only a modified session, so without it the
+/// expiry ran from sign-in. The cost is one store write and one `Set-Cookie` per request.
+/// A re-save only updates a live row (`sessions.rs`), so a request in flight during sign-out
+/// cannot bring the session back.
+/// With `always_save`, a response to another tab's request during `/auth/callback` re-sends
+/// the pre-sign-in cookie. If that response lands last, the browser keeps the dead id and the
+/// user signs in again. This fails closed and costs availability only; it is accepted.
 /// Sessions live in the preferences database (`sessions.rs`), so a restart keeps them.
+/// `auth::current_user` also caps a session's age (`auth::SESSION_LIFETIME_SECS`).
 pub fn session_layer(store: SqliteStore) -> SessionManagerLayer<SqliteStore> {
     SessionManagerLayer::new(store)
         .with_name("console_session")
@@ -154,6 +284,7 @@ pub fn session_layer(store: SqliteStore) -> SessionManagerLayer<SqliteStore> {
         .with_http_only(true)
         .with_same_site(SameSite::Lax)
         .with_expiry(Expiry::OnInactivity(CookieDuration::hours(8)))
+        .with_always_save(true)
 }
 
 async fn healthz() -> &'static str {
@@ -172,8 +303,84 @@ pub fn api_router(state: SharedState) -> Router {
         .route("/v1/tenants/{tenant}/tree", get(api::tenant_tree))
         .route("/v1/work", get(work::list_work))
         .route("/v1/work/{key}", get(work::get_work_item))
+        .route(
+            "/v1/tenants/{tenant}/inventory",
+            get(inventory::get_inventory),
+        )
+        .route(
+            "/v1/tenants/{tenant}/services",
+            get(inventory::list_services),
+        )
+        .route(
+            "/v1/tenants/{tenant}/services/{name}",
+            get(inventory::get_service),
+        )
+        .route("/v1/network", get(inventory::get_network))
+        .route("/v1/flows", get(inventory::get_flows))
+        .route("/v1/gateway", get(gateway::get_gateway))
+        .route("/v1/catalog", get(catalog::get_catalog))
+        .route("/v1/roles", get(work::list_roles))
+        .route("/v1/secrets", get(secrets::get_secrets))
+        .route("/v1/access", get(access::get_access))
+        .route("/v1/policies", get(policies::get_policies))
+        .route("/v1/delivery", get(delivery::get_delivery))
+        .route("/v1/telemetry/rollups", get(telemetry::get_telemetry))
+        .route(
+            "/v1/proposals",
+            get(proposals::list_proposals).post(proposals::create_proposal),
+        )
+        .route(
+            "/v1/proposals/{id}",
+            get(proposals::get_proposal).put(proposals::edit_proposal),
+        )
+        .route("/v1/proposals/{id}/comments", post(proposals::add_comment))
+        .route(
+            "/v1/proposals/{id}/approve",
+            post(proposals::approve_proposal),
+        )
+        .route("/v1/proposals/{id}/deny", post(proposals::deny_proposal))
         .route("/v1/{*rest}", any(api::v1_unmatched))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_console_origin,
+        ))
         .with_state(state)
+}
+
+/// D53: a state-changing request under `/v1/` is refused 403 `origin_refused` unless its `Origin` is the console's own
+/// base URL and its `Content-Type` is `application/json`. The session cookie is SameSite=Lax, which another
+/// `uhstray.io` subdomain passes, so this check carries the protection. GET and HEAD, and every path outside `/v1/`
+/// (the `/auth/*` routes), pass through.
+async fn require_console_origin(
+    State(app): State<SharedState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let changes_state =
+        [Method::POST, Method::PUT, Method::PATCH, Method::DELETE].contains(request.method());
+    if changes_state
+        && request.uri().path().starts_with("/v1/")
+        && !same_origin_json(request.headers(), app.config.base_origin().as_deref())
+    {
+        return api::error(StatusCode::FORBIDDEN, "origin_refused");
+    }
+    next.run(request).await
+}
+
+/// One `Origin` value, exactly the console's origin (`Config::base_origin`), and a `Content-Type` whose media type is
+/// `application/json`. The media type is the value before any `;`, so `application/json; charset=utf-8` passes and
+/// `application/jsonx` does not. No base origin (a base URL that does not parse) refuses every request.
+fn same_origin_json(headers: &HeaderMap, base_origin: Option<&str>) -> bool {
+    let mut origins = headers.get_all(header::ORIGIN).iter();
+    let origin_ok = base_origin
+        .is_some_and(|base| origins.next().and_then(|value| value.to_str().ok()) == Some(base))
+        && origins.next().is_none();
+    let json = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"));
+    origin_ok && json
 }
 
 /// Everything the process serves: the Dioxus app, the API, and the session
@@ -184,6 +391,12 @@ pub fn router(state: SharedState) -> Router {
         .merge(api_router(state))
         .layer(sessions)
 }
+
+#[cfg(test)]
+mod load_test;
+
+#[cfg(test)]
+mod oidc_tests;
 
 #[cfg(test)]
 mod tests {
@@ -208,15 +421,29 @@ mod tests {
     }"#;
 
     /// The OIDC cell stays empty, so /auth/* answers 503 in these tests.
-    fn test_state() -> SharedState {
+    pub(super) fn test_state() -> SharedState {
         state_with_prefs(Prefs::in_memory().expect("in-memory prefs"))
     }
 
     fn state_with_prefs(prefs: Prefs) -> SharedState {
-        app_state(prefs, work::WorkCache::unconfigured(), Vec::new())
+        app_state(
+            prefs,
+            work::WorkCache::unconfigured(),
+            Vec::new(),
+            gateway::GatewaySet::unconfigured(),
+            catalog::CatalogSet::unconfigured(),
+            grafana::UsageCache::new(false),
+        )
     }
 
-    fn app_state(prefs: Prefs, work: work::WorkCache, workflow: Vec<work::Step>) -> SharedState {
+    fn app_state(
+        prefs: Prefs,
+        work: work::WorkCache,
+        workflow: Vec<work::Step>,
+        gateway_set: gateway::GatewaySet,
+        catalog_set: catalog::CatalogSet,
+        usage: grafana::UsageCache,
+    ) -> SharedState {
         Arc::new(AppState {
             config: Config {
                 base_url: "https://console.test".into(),
@@ -228,6 +455,19 @@ mod tests {
                 scope_file: std::env::temp_dir(),
                 semaphore: None,
                 workflow_file: None,
+                netbox: None,
+                proxmox: None,
+                openbao: None,
+                flows_file: None,
+                gateway_file: None,
+                catalog_file: None,
+                grafana_url: None,
+                grafana_token: None,
+                authentik: None,
+                role_map_file: None,
+                github: None,
+                launch_gate: None,
+                launch_dev_variants: true,
             },
             http: reqwest::Client::new(),
             oidc: tokio::sync::OnceCell::new(),
@@ -235,12 +475,26 @@ mod tests {
             prefs,
             work: Arc::new(tokio::sync::RwLock::new(work)),
             workflow,
+            inventory: tokio::sync::RwLock::new(inventory::InventoryCache::new(false, false)),
+            proxmox_http: reqwest::Client::new(),
+            flows: inventory::FlowSet::unconfigured(),
+            gateway: gateway_set,
+            catalog: catalog_set,
+            usage: tokio::sync::RwLock::new(usage),
+            openbao: None,
+            secrets: tokio::sync::RwLock::new(secrets::SecretsCache::new(false)),
+            access: tokio::sync::RwLock::new(access::AccessCache::new(false)),
+            role_map: access::RoleMap::empty(),
+            policies: tokio::sync::RwLock::new(policies::PoliciesCache::new(false)),
+            delivery: tokio::sync::RwLock::new(delivery::DeliveryCache::new(false)),
+            telemetry: tokio::sync::RwLock::new(telemetry::TelemetryCache::new(false)),
+            gate: None,
         })
     }
 
     /// A session store over a throwaway in-memory database. Tests that do not
     /// reopen a file use it; the production store shares the state's prefs connection.
-    fn memory_sessions() -> SqliteStore {
+    pub(super) fn memory_sessions() -> SqliteStore {
         Prefs::in_memory()
             .expect("in-memory sessions")
             .session_store()
@@ -254,15 +508,7 @@ mod tests {
         Router::new().route(
             path,
             get(move |session: Session| async move {
-                let user = auth::CurrentUser {
-                    sub: "user-1".into(),
-                    email: Some("ada@example.test".into()),
-                    name: Some("Ada".into()),
-                    username: Some("ada".into()),
-                    groups: groups.iter().map(|group| group.to_string()).collect(),
-                };
-                session
-                    .insert(auth::KEY_USER, &user)
+                auth::sign_in(&session, &test_user(groups))
                     .await
                     .expect("insert user");
                 "signed in"
@@ -270,7 +516,40 @@ mod tests {
         )
     }
 
-    async fn serve(app: Router) -> SocketAddr {
+    /// The user every test login route signs in.
+    fn test_user(groups: &[&str]) -> auth::CurrentUser {
+        auth::CurrentUser {
+            sub: "user-1".into(),
+            email: Some("ada@example.test".into()),
+            name: Some("Ada".into()),
+            username: Some("ada".into()),
+            groups: groups.iter().map(|group| group.to_string()).collect(),
+        }
+    }
+
+    /// Test-only route that signs a user in as if `age_secs` ago, or, with `None`, stores the user
+    /// with no sign-in time, as a session written before the absolute lifetime existed.
+    fn aged_login_route(path: &'static str, age_secs: Option<i64>) -> Router {
+        use dioxus::server::axum::routing::get;
+        use tower_sessions::Session;
+        Router::new().route(
+            path,
+            get(move |session: Session| async move {
+                let user = test_user(&["ops"]);
+                match age_secs {
+                    Some(age) => {
+                        let at = sessions::now_unix() - age;
+                        auth::sign_in_at(&session, &user, at).await
+                    }
+                    None => auth::sign_in_without_time(&session, &user).await,
+                }
+                .expect("insert user");
+                "signed in"
+            }),
+        )
+    }
+
+    pub(super) async fn serve(app: Router) -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
@@ -290,12 +569,37 @@ mod tests {
         body: String,
     }
 
-    /// One raw HTTP/1.1 request. `cookie` is sent as-is, e.g. `console_session=...`.
+    /// The console's own origin, as the test AppState names it in `base_url`.
+    const CONSOLE_ORIGIN: &str = "https://console.test";
+
+    /// One raw HTTP/1.1 request from the console's own origin with a JSON body. `cookie` is sent as-is.
     fn raw_request(
         addr: SocketAddr,
         method: &str,
         path: &str,
         cookie: Option<&str>,
+        body: &str,
+    ) -> Reply {
+        raw_request_with(
+            addr,
+            method,
+            path,
+            cookie,
+            &[
+                ("Origin", CONSOLE_ORIGIN),
+                ("Content-Type", "application/json"),
+            ],
+            body,
+        )
+    }
+
+    /// One raw HTTP/1.1 request carrying exactly `headers`, beyond Host, Connection, Cookie and Content-Length.
+    fn raw_request_with(
+        addr: SocketAddr,
+        method: &str,
+        path: &str,
+        cookie: Option<&str>,
+        headers: &[(&str, &str)],
         body: &str,
     ) -> Reply {
         let mut stream =
@@ -306,9 +610,12 @@ mod tests {
         let cookie_line = cookie
             .map(|c| format!("Cookie: {c}\r\n"))
             .unwrap_or_default();
+        let header_lines: String = headers
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}\r\n"))
+            .collect();
         let request = format!(
-            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n{cookie_line}\
-             Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n{cookie_line}{header_lines}Content-Length: {}\r\n\r\n{body}",
             body.len()
         );
         stream.write_all(request.as_bytes()).expect("write");
@@ -351,6 +658,22 @@ mod tests {
         .expect("blocking request")
     }
 
+    /// `call` with exactly `headers`, for the origin tests.
+    async fn call_with(
+        addr: SocketAddr,
+        method: &'static str,
+        path: &'static str,
+        cookie: Option<String>,
+        headers: &'static [(&'static str, &'static str)],
+        body: &'static str,
+    ) -> Reply {
+        tokio::task::spawn_blocking(move || {
+            raw_request_with(addr, method, path, cookie.as_deref(), headers, body)
+        })
+        .await
+        .expect("blocking request")
+    }
+
     #[tokio::test]
     async fn unauthenticated_v1_routes_answer_401_json() {
         let addr = serve(api_router(test_state()).layer(session_layer(memory_sessions()))).await;
@@ -361,6 +684,20 @@ mod tests {
             "/v1/tenants/globex/tree",
             "/v1/work",
             "/v1/work/sem-1",
+            "/v1/tenants/acme/inventory",
+            "/v1/tenants/acme/services",
+            "/v1/tenants/acme/services/postiz",
+            "/v1/network",
+            "/v1/flows",
+            "/v1/gateway",
+            "/v1/catalog",
+            "/v1/roles",
+            "/v1/secrets",
+            "/v1/policies",
+            "/v1/delivery",
+            "/v1/telemetry/rollups",
+            "/v1/proposals",
+            "/v1/proposals/p1",
             "/v1/nope",
         ] {
             let reply = call(addr, "GET", path, None, "").await;
@@ -380,6 +717,198 @@ mod tests {
         let reply = call(addr, "GET", "/healthz", None, "").await;
         assert_eq!(reply.status, 200);
         assert_eq!(reply.body, "ok");
+    }
+
+    fn gateway_state(gateway_set: gateway::GatewaySet) -> SharedState {
+        gateway_state_with_usage(gateway_set, grafana::UsageCache::new(false))
+    }
+
+    fn gateway_state_with_usage(
+        gateway_set: gateway::GatewaySet,
+        usage: grafana::UsageCache,
+    ) -> SharedState {
+        app_state(
+            Prefs::in_memory().expect("in-memory prefs"),
+            work::WorkCache::unconfigured(),
+            Vec::new(),
+            gateway_set,
+            catalog::CatalogSet::unconfigured(),
+            usage,
+        )
+    }
+
+    /// Signs in with `groups` on a fresh app over `state`, then asks for `/v1/gateway`.
+    async fn gateway_reply(state: SharedState, groups: &'static [&'static str]) -> Reply {
+        let app = api_router(state)
+            .merge(test_login_route("/test/login", groups))
+            .layer(session_layer(memory_sessions()));
+        let addr = serve(app).await;
+        let login = call(addr, "GET", "/test/login", None, "").await;
+        let cookie = login.cookie.clone().expect("session cookie set on login");
+        call(addr, "GET", "/v1/gateway", Some(cookie), "").await
+    }
+
+    #[tokio::test]
+    async fn gateway_answers_platform_admins_only_with_the_rendered_file() {
+        let file = gateway::GatewayFile {
+            clients: vec![gateway::GatewayClient {
+                name: "alpha".into(),
+                tier: None,
+                tokens_per_hour: 2000000,
+                budget_source: gateway::BudgetSource::Default,
+                allowed_models: vec!["m1".into()],
+            }],
+            models: vec!["m1".into()],
+        };
+        let state = gateway_state(gateway::GatewaySet::configured(file));
+
+        let member = gateway_reply(state.clone(), &["ops"]).await;
+        assert_eq!(member.status, 403);
+        assert_eq!(member.body, r#"{"error":"forbidden"}"#);
+
+        let admin = gateway_reply(state, &["platform-admins"]).await;
+        assert_eq!(admin.status, 200);
+        assert_eq!(
+            admin.body,
+            r#"{"state":"ok","clients":[{"name":"alpha","tier":null,"tokens_per_hour":2000000,"budget_source":"default","allowed_models":["m1"],"tokens_last_hour":null}],"models":["m1"],"usage":{"state":"unconfigured","refreshed_at":null,"error":null}}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_answers_unconfigured_when_no_file_is_set() {
+        let state = gateway_state(gateway::GatewaySet::unconfigured());
+        let admin = gateway_reply(state, &["platform-admins"]).await;
+        assert_eq!(admin.status, 200);
+        assert_eq!(
+            admin.body,
+            r#"{"state":"unconfigured","clients":[],"models":[],"usage":{"state":"unconfigured","refreshed_at":null,"error":null}}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_shows_each_clients_last_hour_from_the_usage_read_by_name() {
+        let file = gateway::GatewayFile {
+            clients: vec![
+                gateway::GatewayClient {
+                    name: "alpha".into(),
+                    tier: None,
+                    tokens_per_hour: 2000000,
+                    budget_source: gateway::BudgetSource::Default,
+                    allowed_models: vec!["m1".into()],
+                },
+                gateway::GatewayClient {
+                    name: "beta".into(),
+                    tier: None,
+                    tokens_per_hour: 500,
+                    budget_source: gateway::BudgetSource::Default,
+                    allowed_models: vec![],
+                },
+            ],
+            models: vec!["m1".into()],
+        };
+        let mut usage = grafana::UsageCache::new(true);
+        usage.record_ok(
+            std::collections::HashMap::from([("alpha".to_string(), 1234)]),
+            "2026-11-04T10:00:00Z".into(),
+        );
+        let state = gateway_state_with_usage(gateway::GatewaySet::configured(file), usage);
+        let admin = gateway_reply(state, &["platform-admins"]).await;
+        assert_eq!(admin.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&admin.body).expect("json");
+        assert_eq!(body["clients"][0]["name"], "alpha");
+        assert_eq!(body["clients"][0]["tokens_last_hour"], 1234);
+        assert!(body["clients"][1]["tokens_last_hour"].is_null());
+        assert_eq!(body["usage"]["state"], "ok");
+        assert_eq!(body["usage"]["refreshed_at"], "2026-11-04T10:00:00Z");
+        assert!(body["usage"]["error"].is_null());
+    }
+
+    #[tokio::test]
+    async fn roles_answer_platform_admins_only_with_each_owner_and_its_steps() {
+        let (addr, cookie) = signed_in_on(work_state(), &["ops"]).await;
+        let member = call(addr, "GET", "/v1/roles", Some(cookie), "").await;
+        assert_eq!(member.status, 403);
+        assert_eq!(member.body, r#"{"error":"forbidden"}"#);
+
+        let (addr, cookie) = signed_in_on(work_state(), &["platform-admins"]).await;
+        let admin = call(addr, "GET", "/v1/roles", Some(cookie), "").await;
+        assert_eq!(admin.status, 200);
+        assert_eq!(
+            admin.body,
+            r#"{"roles":[{"name":"infra-agent","steps":[{"id":"step-a","order":1,"label":"Plan"}]},{"name":"security-agent","steps":[{"id":"step-c","order":3,"label":"Verify"}]},{"name":"service-agent","steps":[{"id":"step-b","order":2,"label":"Build"}]}]}"#
+        );
+    }
+
+    fn catalog_state(catalog_set: catalog::CatalogSet) -> SharedState {
+        app_state(
+            Prefs::in_memory().expect("in-memory prefs"),
+            work::WorkCache::unconfigured(),
+            Vec::new(),
+            gateway::GatewaySet::unconfigured(),
+            catalog_set,
+            grafana::UsageCache::new(false),
+        )
+    }
+
+    /// Signs in with `groups` on a fresh app over `state`, then asks for `/v1/catalog`.
+    async fn catalog_reply(state: SharedState, groups: &'static [&'static str]) -> Reply {
+        let app = api_router(state)
+            .merge(test_login_route("/test/login", groups))
+            .layer(session_layer(memory_sessions()));
+        let addr = serve(app).await;
+        let login = call(addr, "GET", "/test/login", None, "").await;
+        let cookie = login.cookie.clone().expect("session cookie set on login");
+        call(addr, "GET", "/v1/catalog", Some(cookie), "").await
+    }
+
+    fn two_service_catalog() -> catalog::CatalogSet {
+        catalog::CatalogSet::configured(catalog::CatalogFile {
+            services: vec![
+                catalog::CatalogEntry {
+                    service: "netbox".into(),
+                    name: "NetBox".into(),
+                    template: "Deploy NetBox".into(),
+                    deployed_hosts: 2,
+                },
+                catalog::CatalogEntry {
+                    service: "step-ca".into(),
+                    name: "step-ca".into(),
+                    template: "Deploy step-ca (Dev)".into(),
+                    deployed_hosts: 0,
+                },
+            ],
+        })
+    }
+
+    #[tokio::test]
+    async fn catalog_answers_members_without_a_host_count_and_admins_with_it() {
+        let state = catalog_state(two_service_catalog());
+
+        let member = catalog_reply(state.clone(), &["ops"]).await;
+        assert_eq!(member.status, 200);
+        assert_eq!(
+            member.body,
+            r#"{"state":"ok","services":[{"service":"netbox","name":"NetBox","template":"Deploy NetBox","running":true},{"service":"step-ca","name":"step-ca","template":"Deploy step-ca (Dev)","running":false}]}"#
+        );
+        assert!(!member.body.contains("deployed_hosts"), "{}", member.body);
+
+        let admin = catalog_reply(state, &["platform-admins"]).await;
+        assert_eq!(admin.status, 200);
+        assert_eq!(
+            admin.body,
+            r#"{"state":"ok","services":[{"service":"netbox","name":"NetBox","template":"Deploy NetBox","running":true,"deployed_hosts":2},{"service":"step-ca","name":"step-ca","template":"Deploy step-ca (Dev)","running":false,"deployed_hosts":0}]}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn catalog_answers_unconfigured_to_members_and_admins_alike() {
+        let state = catalog_state(catalog::CatalogSet::unconfigured());
+        let member = catalog_reply(state.clone(), &["ops"]).await;
+        assert_eq!(member.status, 200);
+        assert_eq!(member.body, r#"{"state":"unconfigured","services":[]}"#);
+        let admin = catalog_reply(state, &["platform-admins"]).await;
+        assert_eq!(admin.status, 200);
+        assert_eq!(admin.body, r#"{"state":"unconfigured","services":[]}"#);
     }
 
     #[tokio::test]
@@ -425,12 +954,21 @@ mod tests {
         .await;
         assert_eq!(put_ok.status, 200);
         let put_json: serde_json::Value = serde_json::from_str(&put_ok.body).expect("json");
-        assert_eq!(put_json["preferences"]["theme"], "dark");
-        assert_eq!(put_json["preferences"]["default_scope"], "acme/ops");
+        let mut put_keys: Vec<&str> = put_json
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        put_keys.sort_unstable();
+        assert_eq!(put_keys, ["claims", "preferences"]);
+        assert_eq!(put_json["claims"], me_json["claims"]);
+        let saved = serde_json::json!({"theme": "dark", "timezone": "Europe/Berlin", "default_scope": "acme/ops"});
+        assert_eq!(put_json["preferences"], saved);
 
         let again = call(addr, "GET", "/v1/me", Some(cookie.clone()), "").await;
         let again_json: serde_json::Value = serde_json::from_str(&again.body).expect("json");
-        assert_eq!(again_json["preferences"]["timezone"], "Europe/Berlin");
+        assert_eq!(again_json["preferences"], saved);
 
         let bad_theme = call(
             addr,
@@ -505,6 +1043,386 @@ mod tests {
         (addr, cookie)
     }
 
+    /// The `preferences` object that `GET /v1/me` returns for this session.
+    async fn read_preferences(addr: SocketAddr, cookie: &str) -> serde_json::Value {
+        let me = call(addr, "GET", "/v1/me", Some(cookie.to_string()), "").await;
+        assert_eq!(me.status, 200);
+        let me_json: serde_json::Value = serde_json::from_str(&me.body).expect("json");
+        me_json["preferences"].clone()
+    }
+
+    /// Scenario "Profile shows the signed-in claims": `claims` holds every OIDC claim the
+    /// login set, and a user with no saved preferences sees the defaults.
+    #[tokio::test]
+    async fn profile_returns_every_claim_and_default_preferences() {
+        let (addr, cookie) = signed_in(&["ops"]).await;
+
+        let me = call(addr, "GET", "/v1/me", Some(cookie), "").await;
+        assert_eq!(me.status, 200);
+        let me_json: serde_json::Value = serde_json::from_str(&me.body).expect("json");
+        assert_eq!(
+            me_json["claims"],
+            serde_json::json!({
+                "sub": "user-1",
+                "email": "ada@example.test",
+                "name": "Ada",
+                "username": "ada",
+                "groups": ["ops"]
+            })
+        );
+        assert_eq!(
+            me_json["preferences"],
+            serde_json::json!({"theme": "system", "timezone": "UTC", "default_scope": null})
+        );
+    }
+
+    /// Scenario "Invalid preference is refused": a refused `PUT /v1/me` answers 422 and
+    /// leaves the stored preferences as they were. Each refusal is followed by a read, so
+    /// a store that writes before it validates fails here.
+    #[tokio::test]
+    async fn an_invalid_timezone_is_refused_and_nothing_changes() {
+        let (addr, cookie) = signed_in(&["ops"]).await;
+        let saved = serde_json::json!({"theme": "light", "timezone": "Europe/Berlin", "default_scope": "acme"});
+
+        let put = call(
+            addr,
+            "PUT",
+            "/v1/me",
+            Some(cookie.clone()),
+            r#"{"preferences":{"theme":"light","timezone":"Europe/Berlin","default_scope":"acme"}}"#,
+        )
+        .await;
+        assert_eq!(put.status, 200);
+        assert_eq!(read_preferences(addr, &cookie).await, saved);
+
+        let bad_theme = call(
+            addr,
+            "PUT",
+            "/v1/me",
+            Some(cookie.clone()),
+            r#"{"preferences":{"theme":"neon","timezone":"Europe/Berlin","default_scope":"acme"}}"#,
+        )
+        .await;
+        assert_eq!(bad_theme.status, 422);
+        assert!(bad_theme.body.contains("invalid_preferences"));
+        assert_eq!(read_preferences(addr, &cookie).await, saved);
+
+        let bad_zone = call(
+            addr,
+            "PUT",
+            "/v1/me",
+            Some(cookie.clone()),
+            r#"{"preferences":{"theme":"dark","timezone":"Bad;Zone","default_scope":"acme"}}"#,
+        )
+        .await;
+        assert_eq!(bad_zone.status, 422);
+        assert!(bad_zone.body.contains("invalid_preferences"));
+        assert_eq!(read_preferences(addr, &cookie).await, saved);
+    }
+
+    /// The expiry is an inactivity expiry: a read on a live session re-saves it, so the
+    /// browser gets a fresh `console_session` cookie. Without `always_save` the read is 200
+    /// and sends no `Set-Cookie`, and the session expires 8h after sign-in regardless.
+    #[tokio::test]
+    async fn a_signed_in_request_refreshes_the_session_cookie() {
+        let (addr, cookie) = signed_in(&["ops"]).await;
+
+        let me = call(addr, "GET", "/v1/me", Some(cookie.clone()), "").await;
+        assert_eq!(me.status, 200);
+        let set_cookie = me
+            .set_cookie_line
+            .clone()
+            .expect("a read on a live session re-saves it and sends Set-Cookie");
+        for attribute in ["Secure", "HttpOnly", "SameSite=Lax", "console_session="] {
+            assert!(
+                set_cookie.contains(attribute),
+                "refreshed cookie missing {attribute}: {set_cookie}"
+            );
+        }
+        assert_eq!(me.cookie, Some(cookie), "the refresh keeps the session id");
+    }
+
+    /// Signs in on a file-backed session store, and returns the address, the session cookie, a
+    /// second connection to the same file and the file's path (the caller removes it).
+    async fn signed_in_on_file(
+        name: &str,
+    ) -> (SocketAddr, String, rusqlite::Connection, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!("console-{name}-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let state = state_with_prefs(Prefs::open(&path).expect("open"));
+        let app = api_router(state.clone())
+            .merge(test_login_route("/test/login", &["ops"]))
+            .layer(session_layer(state.prefs.session_store()));
+        let addr = serve(app).await;
+        let login = call(addr, "GET", "/test/login", None, "").await;
+        let cookie = login.cookie.expect("session cookie set on login");
+        let other = rusqlite::Connection::open(&path).expect("second connection");
+        (addr, cookie, other, path)
+    }
+
+    /// Sets the sign-in's one live session row to expire at `expiry_unix`.
+    fn set_stored_expiry(conn: &rusqlite::Connection, expiry_unix: i64) {
+        let rows = conn
+            .execute("UPDATE sessions SET expiry_unix = ?1", [expiry_unix])
+            .expect("set expiry");
+        assert_eq!(rows, 1, "sign-in leaves exactly one live row");
+    }
+
+    /// The stored expiry moves on a signed-in request, not only the cookie. The row is first
+    /// set to expire in a minute, so the read itself has to move it into the 8-hour window.
+    #[tokio::test]
+    async fn a_signed_in_request_moves_the_stored_session_expiry() {
+        let (addr, cookie, other, path) = signed_in_on_file("expiry").await;
+        let now = sessions::now_unix();
+        set_stored_expiry(&other, now + 60);
+
+        let me = call(addr, "GET", "/v1/me", Some(cookie), "").await;
+        let stored: i64 = other
+            .query_row("SELECT expiry_unix FROM sessions", [], |row| row.get(0))
+            .expect("stored expiry");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(me.status, 200, "{}", me.body);
+        assert!(
+            stored >= now + 7 * 3600,
+            "a signed-in read must move the stored expiry into the 8h window: {stored} vs {now}"
+        );
+    }
+
+    /// AC-747: a session ends 12 hours after sign-in however active it is. The work board polls
+    /// every 10 seconds and every request re-saves the session, so the inactivity expiry alone
+    /// never ends a session in an open tab. An over-age session answers 401 and is deleted, and a
+    /// session with no sign-in time (stored before the lifetime existed) counts as over-age.
+    #[tokio::test]
+    async fn a_session_ends_at_its_absolute_lifetime_however_active() {
+        let cap = auth::SESSION_LIFETIME_SECS;
+        let app = api_router(test_state())
+            .merge(aged_login_route("/test/fresh", Some(0)))
+            .merge(aged_login_route("/test/almost", Some(cap - 60)))
+            .merge(aged_login_route("/test/expired", Some(cap)))
+            .merge(aged_login_route("/test/legacy", None))
+            .layer(session_layer(memory_sessions()));
+        let addr = serve(app).await;
+        let login = |path: &'static str| async move {
+            call(addr, "GET", path, None, "")
+                .await
+                .cookie
+                .expect("session cookie set on login")
+        };
+
+        for path in ["/test/fresh", "/test/almost"] {
+            let cookie = login(path).await;
+            let me = call(addr, "GET", "/v1/me", Some(cookie), "").await;
+            assert_eq!(me.status, 200, "{path}: {}", me.body);
+        }
+        for path in ["/test/expired", "/test/legacy"] {
+            let cookie = login(path).await;
+            let me = call(addr, "GET", "/v1/me", Some(cookie.clone()), "").await;
+            assert_eq!(me.status, 401, "{path}");
+            assert_eq!(me.body, r#"{"error":"unauthenticated"}"#, "{path}");
+            // A deleted session removes its cookie; one left in the store is re-saved with 8h.
+            let set_cookie = me.set_cookie_line.clone().unwrap_or_default();
+            assert!(
+                set_cookie.contains("Max-Age=0"),
+                "{path}: the over-age session must be deleted: {set_cookie}"
+            );
+            let again = call(addr, "GET", "/v1/work", Some(cookie), "").await;
+            assert_eq!(again.status, 401, "{path}: the old cookie stays signed out");
+        }
+    }
+
+    /// The inactivity expiry still holds: a session whose stored expiry has passed answers 401,
+    /// though it is well inside its absolute lifetime.
+    #[tokio::test]
+    async fn an_idle_session_past_its_inactivity_expiry_answers_401() {
+        let (addr, cookie, other, path) = signed_in_on_file("idle").await;
+        let live = call(addr, "GET", "/v1/me", Some(cookie.clone()), "").await;
+        assert_eq!(live.status, 200, "{}", live.body);
+
+        // The 8 hours of inactivity pass: the row's expiry is now in the past.
+        set_stored_expiry(&other, sessions::now_unix() - 1);
+        let me = call(addr, "GET", "/v1/me", Some(cookie), "").await;
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(me.status, 401);
+        assert_eq!(me.body, r#"{"error":"unauthenticated"}"#);
+    }
+
+    /// D53: a state-changing `/v1/` request is refused unless its Origin is the console's own and its `Content-Type` is
+    /// `application/json`. A refused write changes nothing; GET is never refused; `/auth/*` sits outside the rule.
+    #[tokio::test]
+    async fn state_changing_v1_requests_need_the_console_origin_and_a_json_body() {
+        let (addr, cookie) = signed_in(&["ops"]).await;
+        const BODY: &str = r#"{"preferences":{"theme":"dark"}}"#;
+        let refused: [(&str, &'static [(&'static str, &'static str)]); 6] = [
+            (
+                "cross origin",
+                &[
+                    ("Origin", "https://evil.test"),
+                    ("Content-Type", "application/json"),
+                ],
+            ),
+            ("no origin", &[("Content-Type", "application/json")]),
+            (
+                "a repeated origin",
+                &[
+                    ("Origin", CONSOLE_ORIGIN),
+                    ("Origin", CONSOLE_ORIGIN),
+                    ("Content-Type", "application/json"),
+                ],
+            ),
+            (
+                "a text body",
+                &[("Origin", CONSOLE_ORIGIN), ("Content-Type", "text/plain")],
+            ),
+            (
+                "a form body",
+                &[
+                    ("Origin", CONSOLE_ORIGIN),
+                    ("Content-Type", "application/x-www-form-urlencoded"),
+                ],
+            ),
+            (
+                "a media type that only starts with application/json",
+                &[
+                    ("Origin", CONSOLE_ORIGIN),
+                    ("Content-Type", "application/jsonx"),
+                ],
+            ),
+        ];
+        for (name, headers) in refused {
+            let reply = call_with(addr, "PUT", "/v1/me", Some(cookie.clone()), headers, BODY).await;
+            assert_eq!(reply.status, 403, "{name}");
+            assert_eq!(reply.body, r#"{"error":"origin_refused"}"#, "{name}");
+        }
+
+        let me = call(addr, "GET", "/v1/me", Some(cookie.clone()), "").await;
+        let me_json: serde_json::Value = serde_json::from_str(&me.body).expect("json");
+        assert_eq!(
+            me_json["preferences"]["theme"], "system",
+            "a refused write changed nothing"
+        );
+
+        let same_origin = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            Some(cookie.clone()),
+            &[
+                ("Origin", CONSOLE_ORIGIN),
+                ("Content-Type", "application/json; charset=utf-8"),
+            ],
+            BODY,
+        )
+        .await;
+        assert_eq!(same_origin.status, 200, "{}", same_origin.body);
+
+        // The catch-all under /v1 is covered too: the refusal comes before the 404 an unknown path would get.
+        let unknown = call_with(
+            addr,
+            "POST",
+            "/v1/nope",
+            Some(cookie.clone()),
+            &[
+                ("Origin", "https://evil.test"),
+                ("Content-Type", "application/json"),
+            ],
+            "{}",
+        )
+        .await;
+        assert_eq!(unknown.status, 403);
+        assert_eq!(unknown.body, r#"{"error":"origin_refused"}"#);
+
+        let tenants = call_with(
+            addr,
+            "GET",
+            "/v1/tenants",
+            Some(cookie.clone()),
+            &[("Origin", "https://evil.test")],
+            "",
+        )
+        .await;
+        assert_eq!(tenants.status, 200, "GET is never refused");
+
+        let logout = call_with(
+            addr,
+            "POST",
+            "/auth/logout",
+            Some(cookie.clone()),
+            &[
+                ("Origin", "https://evil.test"),
+                ("Content-Type", "application/json"),
+            ],
+            "",
+        )
+        .await;
+        assert_ne!(logout.status, 403, "/auth/* is outside the rule");
+        assert_ne!(logout.body, r#"{"error":"origin_refused"}"#);
+    }
+
+    /// D53 without a session: the origin rule runs before the session check, so a write from another origin, with no
+    /// `Origin`, or with a `Content-Type` other than `application/json`, is refused 403 although the caller is not
+    /// signed in. The console's own origin and an `application/json` `Content-Type` reach the handler, which answers 401
+    /// for the missing session.
+    #[tokio::test]
+    async fn a_write_without_a_session_is_origin_checked_first() {
+        let addr = serve(api_router(test_state()).layer(session_layer(memory_sessions()))).await;
+        const BODY: &str = r#"{"preferences":{"theme":"dark"}}"#;
+
+        let cross_origin = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[
+                ("Origin", "https://evil.test"),
+                ("Content-Type", "application/json"),
+            ],
+            BODY,
+        )
+        .await;
+        assert_eq!(cross_origin.status, 403, "{}", cross_origin.body);
+        assert_eq!(cross_origin.body, r#"{"error":"origin_refused"}"#);
+
+        let no_origin = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[("Content-Type", "application/json")],
+            BODY,
+        )
+        .await;
+        assert_eq!(no_origin.status, 403, "{}", no_origin.body);
+        assert_eq!(no_origin.body, r#"{"error":"origin_refused"}"#);
+
+        let text_body = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[("Origin", CONSOLE_ORIGIN), ("Content-Type", "text/plain")],
+            BODY,
+        )
+        .await;
+        assert_eq!(text_body.status, 403, "{}", text_body.body);
+        assert_eq!(text_body.body, r#"{"error":"origin_refused"}"#);
+
+        let own_origin = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[
+                ("Origin", CONSOLE_ORIGIN),
+                ("Content-Type", "application/json"),
+            ],
+            BODY,
+        )
+        .await;
+        assert_eq!(own_origin.status, 401, "{}", own_origin.body);
+        assert_eq!(own_origin.body, r#"{"error":"unauthenticated"}"#);
+    }
+
     #[tokio::test]
     async fn member_sees_only_the_tenants_naming_their_group() {
         let (addr, cookie) = signed_in(&["ops"]).await;
@@ -574,6 +1492,112 @@ mod tests {
         assert_eq!(tree.body, r#"{"error":"unknown_tenant"}"#);
     }
 
+    /// Task 3.3 (plan 17): the scope file the server reads is the one `scope.json.j2` renders from the example
+    /// inventory. `test_console_scope_contract.py` holds the fixture equal to that render. This loads the same
+    /// fixture through `load`, the production path for CONSOLE_SCOPE_FILE, and serves it.
+    #[tokio::test]
+    async fn the_rendered_example_scope_is_served() {
+        let data_dir =
+            std::env::temp_dir().join(format!("console-scope-contract-{}", std::process::id()));
+        std::fs::create_dir_all(&data_dir).expect("data dir");
+        let state = load(Config {
+            base_url: "https://console.test".into(),
+            oidc_issuer: "https://auth.test/application/o/console/".into(),
+            oidc_client_id: "console".into(),
+            oidc_client_secret: "test-secret".into(),
+            extra_ca_file: None,
+            data_dir: data_dir.clone(),
+            scope_file: std::path::PathBuf::from(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/scope.example.json"
+            )),
+            semaphore: None,
+            workflow_file: None,
+            netbox: None,
+            proxmox: None,
+            openbao: None,
+            flows_file: None,
+            gateway_file: None,
+            catalog_file: None,
+            grafana_url: None,
+            grafana_token: None,
+            authentik: None,
+            role_map_file: None,
+            github: None,
+            launch_gate: None,
+            launch_dev_variants: true,
+        })
+        .expect("the example scope loads as CONSOLE_SCOPE_FILE");
+
+        let app = api_router(state.clone())
+            .merge(test_login_route(
+                "/test/developer",
+                &["platform-developers"],
+            ))
+            .merge(test_login_route("/test/stranger", &["users"]))
+            .layer(session_layer(state.prefs.session_store()));
+        let addr = serve(app).await;
+        let developer = call(addr, "GET", "/test/developer", None, "")
+            .await
+            .cookie
+            .expect("developer session");
+        let stranger = call(addr, "GET", "/test/stranger", None, "")
+            .await
+            .cookie
+            .expect("stranger session");
+
+        let list = call(addr, "GET", "/v1/tenants", Some(developer.clone()), "").await;
+        let tree = call(addr, "GET", "/v1/tenants/uhstray/tree", Some(developer), "").await;
+        let unlisted = call(addr, "GET", "/v1/tenants", Some(stranger), "").await;
+        let _ = std::fs::remove_file(data_dir.join("prefs.db"));
+        let _ = std::fs::remove_dir(&data_dir);
+
+        assert_eq!(list.status, 200, "{}", list.body);
+        assert_eq!(
+            list.body,
+            r#"{"example":true,"tenants":[{"id":"uhstray","name":"Uhstray (example)"}]}"#
+        );
+
+        assert_eq!(tree.status, 200, "{}", tree.body);
+        assert!(
+            !tree.body.contains("platform-developers"),
+            "group lists leaked: {}",
+            tree.body
+        );
+        let tree_json: serde_json::Value = serde_json::from_str(&tree.body).expect("json");
+        assert_eq!(tree_json["tenant"]["id"], "uhstray");
+        assert_eq!(tree_json["tenant"]["name"], "Uhstray (example)");
+        assert_eq!(tree_json["example"], true);
+        assert_eq!(tree_json["orgs"].as_array().map(Vec::len), Some(1));
+        assert_eq!(tree_json["orgs"][0]["id"], "uhstray-io");
+        let sites: Vec<(&str, Vec<&str>)> = tree_json["orgs"][0]["sites"]
+            .as_array()
+            .expect("sites")
+            .iter()
+            .map(|site| {
+                let envs: Vec<&str> = site["envs"]
+                    .as_array()
+                    .expect("envs")
+                    .iter()
+                    .map(|env| env.as_str().expect("env"))
+                    .collect();
+                (site["id"].as_str().expect("site id"), envs)
+            })
+            .collect();
+        assert_eq!(
+            sites,
+            [
+                ("site-hq", vec!["prod", "dev"]),
+                ("do-nyc1", vec!["prod"]),
+                ("cloudflare", vec!["prod"]),
+            ]
+        );
+
+        // A caller in none of the fixture's groups gets the empty list: the file's `groups` decide it.
+        assert_eq!(unlisted.status, 200, "{}", unlisted.body);
+        assert_eq!(unlisted.body, r#"{"example":true,"tenants":[]}"#);
+    }
+
     #[tokio::test]
     async fn session_survives_a_restart_over_the_same_database() {
         let path = std::env::temp_dir().join(format!("console-restart-{}.db", std::process::id()));
@@ -607,15 +1631,15 @@ mod tests {
     const WORK_TASKS: &str = r#"[
         {"id": 20, "status": "success", "created": "2026-10-26T12:00:00Z", "template_id": 1,
          "message": "skynet run-1 step-a", "tpl_alias": "Plan onboarding", "user_name": "svc-console",
-         "environment": "{\"target_service\":\"tududi\",\"SECRET_TOKEN\":\"hunter2\"}"},
+         "environment": "{\"target_service\":\"postiz\",\"SECRET_TOKEN\":\"hunter2\"}"},
         {"id": 21, "status": "running", "created": "2026-10-26T12:01:00Z", "template_id": 2,
-         "message": "skynet run-1 step-b", "tpl_alias": "Deploy tududi", "user_name": null,
-         "environment": "{\"target_service\":\"tududi\"}"},
+         "message": "skynet run-1 step-b", "tpl_alias": "Deploy postiz", "user_name": null,
+         "environment": "{\"target_service\":\"postiz\"}"},
         {"id": 22, "status": "error", "created": "2026-10-26T12:02:00Z", "template_id": 3,
          "message": null, "tpl_alias": "Check Secrets", "user_name": "stray", "environment": null},
         {"id": 23, "status": "error", "created": "2026-10-26T12:03:00Z", "template_id": 2,
-         "message": null, "tpl_alias": "Deploy tududi", "user_name": null, "schedule_id": 9,
-         "environment": "{\"target_service\":\"tududi\"}"}
+         "message": null, "tpl_alias": "Deploy postiz", "user_name": null, "schedule_id": 9,
+         "environment": "{\"target_service\":\"postiz\"}"}
     ]"#;
 
     const WORKFLOW: &str = r#"[
@@ -639,7 +1663,14 @@ mod tests {
             work::build_items(tasks, &steps, &config),
             "2026-10-26T12:02:05Z".into(),
         );
-        app_state(Prefs::in_memory().expect("in-memory prefs"), cache, steps)
+        app_state(
+            Prefs::in_memory().expect("in-memory prefs"),
+            cache,
+            steps,
+            gateway::GatewaySet::unconfigured(),
+            catalog::CatalogSet::unconfigured(),
+            grafana::UsageCache::new(false),
+        )
     }
 
     /// Serves the API over `state`, with a session for a user in `groups`.
@@ -717,7 +1748,7 @@ mod tests {
                 .expect("item")
                 .clone()
         };
-        assert_eq!(stream_of("sem-23")["stream"], "tpl-2:tududi");
+        assert_eq!(stream_of("sem-23")["stream"], "tpl-2:postiz");
         assert_eq!(stream_of("sem-23")["latest_in_stream"], true);
         assert_eq!(stream_of("sem-23")["stream_runs"], 2);
         assert_eq!(stream_of("sem-23")["launched_by"], "schedule");
@@ -743,7 +1774,7 @@ mod tests {
         );
         assert_eq!(detail["stream_history"][0]["lane"], "failed");
         assert_eq!(detail["stream_history"][1]["lane"], "running");
-        assert_eq!(detail["item"]["title"], "Deploy tududi — tududi");
+        assert_eq!(detail["item"]["title"], "Deploy postiz — postiz");
         assert_eq!(detail["item"]["lane"], "running");
         assert_eq!(detail["item"]["role"], "service-agent");
         assert_eq!(detail["item"]["launched_by"], "skynet");
@@ -752,7 +1783,7 @@ mod tests {
             "https://semaphore.test:8443/project/1/history?t=21"
         );
         assert_eq!(detail["run"]["run_id"], "run-1");
-        assert_eq!(detail["run"]["service"], "tududi");
+        assert_eq!(detail["run"]["service"], "postiz");
         let steps = detail["run"]["steps"].as_array().expect("steps");
         assert_eq!(steps[0]["id"], "step-a");
         assert_eq!(steps[0]["status"], "done");
@@ -773,6 +1804,1539 @@ mod tests {
         assert_eq!(missing.body, r#"{"error":"unknown_work"}"#);
     }
 
+    // ---- Proposals (plan 17 D48-D53) -------------------------------------------------------------------------
+
+    /// The proposal routes' scope: `acme` maps its `dc1` site to NetBox `dc1`, and no site maps `other`.
+    const PROPOSAL_SCOPE: &str = r#"{
+        "tenants": [
+            {"id": "acme", "name": "Acme", "groups": ["ops"], "orgs": [
+                {"id": "ops", "name": "Ops", "sites": [{"id": "dc1", "name": "DC 1", "envs": ["prod"], "netbox_site": "dc1"}]}
+            ]}
+        ]
+    }"#;
+
+    const PROPOSE_HONCHO: &str = r#"{"kind": "verify", "service": "honcho", "check_mode": false, "note": "before the upgrade"}"#;
+
+    const PROPOSAL_ROUTES: [(&str, &str); 7] = [
+        ("GET", "/v1/proposals"),
+        ("POST", "/v1/proposals"),
+        ("GET", "/v1/proposals/p1"),
+        ("PUT", "/v1/proposals/p1"),
+        ("POST", "/v1/proposals/p1/comments"),
+        ("POST", "/v1/proposals/p1/approve"),
+        ("POST", "/v1/proposals/p1/deny"),
+    ];
+
+    /// NetBox as the proposal tests need it. `dc1` holds `honcho` (a service) and `plain` (no workflow fields);
+    /// `other` holds `elsewhere`, a service in a NetBox site that no scope maps.
+    fn proposal_netbox() -> netbox::NetboxData {
+        fn vm(name: &str, workflow: bool) -> netbox::NbVm {
+            netbox::NbVm {
+                name: name.into(),
+                status: "active".into(),
+                vcpus: None,
+                memory_mb: None,
+                disk_mb: None,
+                primary_ip: None,
+                tags: Vec::new(),
+                tag_slugs: Vec::new(),
+                workflow: workflow.then(|| netbox::Workflow {
+                    steps: std::collections::BTreeMap::new(),
+                    failed: Vec::new(),
+                    last_run: None,
+                }),
+            }
+        }
+        let site = |vms: Vec<netbox::NbVm>| netbox::NbSite {
+            clusters: vec![netbox::NbCluster {
+                name: "prod".into(),
+                vms,
+            }],
+            devices: Vec::new(),
+        };
+        netbox::NetboxData {
+            sites: std::collections::BTreeMap::from([
+                (
+                    "dc1".to_string(),
+                    site(vec![
+                        vm("honcho", true),
+                        vm("plain", false),
+                        vm("step-ca", true),
+                    ]),
+                ),
+                ("other".to_string(), site(vec![vm("elsewhere", true)])),
+            ]),
+            ambiguous_vm_names: Default::default(),
+            duplicate_cluster_names: Default::default(),
+            dropped_mismatched: 0,
+        }
+    }
+
+    /// The proposal routes over the fixture scope, with `gate_client` as the launch gate (or none) and the NetBox read
+    /// `netbox_data` (or none, as before the first read).
+    fn proposal_state(
+        gate_client: Option<gate::GateClient>,
+        netbox_data: Option<netbox::NetboxData>,
+    ) -> SharedState {
+        let mut app = Arc::try_unwrap(app_state(
+            Prefs::in_memory().expect("in-memory prefs"),
+            work::WorkCache::unconfigured(),
+            Vec::new(),
+            gateway::GatewaySet::unconfigured(),
+            catalog::CatalogSet::unconfigured(),
+            grafana::UsageCache::new(false),
+        ))
+        .ok()
+        .expect("a fresh state is not shared yet");
+        app.scope = Scope::parse(PROPOSAL_SCOPE).expect("proposal scope");
+        app.gate = gate_client;
+        let mut cache = inventory::InventoryCache::new(false, false);
+        cache.netbox = inventory::SourceState {
+            status: work::Source::Ok,
+            error: None,
+            updated_at: Some("2026-11-09T10:00:00Z".into()),
+            data: netbox_data,
+        };
+        app.inventory = tokio::sync::RwLock::new(cache);
+        Arc::new(app)
+    }
+
+    /// A fake launch gate. `decide` and `launch` answer their queued replies in order, and past the queue `decide`
+    /// allows and `launch` creates task 4217. Each records the body it received. `decide` waits for its queued delay
+    /// (0 past the queue) and `launch` waits 300 ms, so two calls can overlap. Each call takes its reply and its delay
+    /// before it waits, so the queues follow arrival order.
+    #[derive(Default)]
+    struct FakeGate {
+        decide_replies: std::sync::Mutex<std::collections::VecDeque<(u16, serde_json::Value)>>,
+        decide_delays_ms: std::sync::Mutex<std::collections::VecDeque<u64>>,
+        launch_replies: std::sync::Mutex<std::collections::VecDeque<(u16, serde_json::Value)>>,
+        decide_bodies: std::sync::Mutex<Vec<serde_json::Value>>,
+        launch_bodies: std::sync::Mutex<Vec<serde_json::Value>>,
+    }
+
+    async fn fake_decide(State(fake): State<Arc<FakeGate>>, body: String) -> (StatusCode, String) {
+        fake.decide_bodies
+            .lock()
+            .expect("bodies")
+            .push(serde_json::from_str(&body).unwrap_or(serde_json::Value::Null));
+        let queued = fake.decide_replies.lock().expect("replies").pop_front();
+        let delay = fake
+            .decide_delays_ms
+            .lock()
+            .expect("delays")
+            .pop_front()
+            .unwrap_or(0);
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+        let (status, reply) = queued.unwrap_or((
+            200,
+            serde_json::json!({"decision": {"allowed": true, "reason": "read-only"}}),
+        ));
+        (
+            StatusCode::from_u16(status).expect("status"),
+            reply.to_string(),
+        )
+    }
+
+    async fn fake_launch(State(fake): State<Arc<FakeGate>>, body: String) -> (StatusCode, String) {
+        fake.launch_bodies
+            .lock()
+            .expect("bodies")
+            .push(serde_json::from_str(&body).unwrap_or(serde_json::Value::Null));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let queued = fake.launch_replies.lock().expect("replies").pop_front();
+        let (status, reply) = queued.unwrap_or((
+            201,
+            serde_json::json!({
+                "task_id": 4217,
+                "message": "console p1 service-validate",
+                "decision": {"allowed": true, "reason": "read-only"}
+            }),
+        ));
+        (
+            StatusCode::from_u16(status).expect("status"),
+            reply.to_string(),
+        )
+    }
+
+    /// Serves a fake gate and returns its origin, the shape `GateClient::new` takes.
+    async fn serve_gate(fake: Arc<FakeGate>) -> String {
+        let addr = serve(
+            Router::new()
+                .route("/v1/decide", post(fake_decide))
+                .route("/v1/launch", post(fake_launch))
+                .with_state(fake),
+        )
+        .await;
+        format!("http://{addr}")
+    }
+
+    fn gate_client(origin: &str) -> gate::GateClient {
+        gate::GateClient::new(
+            origin,
+            config::Secret::new("console-caller-token"),
+            client_with_roots(None, "CONSOLE_EXTRA_CA_FILE").expect("client"),
+        )
+    }
+
+    fn decide_replies(
+        fake: &FakeGate,
+        replies: impl IntoIterator<Item = (u16, serde_json::Value)>,
+    ) {
+        fake.decide_replies.lock().expect("replies").extend(replies);
+    }
+
+    fn launch_replies(
+        fake: &FakeGate,
+        replies: impl IntoIterator<Item = (u16, serde_json::Value)>,
+    ) {
+        fake.launch_replies.lock().expect("replies").extend(replies);
+    }
+
+    /// A test-only route that signs `sub` in as a platform admin named `name`, so two admins can share one server.
+    fn admin_login_route(path: &'static str, sub: &'static str, name: &'static str) -> Router {
+        use tower_sessions::Session;
+        Router::new().route(
+            path,
+            get(move |session: Session| async move {
+                let user = auth::CurrentUser {
+                    sub: sub.into(),
+                    email: None,
+                    name: Some(name.into()),
+                    username: None,
+                    groups: vec!["platform-admins".into()],
+                };
+                auth::sign_in(&session, &user).await.expect("insert user");
+                "signed in"
+            }),
+        )
+    }
+
+    /// The proposal routes over `state`, with two platform admins signed in: `user-1` (Ada, who proposes in these
+    /// tests) and `user-2` (Grace). Returns the address and each admin's cookie.
+    async fn proposal_server(state: SharedState) -> (SocketAddr, String, String) {
+        let app = api_router(state)
+            .merge(test_login_route("/test/login", &["platform-admins"]))
+            .merge(admin_login_route("/test/login-grace", "user-2", "Grace"))
+            .layer(session_layer(memory_sessions()));
+        let addr = serve(app).await;
+        let ada = call(addr, "GET", "/test/login", None, "")
+            .await
+            .cookie
+            .expect("ada's cookie");
+        let grace = call(addr, "GET", "/test/login-grace", None, "")
+            .await
+            .cookie
+            .expect("grace's cookie");
+        (addr, ada, grace)
+    }
+
+    /// `raw_request` with owned arguments, so a test builds its path and body at run time.
+    async fn send(
+        addr: SocketAddr,
+        method: &'static str,
+        path: String,
+        cookie: Option<String>,
+        body: String,
+    ) -> Reply {
+        tokio::task::spawn_blocking(move || {
+            raw_request(addr, method, &path, cookie.as_deref(), &body)
+        })
+        .await
+        .expect("blocking request")
+    }
+
+    fn json_of(reply: &Reply) -> serde_json::Value {
+        serde_json::from_str(&reply.body).unwrap_or_else(|err| panic!("{err}: {}", reply.body))
+    }
+
+    /// The ids of a list answer, in the order it gave them.
+    fn ids_of(reply: &Reply) -> Vec<String> {
+        json_of(reply)["proposals"]
+            .as_array()
+            .expect("proposals")
+            .iter()
+            .map(|p| p["id"].as_str().expect("id").to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn proposal_routes_answer_401_to_strangers_and_403_to_members() {
+        let stranger =
+            serve(api_router(proposal_state(None, None)).layer(session_layer(memory_sessions())))
+                .await;
+        let (member, member_cookie) = signed_in_on(proposal_state(None, None), &["ops"]).await;
+        for (method, path) in PROPOSAL_ROUTES {
+            let reply = call(stranger, method, path, None, "{}").await;
+            assert_eq!(reply.status, 401, "{method} {path}");
+            assert_eq!(
+                reply.body, r#"{"error":"unauthenticated"}"#,
+                "{method} {path}"
+            );
+
+            let reply = call(member, method, path, Some(member_cookie.clone()), "{}").await;
+            assert_eq!(reply.status, 403, "{method} {path}");
+            assert_eq!(reply.body, r#"{"error":"forbidden"}"#, "{method} {path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn create_previews_through_decide_and_stores_only_what_inventory_lists() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, _) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+        let body = json_of(&created);
+        assert_eq!(body["id"], "p1");
+        assert_eq!(body["kind"], "verify");
+        assert_eq!(body["service"], "honcho");
+        assert_eq!(body["template"], "Verify Service Health (Dev)");
+        assert_eq!(body["agent"], "service-agent");
+        assert_eq!(body["step"], "service-validate");
+        assert_eq!(
+            body["survey"],
+            serde_json::json!({"target_service": "honcho_svc"})
+        );
+        assert_eq!(body["state"], "awaiting");
+        assert_eq!(body["preview"]["state"], "allowed");
+        assert_eq!(body["preview"]["reason"], "read-only");
+        assert!(body["decision"].is_null());
+        assert!(body["launch"].is_null());
+        assert_eq!(
+            body["proposer"],
+            serde_json::json!({"sub": "user-1", "name": "Ada"})
+        );
+        assert_eq!(
+            fake.decide_bodies.lock().expect("bodies").clone(),
+            vec![serde_json::json!({
+                "template": "Verify Service Health (Dev)",
+                "agent": "service-agent",
+                "workflow_id": "p1",
+                "step": "service-validate",
+                "survey": {"target_service": "honcho_svc"},
+                "dry_run": false,
+            })],
+            "the preview asks the gate with the proposal's own id, and nothing launches"
+        );
+        assert!(fake.launch_bodies.lock().expect("bodies").is_empty());
+
+        // Each refusal names its rule and stores nothing.
+        let refused = [
+            r#"{"kind": "request", "service": "honcho", "check_mode": false, "note": ""}"#.to_string(),
+            r#"{"kind": "verify", "service": "Honcho", "check_mode": false, "note": ""}"#.to_string(),
+            r#"{"kind": "verify", "service": "unlisted", "check_mode": false, "note": ""}"#.to_string(),
+            r#"{"kind": "verify", "service": "plain", "check_mode": false, "note": ""}"#.to_string(),
+            r#"{"kind": "verify", "service": "elsewhere", "check_mode": false, "note": ""}"#.to_string(),
+            format!(r#"{{"kind": "verify", "service": "honcho", "check_mode": false, "note": "{}"}}"#, "n".repeat(2001)),
+            r#"{"kind": "verify", "service": "honcho"}"#.to_string(),
+            r#"{"kind": "verify", "service": "honcho", "check_mode": false, "note": "", "extra": 1}"#.to_string(),
+        ];
+        for text in refused {
+            let reply = send(
+                addr,
+                "POST",
+                "/v1/proposals".into(),
+                Some(ada.clone()),
+                text.clone(),
+            )
+            .await;
+            assert_eq!(reply.status, 400, "{text}: {}", reply.body);
+            assert_eq!(json_of(&reply)["error"], "bad_request", "{text}");
+            assert!(json_of(&reply)["detail"].is_string(), "{text}");
+        }
+        let listed = send(
+            addr,
+            "GET",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            String::new(),
+        )
+        .await;
+        assert_eq!(ids_of(&listed), ["p1"], "a refused create stores nothing");
+
+        let (no_gate, no_gate_cookie, _) =
+            proposal_server(proposal_state(None, Some(proposal_netbox()))).await;
+        let reply = send(
+            no_gate,
+            "POST",
+            "/v1/proposals".into(),
+            Some(no_gate_cookie),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(reply.status, 503);
+        assert_eq!(reply.body, r#"{"error":"gate_unconfigured"}"#);
+
+        let (unread, unread_cookie, _) =
+            proposal_server(proposal_state(Some(gate_client(&origin)), None)).await;
+        let reply = send(
+            unread,
+            "POST",
+            "/v1/proposals".into(),
+            Some(unread_cookie),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(reply.status, 400);
+        assert!(json_of(&reply)["detail"]
+            .as_str()
+            .expect("detail")
+            .contains("not been read"));
+    }
+
+    #[tokio::test]
+    async fn a_denied_preview_shows_opas_reason_and_cannot_be_approved_until_edited() {
+        let fake = Arc::new(FakeGate::default());
+        decide_replies(
+            &fake,
+            [(
+                403,
+                serde_json::json!({
+                    "error": "opa_denied",
+                    "detail": "OPA denied the launch",
+                    "reason": "proposal required for this step"
+                }),
+            )],
+        );
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, _) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+        assert_eq!(json_of(&created)["preview"]["state"], "denied");
+        assert_eq!(
+            json_of(&created)["preview"]["reason"],
+            "proposal required for this step"
+        );
+
+        let approve = "/v1/proposals/p1/approve";
+        let reply = send(
+            addr,
+            "POST",
+            approve.into(),
+            Some(ada.clone()),
+            r#"{"note": null, "revision": 1}"#.into(),
+        )
+        .await;
+        assert_eq!(reply.status, 409);
+        assert_eq!(reply.body, r#"{"error":"preview_not_allowed"}"#);
+        assert!(
+            fake.launch_bodies.lock().expect("bodies").is_empty(),
+            "no launch on a denied preview"
+        );
+
+        // Editing asks the gate again; the queue is empty now, so the gate allows.
+        let edited = send(
+            addr,
+            "PUT",
+            "/v1/proposals/p1".into(),
+            Some(ada.clone()),
+            r#"{"check_mode": false, "note": "re-run"}"#.into(),
+        )
+        .await;
+        assert_eq!(edited.status, 200, "{}", edited.body);
+        assert_eq!(json_of(&edited)["preview"]["state"], "allowed");
+        assert_eq!(
+            json_of(&edited)["revision"],
+            2,
+            "an edit bumps the revision"
+        );
+        let reply = send(
+            addr,
+            "POST",
+            approve.into(),
+            Some(ada),
+            r#"{"note": null, "revision": 2}"#.into(),
+        )
+        .await;
+        assert_eq!(reply.status, 200, "{}", reply.body);
+        assert_eq!(json_of(&reply)["state"], "launched");
+    }
+
+    #[tokio::test]
+    async fn self_approval_launches_once_and_records_who_approved_it() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, grace) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        for _ in 0..2 {
+            let created = send(
+                addr,
+                "POST",
+                "/v1/proposals".into(),
+                Some(ada.clone()),
+                PROPOSE_HONCHO.into(),
+            )
+            .await;
+            assert_eq!(created.status, 201, "{}", created.body);
+        }
+
+        let approved = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/approve".into(),
+            Some(ada.clone()),
+            r#"{"note": "  go  ", "revision": 1}"#.into(),
+        )
+        .await;
+        assert_eq!(approved.status, 200, "{}", approved.body);
+        let body = json_of(&approved);
+        assert_eq!(body["state"], "launched");
+        assert_eq!(
+            body["launch"],
+            serde_json::json!({"task_id": 4217, "message": "console p1 service-validate", "reason": "read-only"})
+        );
+        assert_eq!(body["decision"]["action"], "approved");
+        assert_eq!(
+            body["decision"]["by"],
+            serde_json::json!({"sub": "user-1", "name": "Ada"})
+        );
+        assert_eq!(
+            body["decision"]["self_approved"], true,
+            "the proposer approved it"
+        );
+        assert_eq!(body["decision"]["note"], "go", "the note is trimmed");
+        assert_eq!(
+            fake.launch_bodies.lock().expect("bodies").clone(),
+            vec![serde_json::json!({
+                "template": "Verify Service Health (Dev)",
+                "agent": "service-agent",
+                "workflow_id": "p1",
+                "step": "service-validate",
+                "survey": {"target_service": "honcho_svc"},
+                "dry_run": false,
+            })]
+        );
+
+        let again = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/approve".into(),
+            Some(grace.clone()),
+            r#"{"note": null, "revision": 1}"#.into(),
+        )
+        .await;
+        assert_eq!(again.status, 409);
+        assert_eq!(again.body, r#"{"error":"not_awaiting"}"#);
+        assert_eq!(
+            fake.launch_bodies.lock().expect("bodies").len(),
+            1,
+            "one launch in all"
+        );
+
+        let other = send(
+            addr,
+            "POST",
+            "/v1/proposals/p2/approve".into(),
+            Some(grace),
+            r#"{"revision": 1}"#.into(),
+        )
+        .await;
+        assert_eq!(other.status, 200, "{}", other.body);
+        assert_eq!(
+            json_of(&other)["decision"]["self_approved"],
+            false,
+            "grace did not propose it"
+        );
+        assert_eq!(json_of(&other)["decision"]["note"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn a_refused_or_unanswered_launch_records_launch_failed_with_its_code() {
+        let fake = Arc::new(FakeGate::default());
+        launch_replies(
+            &fake,
+            [
+                (
+                    409,
+                    serde_json::json!({"error": "already_running", "detail": "template X already has a running task: 9"}),
+                ),
+                (
+                    403,
+                    serde_json::json!({"error": "opa_denied", "detail": "OPA denied the launch", "reason": "branch pin"}),
+                ),
+                (502, serde_json::json!("bad gateway")),
+            ],
+        );
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, _) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        for _ in 0..3 {
+            let created = send(
+                addr,
+                "POST",
+                "/v1/proposals".into(),
+                Some(ada.clone()),
+                PROPOSE_HONCHO.into(),
+            )
+            .await;
+            assert_eq!(created.status, 201, "{}", created.body);
+        }
+
+        let refused = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/approve".into(),
+            Some(ada.clone()),
+            r#"{"note": null, "revision": 1}"#.into(),
+        )
+        .await;
+        assert_eq!(refused.status, 200, "{}", refused.body);
+        assert_eq!(json_of(&refused)["state"], "launch_failed");
+        assert_eq!(
+            json_of(&refused)["launch"],
+            serde_json::json!({"error": {"status": 409, "code": "already_running", "detail": "template X already has a running task: 9", "reason": null}})
+        );
+
+        let denied = send(
+            addr,
+            "POST",
+            "/v1/proposals/p2/approve".into(),
+            Some(ada.clone()),
+            r#"{"note": null, "revision": 1}"#.into(),
+        )
+        .await;
+        assert_eq!(json_of(&denied)["state"], "launch_failed");
+        assert_eq!(
+            json_of(&denied)["launch"],
+            serde_json::json!({"error": {"status": 403, "code": "opa_denied", "detail": "OPA denied the launch", "reason": "branch pin"}})
+        );
+
+        let unanswered = send(
+            addr,
+            "POST",
+            "/v1/proposals/p3/approve".into(),
+            Some(ada),
+            r#"{"note": null, "revision": 1}"#.into(),
+        )
+        .await;
+        assert_eq!(json_of(&unanswered)["state"], "launch_failed");
+        assert_eq!(json_of(&unanswered)["launch"]["error"]["status"], 0);
+        assert_eq!(
+            json_of(&unanswered)["launch"]["error"]["code"],
+            "gate_unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn put_re_previews_comments_and_a_denial_refuses_later_changes() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, grace) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+
+        let edited = send(
+            addr,
+            "PUT",
+            "/v1/proposals/p1".into(),
+            Some(ada.clone()),
+            r#"{"check_mode": true, "note": "dry first"}"#.into(),
+        )
+        .await;
+        assert_eq!(edited.status, 200, "{}", edited.body);
+        assert_eq!(json_of(&edited)["check_mode"], true);
+        assert_eq!(json_of(&edited)["note"], "dry first");
+        assert_eq!(json_of(&edited)["preview"]["state"], "allowed");
+        assert_eq!(
+            fake.decide_bodies
+                .lock()
+                .expect("bodies")
+                .last()
+                .expect("a decide")["dry_run"],
+            true,
+            "the re-preview asks in check mode"
+        );
+        let bad_edit = send(
+            addr,
+            "PUT",
+            "/v1/proposals/p1".into(),
+            Some(ada.clone()),
+            r#"{"check_mode": "yes"}"#.into(),
+        )
+        .await;
+        assert_eq!(bad_edit.status, 400);
+
+        let commented = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/comments".into(),
+            Some(grace.clone()),
+            r#"{"text": "  Looks right.  "}"#.into(),
+        )
+        .await;
+        assert_eq!(commented.status, 201, "{}", commented.body);
+        assert_eq!(json_of(&commented)["comments"][0]["by"]["name"], "Grace");
+        assert_eq!(json_of(&commented)["comments"][0]["text"], "Looks right.");
+        let blank = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/comments".into(),
+            Some(grace.clone()),
+            r#"{"text": "   "}"#.into(),
+        )
+        .await;
+        assert_eq!(blank.status, 400);
+        let missing = send(
+            addr,
+            "POST",
+            "/v1/proposals/p9/comments".into(),
+            Some(grace.clone()),
+            r#"{"text": "hi"}"#.into(),
+        )
+        .await;
+        assert_eq!(missing.status, 404);
+
+        let denied = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/deny".into(),
+            Some(grace.clone()),
+            r#"{"note": null, "revision": 2}"#.into(),
+        )
+        .await;
+        assert_eq!(denied.status, 200, "{}", denied.body);
+        assert_eq!(json_of(&denied)["state"], "denied");
+        assert_eq!(json_of(&denied)["decision"]["action"], "denied");
+        assert_eq!(json_of(&denied)["decision"]["self_approved"], false);
+
+        let late_approve = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/approve".into(),
+            Some(grace.clone()),
+            r#"{"note": null, "revision": 2}"#.into(),
+        )
+        .await;
+        assert_eq!(late_approve.status, 409);
+        assert_eq!(late_approve.body, r#"{"error":"not_awaiting"}"#);
+        let late_edit = send(
+            addr,
+            "PUT",
+            "/v1/proposals/p1".into(),
+            Some(ada.clone()),
+            r#"{"check_mode": false, "note": ""}"#.into(),
+        )
+        .await;
+        assert_eq!(late_edit.status, 409);
+        assert_eq!(late_edit.body, r#"{"error":"not_awaiting"}"#);
+        let after = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/comments".into(),
+            Some(ada),
+            r#"{"text": "noted"}"#.into(),
+        )
+        .await;
+        assert_eq!(after.status, 201, "comments are allowed in any state");
+        assert!(fake.launch_bodies.lock().expect("bodies").is_empty());
+    }
+
+    #[tokio::test]
+    async fn two_concurrent_approvals_launch_once() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, _) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+
+        let (first, second) = tokio::join!(
+            send(
+                addr,
+                "POST",
+                "/v1/proposals/p1/approve".into(),
+                Some(ada.clone()),
+                r#"{"note": null, "revision": 1}"#.into()
+            ),
+            send(
+                addr,
+                "POST",
+                "/v1/proposals/p1/approve".into(),
+                Some(ada),
+                r#"{"note": null, "revision": 1}"#.into()
+            ),
+        );
+        let mut statuses = [first.status, second.status];
+        statuses.sort_unstable();
+        assert_eq!(statuses, [200, 409], "{} / {}", first.body, second.body);
+        let refused = if first.status == 409 { &first } else { &second };
+        assert_eq!(refused.body, r#"{"error":"not_awaiting"}"#);
+        assert_eq!(
+            fake.launch_bodies.lock().expect("bodies").len(),
+            1,
+            "two approvals of one proposal launch once (D53)"
+        );
+    }
+
+    #[tokio::test]
+    async fn proposal_writes_need_the_console_origin_and_a_json_body() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, grace) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let refused_headers: [&'static [(&'static str, &'static str)]; 3] = [
+            &[
+                ("Origin", "https://evil.test"),
+                ("Content-Type", "application/json"),
+            ],
+            &[("Content-Type", "application/json")],
+            &[("Origin", CONSOLE_ORIGIN), ("Content-Type", "text/plain")],
+        ];
+        for headers in refused_headers {
+            let reply = call_with(
+                addr,
+                "POST",
+                "/v1/proposals",
+                Some(ada.clone()),
+                headers,
+                PROPOSE_HONCHO,
+            )
+            .await;
+            assert_eq!(reply.status, 403, "{headers:?}");
+            assert_eq!(reply.body, r#"{"error":"origin_refused"}"#);
+        }
+        let listed = send(
+            addr,
+            "GET",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            String::new(),
+        )
+        .await;
+        assert!(
+            ids_of(&listed).is_empty(),
+            "a refused create stores nothing"
+        );
+
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+        let cross_approve = call_with(
+            addr,
+            "POST",
+            "/v1/proposals/p1/approve",
+            Some(grace.clone()),
+            &[
+                ("Origin", "https://evil.test"),
+                ("Content-Type", "application/json"),
+            ],
+            r#"{"note": null, "revision": 1}"#,
+        )
+        .await;
+        assert_eq!(cross_approve.status, 403);
+        assert_eq!(cross_approve.body, r#"{"error":"origin_refused"}"#);
+        let cross_deny = call_with(
+            addr,
+            "POST",
+            "/v1/proposals/p1/deny",
+            Some(grace.clone()),
+            &[
+                ("Origin", "https://evil.test"),
+                ("Content-Type", "application/json"),
+            ],
+            r#"{"note": null, "revision": 1}"#,
+        )
+        .await;
+        assert_eq!(cross_deny.status, 403);
+        assert!(
+            fake.launch_bodies.lock().expect("bodies").is_empty(),
+            "nothing launched"
+        );
+        let still = send(
+            addr,
+            "GET",
+            "/v1/proposals/p1".into(),
+            Some(grace),
+            String::new(),
+        )
+        .await;
+        assert_eq!(
+            json_of(&still)["state"],
+            "awaiting",
+            "a refused approval changed nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_list_filters_orders_newest_first_and_unknown_ids_are_not_found() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, grace) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        for _ in 0..3 {
+            let created = send(
+                addr,
+                "POST",
+                "/v1/proposals".into(),
+                Some(ada.clone()),
+                PROPOSE_HONCHO.into(),
+            )
+            .await;
+            assert_eq!(created.status, 201, "{}", created.body);
+        }
+        let denied = send(
+            addr,
+            "POST",
+            "/v1/proposals/p2/deny".into(),
+            Some(grace),
+            r#"{"note": "not now", "revision": 1}"#.into(),
+        )
+        .await;
+        assert_eq!(denied.status, 200, "{}", denied.body);
+
+        let list = |query: &str| {
+            send(
+                addr,
+                "GET",
+                format!("/v1/proposals{query}"),
+                Some(ada.clone()),
+                String::new(),
+            )
+        };
+        assert_eq!(ids_of(&list("").await), ["p3", "p2", "p1"]);
+        assert_eq!(ids_of(&list("?state=all").await), ["p3", "p2", "p1"]);
+        assert_eq!(ids_of(&list("?state=awaiting").await), ["p3", "p1"]);
+        assert_eq!(ids_of(&list("?state=decided").await), ["p2"]);
+        let bogus = list("?state=launched").await;
+        assert_eq!(bogus.status, 400);
+        assert_eq!(json_of(&bogus)["error"], "bad_request");
+
+        let missing = send(
+            addr,
+            "GET",
+            "/v1/proposals/p9".into(),
+            Some(ada.clone()),
+            String::new(),
+        )
+        .await;
+        assert_eq!(missing.status, 404);
+        assert_eq!(missing.body, r#"{"error":"not_found"}"#);
+        let malformed = send(
+            addr,
+            "GET",
+            "/v1/proposals/x1".into(),
+            Some(ada.clone()),
+            String::new(),
+        )
+        .await;
+        assert_eq!(malformed.status, 404);
+        let no_row = send(
+            addr,
+            "POST",
+            "/v1/proposals/p9/approve".into(),
+            Some(ada),
+            r#"{"note": null, "revision": 1}"#.into(),
+        )
+        .await;
+        assert_eq!(no_row.status, 404);
+        assert_eq!(no_row.body, r#"{"error":"not_found"}"#);
+    }
+
+    /// The stale answer's exact body (D53): the approver reviewed an older revision.
+    fn stale_body() -> serde_json::Value {
+        serde_json::json!({
+            "error": "stale",
+            "detail": "The proposal changed since you loaded it. Review it again."
+        })
+    }
+
+    #[tokio::test]
+    async fn a_concurrent_edit_keeps_only_the_newest_revisions_preview() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, _) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+        assert_eq!(json_of(&created)["revision"], 1);
+
+        // The first edit's decide (revision 2) is slow and allows. The second's (revision 3) answers at once and denies.
+        decide_replies(
+            &fake,
+            [
+                (
+                    200,
+                    serde_json::json!({"decision": {"allowed": true, "reason": "for the first edit"}}),
+                ),
+                (
+                    200,
+                    serde_json::json!({"decision": {"allowed": false, "reason": "for the second edit"}}),
+                ),
+            ],
+        );
+        fake.decide_delays_ms
+            .lock()
+            .expect("delays")
+            .extend([500, 0]);
+        let seen = fake.decide_bodies.lock().expect("bodies").len();
+
+        let slow = tokio::spawn(send(
+            addr,
+            "PUT",
+            "/v1/proposals/p1".into(),
+            Some(ada.clone()),
+            r#"{"check_mode": true, "note": "first"}"#.into(),
+        ));
+        // Wait until the slow decide has arrived, so the second edit's decide overtakes it.
+        while fake.decide_bodies.lock().expect("bodies").len() == seen {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let fast = send(
+            addr,
+            "PUT",
+            "/v1/proposals/p1".into(),
+            Some(ada.clone()),
+            r#"{"check_mode": false, "note": "second"}"#.into(),
+        )
+        .await;
+        assert_eq!(fast.status, 200, "{}", fast.body);
+        let slow = slow.await.expect("the slow edit finishes");
+        assert_eq!(slow.status, 200, "{}", slow.body);
+
+        let shown = json_of(
+            &send(
+                addr,
+                "GET",
+                "/v1/proposals/p1".into(),
+                Some(ada.clone()),
+                String::new(),
+            )
+            .await,
+        );
+        assert_eq!(shown["revision"], 3, "one revision per edit");
+        assert_eq!(shown["note"], "second");
+        assert_eq!(shown["check_mode"], false);
+        assert_eq!(
+            shown["preview"]["state"], "denied",
+            "only the newest revision's verdict is stored"
+        );
+        assert_eq!(shown["preview"]["reason"], "for the second edit");
+        assert_eq!(
+            json_of(&slow)["preview"]["reason"],
+            "for the second edit",
+            "the slow edit's reply re-reads the row"
+        );
+        assert_eq!(json_of(&slow)["revision"], 3);
+    }
+
+    #[tokio::test]
+    async fn an_approval_at_an_old_revision_is_stale_and_launches_nothing() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, grace) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+        let edited = send(
+            addr,
+            "PUT",
+            "/v1/proposals/p1".into(),
+            Some(ada.clone()),
+            r#"{"check_mode": false, "note": "edited"}"#.into(),
+        )
+        .await;
+        assert_eq!(edited.status, 200, "{}", edited.body);
+        assert_eq!(json_of(&edited)["revision"], 2);
+
+        // Grace reviewed revision 1 before the edit, so her approval names it: stale, and the gate is never asked.
+        let stale = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/approve".into(),
+            Some(grace.clone()),
+            r#"{"note": null, "revision": 1}"#.into(),
+        )
+        .await;
+        assert_eq!(stale.status, 409, "{}", stale.body);
+        assert_eq!(json_of(&stale), stale_body());
+        assert!(
+            fake.launch_bodies.lock().expect("bodies").is_empty(),
+            "a stale approval launches nothing"
+        );
+        let still = json_of(
+            &send(
+                addr,
+                "GET",
+                "/v1/proposals/p1".into(),
+                Some(ada.clone()),
+                String::new(),
+            )
+            .await,
+        );
+        assert_eq!(
+            still["state"], "awaiting",
+            "a stale approval changes nothing"
+        );
+
+        // Revision 2 is what she reviewed now: it launches.
+        let approved = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/approve".into(),
+            Some(grace.clone()),
+            r#"{"note": "reviewed", "revision": 2}"#.into(),
+        )
+        .await;
+        assert_eq!(approved.status, 200, "{}", approved.body);
+        assert_eq!(json_of(&approved)["state"], "launched");
+        assert_eq!(json_of(&approved)["decision"]["self_approved"], false);
+        assert_eq!(fake.launch_bodies.lock().expect("bodies").len(), 1);
+
+        // Once launched, an old revision is not_awaiting, not stale: the row has left awaiting altogether.
+        let late = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/approve".into(),
+            Some(ada),
+            r#"{"note": null, "revision": 1}"#.into(),
+        )
+        .await;
+        assert_eq!(late.status, 409);
+        assert_eq!(late.body, r#"{"error":"not_awaiting"}"#);
+        assert_eq!(
+            fake.launch_bodies.lock().expect("bodies").len(),
+            1,
+            "one launch in all"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_denial_at_an_old_revision_is_stale_until_it_names_the_current_one() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, grace) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+        let edited = send(
+            addr,
+            "PUT",
+            "/v1/proposals/p1".into(),
+            Some(ada.clone()),
+            r#"{"check_mode": false, "note": "edited"}"#.into(),
+        )
+        .await;
+        assert_eq!(edited.status, 200, "{}", edited.body);
+
+        let stale = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/deny".into(),
+            Some(grace.clone()),
+            r#"{"note": null, "revision": 1}"#.into(),
+        )
+        .await;
+        assert_eq!(stale.status, 409, "{}", stale.body);
+        assert_eq!(json_of(&stale), stale_body());
+        let still = json_of(
+            &send(
+                addr,
+                "GET",
+                "/v1/proposals/p1".into(),
+                Some(ada.clone()),
+                String::new(),
+            )
+            .await,
+        );
+        assert_eq!(still["state"], "awaiting", "a stale denial changes nothing");
+
+        let denied = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/deny".into(),
+            Some(grace),
+            r#"{"note": "not this one", "revision": 2}"#.into(),
+        )
+        .await;
+        assert_eq!(denied.status, 200, "{}", denied.body);
+        assert_eq!(json_of(&denied)["state"], "denied");
+        assert_eq!(json_of(&denied)["decision"]["note"], "not this one");
+    }
+
+    #[tokio::test]
+    async fn an_approval_or_denial_must_name_a_revision() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, _) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+
+        for (path, body) in [
+            ("/v1/proposals/p1/approve", r#"{"note": null}"#),
+            ("/v1/proposals/p1/approve", r#"{}"#),
+            (
+                "/v1/proposals/p1/approve",
+                r#"{"note": null, "revision": "1"}"#,
+            ),
+            (
+                "/v1/proposals/p1/approve",
+                r#"{"note": null, "revision": 1, "extra": 1}"#,
+            ),
+            ("/v1/proposals/p1/deny", r#"{"note": null}"#),
+        ] {
+            let reply = send(addr, "POST", path.into(), Some(ada.clone()), body.into()).await;
+            assert_eq!(reply.status, 400, "{path} {body}: {}", reply.body);
+            assert_eq!(json_of(&reply)["error"], "bad_request", "{path} {body}");
+        }
+        assert!(fake.launch_bodies.lock().expect("bodies").is_empty());
+        let shown = json_of(
+            &send(
+                addr,
+                "GET",
+                "/v1/proposals/p1".into(),
+                Some(ada),
+                String::new(),
+            )
+            .await,
+        );
+        assert_eq!(shown["state"], "awaiting", "a refused body changed nothing");
+    }
+
+    #[tokio::test]
+    async fn a_hyphenated_service_proposes_its_underscore_group() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, _) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let propose =
+            r#"{"kind": "verify", "service": "step-ca", "check_mode": false, "note": ""}"#;
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada),
+            propose.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+        let body = json_of(&created);
+        assert_eq!(body["service"], "step-ca");
+        assert_eq!(
+            body["survey"],
+            serde_json::json!({"target_service": "step_ca_svc"})
+        );
+        let asked = fake.decide_bodies.lock().expect("bodies").clone();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert_eq!(
+            asked[0]["survey"],
+            serde_json::json!({"target_service": "step_ca_svc"})
+        );
+    }
+
+    #[tokio::test]
+    async fn a_service_with_no_valid_group_is_refused_before_the_gate_is_asked() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, _) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let propose = r#"{"kind": "verify", "service": "9lives", "check_mode": false, "note": ""}"#;
+        let refused = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada),
+            propose.into(),
+        )
+        .await;
+        assert_eq!(refused.status, 400, "{}", refused.body);
+        let body = json_of(&refused);
+        assert_eq!(body["error"], "bad_request");
+        // The detail names the service, so the refusal is not the inventory's "not in the inventory" by accident.
+        assert!(
+            body["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("9lives")),
+            "{}",
+            refused.body
+        );
+        assert!(fake.decide_bodies.lock().expect("bodies").is_empty());
+    }
+
+    #[tokio::test]
+    async fn only_the_proposer_may_edit_and_the_refusal_changes_nothing() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, grace) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+
+        let edit = r#"{"check_mode": true, "note": "changed by grace"}"#;
+        let refused = send(
+            addr,
+            "PUT",
+            "/v1/proposals/p1".into(),
+            Some(grace.clone()),
+            edit.into(),
+        )
+        .await;
+        assert_eq!(refused.status, 403, "{}", refused.body);
+        let body = json_of(&refused);
+        assert_eq!(body["error"], "not_proposer");
+        assert_eq!(
+            body["detail"],
+            "Only the person who proposed this can edit it."
+        );
+        let unchanged = json_of(
+            &send(
+                addr,
+                "GET",
+                "/v1/proposals/p1".into(),
+                Some(ada.clone()),
+                String::new(),
+            )
+            .await,
+        );
+        assert_eq!(unchanged["revision"], 1, "{unchanged}");
+        assert_eq!(unchanged["check_mode"], false, "{unchanged}");
+        assert_eq!(unchanged["note"], "before the upgrade", "{unchanged}");
+        // The gate was not asked again: only the create's preview ran.
+        assert_eq!(fake.decide_bodies.lock().expect("bodies").len(), 1);
+
+        // The proposer's own edit still goes through.
+        let own = send(
+            addr,
+            "PUT",
+            "/v1/proposals/p1".into(),
+            Some(ada),
+            edit.into(),
+        )
+        .await;
+        assert_eq!(own.status, 200, "{}", own.body);
+        assert_eq!(json_of(&own)["revision"], 2);
+    }
+
+    /// A launch is recorded even when the approver's connection closes while the gate is still answering. The request
+    /// is sent and dropped before any reply; the fake launch takes 300 ms, so the row is still `launching` when the
+    /// approver goes away. The launch runs in its own task, so the row still reads `launched` once the gate answers.
+    #[tokio::test]
+    async fn a_launch_is_recorded_when_the_approver_drops_the_request() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, grace) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+
+        tokio::task::spawn_blocking(move || {
+            let body = r#"{"note": null, "revision": 1}"#;
+            let request = format!(
+                "POST /v1/proposals/p1/approve HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\
+                 Cookie: {grace}\r\nOrigin: {CONSOLE_ORIGIN}\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let mut stream =
+                TcpStream::connect_timeout(&addr, Duration::from_secs(5)).expect("connect");
+            stream.write_all(request.as_bytes()).expect("write");
+            // Dropped here, before the gate has answered.
+        })
+        .await
+        .expect("blocking request");
+
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        let stored = json_of(
+            &send(
+                addr,
+                "GET",
+                "/v1/proposals/p1".into(),
+                Some(ada),
+                String::new(),
+            )
+            .await,
+        );
+        assert_eq!(stored["state"], "launched", "{stored}");
+        assert_eq!(stored["launch"]["task_id"], 4217, "{stored}");
+        assert_eq!(fake.launch_bodies.lock().expect("bodies").len(), 1);
+    }
+
+    /// The origin check compares an `Origin` header with the console's serialized origin. A base URL written
+    /// `https://Console.Test:443` is the origin `https://console.test`, which is what a browser sends, and the header is
+    /// still compared exactly: the spelling the config was written in is not an accepted Origin.
+    #[tokio::test]
+    async fn the_origin_check_compares_the_serialized_base_origin() {
+        let mut state = Arc::try_unwrap(test_state()).ok().expect("a fresh state");
+        state.config.base_url = "https://Console.Test:443".into();
+        let addr = serve(api_router(Arc::new(state)).layer(session_layer(memory_sessions()))).await;
+
+        let browser = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[
+                ("Origin", "https://console.test"),
+                ("Content-Type", "application/json"),
+            ],
+            "{}",
+        )
+        .await;
+        assert_eq!(browser.status, 401, "{}", browser.body);
+
+        let spelled_as_configured = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[
+                ("Origin", "https://Console.Test:443"),
+                ("Content-Type", "application/json"),
+            ],
+            "{}",
+        )
+        .await;
+        assert_eq!(
+            spelled_as_configured.status, 403,
+            "{}",
+            spelled_as_configured.body
+        );
+        assert_eq!(spelled_as_configured.body, r#"{"error":"origin_refused"}"#);
+
+        let other = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[
+                ("Origin", "https://evil.test"),
+                ("Content-Type", "application/json"),
+            ],
+            "{}",
+        )
+        .await;
+        assert_eq!(other.body, r#"{"error":"origin_refused"}"#);
+    }
+
     #[tokio::test]
     async fn probe_helper_reads_live_healthz() {
         let addr = serve(api_router(test_state()).layer(session_layer(memory_sessions()))).await;
@@ -786,5 +3350,46 @@ mod tests {
             text.starts_with("HTTP/1.1 200") || text.starts_with("HTTP/1.0 200"),
             "{text}"
         );
+    }
+    #[test]
+    fn a_bad_ca_file_fails_startup_by_its_setting_name() {
+        let missing = client_with_roots(
+            Some(Path::new("/nonexistent/console-pve-ca.pem")),
+            "CONSOLE_PROXMOX_CA_FILE",
+        )
+        .expect_err("must fail");
+        assert!(
+            missing.starts_with("CONSOLE_PROXMOX_CA_FILE: cannot read"),
+            "{missing}"
+        );
+
+        let path = std::env::temp_dir().join(format!("console-pve-ca-{}.pem", std::process::id()));
+        std::fs::write(&path, "not a certificate\n").expect("write");
+        let bad = client_with_roots(Some(&path), "CONSOLE_PROXMOX_CA_FILE").expect_err("must fail");
+        let _ = std::fs::remove_file(&path);
+        assert!(bad.starts_with("CONSOLE_PROXMOX_CA_FILE:"), "{bad}");
+    }
+
+    #[test]
+    fn no_upstream_client_turns_certificate_verification_off() {
+        // The needle is split so this file does not contain it verbatim.
+        let needle = concat!("danger_", "accept_");
+        for (file, text) in [
+            ("mod.rs", include_str!("mod.rs")),
+            ("inventory.rs", include_str!("inventory.rs")),
+            ("netbox.rs", include_str!("netbox.rs")),
+            ("proxmox.rs", include_str!("proxmox.rs")),
+            ("semaphore.rs", include_str!("semaphore.rs")),
+            ("auth.rs", include_str!("auth.rs")),
+            ("work.rs", include_str!("work.rs")),
+            ("openbao.rs", include_str!("openbao.rs")),
+            ("secrets.rs", include_str!("secrets.rs")),
+            ("github.rs", include_str!("github.rs")),
+            ("policies.rs", include_str!("policies.rs")),
+            ("grafana.rs", include_str!("grafana.rs")),
+            ("gate.rs", include_str!("gate.rs")),
+        ] {
+            assert!(!text.contains(needle), "{file} turns verification off");
+        }
     }
 }

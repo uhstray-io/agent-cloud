@@ -508,7 +508,25 @@ PY
 }
 
 @test "console: provision play guards the OpenBao transport before its first OpenBao request" {
-  assert_guard_precedes_first_uri "$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+  # The requests live in the shared task file now. Its first task is the transport guard, so the guard
+  # precedes every uri; the play itself sends no request and only includes the shared file.
+  local t="$REPO_ROOT/platform/playbooks/tasks/provision-semaphore-service-identity.yml"
+  assert_precedes "$t" 'include_tasks: assert-bao-transport\.yml' '^[[:space:]]+ansible\.builtin\.uri:'
+  refute_grep -qE '^[[:space:]]+ansible\.builtin\.uri:' "$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+}
+
+@test "console: provision play includes the shared identity tasks and passes its inputs in its vars" {
+  python3 - "$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml" <<'PY'
+import sys, yaml
+play = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]
+v = play["vars"]
+# The launch status and display name are the console's own inputs to the shared file.
+assert v["_svc_launch_status"] == 403, v.get("_svc_launch_status")
+assert v["_svc_display_name"] == "Dispatch Console", v.get("_svc_display_name")
+includes = [t["ansible.builtin.include_tasks"] for t in play["tasks"]
+            if isinstance(t, dict) and "ansible.builtin.include_tasks" in t]
+assert includes == ["tasks/provision-semaphore-service-identity.yml"], includes
+PY
 }
 
 @test "console: provision play talks only to the controller's loopback Semaphore API, override refused" {
@@ -519,32 +537,35 @@ PY
 
 @test "console: svc-console is a non-admin, non-external account at project role guest" {
   local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
-  python3 - "$p" <<'PY'
+  local t="$REPO_ROOT/platform/playbooks/tasks/provision-semaphore-service-identity.yml"
+  python3 - "$p" "$t" <<'PY'
 import sys, yaml
-play = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]
-vars_ = play["vars"]
+vars_ = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]["vars"]
 assert vars_["_svc_user"] == "svc-console", vars_["_svc_user"]
 assert vars_["_svc_role"] == "guest", vars_["_svc_role"]
+# The account is created by the shared file; the body is generic and takes the display name from the play.
+tasks_list = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))
 def tasks(seq):
     for t in seq or []:
         if isinstance(t, dict):
             yield t
             for sec in ("block", "rescue", "always"):
                 yield from tasks(t.get(sec))
-hits = [t for t in tasks(play["tasks"]) if t.get("name") == "Create the svc-console account (non-admin, not external: it logs in to mint its token)"]
+hits = [t for t in tasks(tasks_list) if t.get("name") == "Create the service account (non-admin, not external: it logs in to mint its token)"]
 assert len(hits) == 1, len(hits)
 body = hits[0]["ansible.builtin.uri"]["body"]
 assert body["admin"] is False and body["external"] is False, body
 assert body["username"] == "{{ _svc_user }}", body
 assert body["password"] == "{{ _svc_password }}", body
+assert body["name"] == "{{ _svc_display_name }}", body
 PY
 }
 
 @test "console: every header-bearing or password-bearing uri and every secret set_fact in the provision play is no_log" {
-  local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+  local p="$REPO_ROOT/platform/playbooks/tasks/provision-semaphore-service-identity.yml"
   python3 - "$p" <<'PY'
 import sys, yaml
-play = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]
+tasks_list = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 AUTH = ("Authorization", "X-Vault-Token", "Cookie")
 SECRET_FACTS = ("_svc_password", "_minted_token", "_stored_token", "_stored_password", "_svc_token", "_bm_token")
 def tasks(seq):
@@ -555,7 +576,7 @@ def tasks(seq):
                 yield from tasks(t.get(sec))
 bad = []
 checked = 0
-for t in tasks(play["tasks"]):
+for t in tasks(tasks_list):
     name = t.get("name", "?")
     if "ansible.builtin.uri" in t:
         args = t["ansible.builtin.uri"]
@@ -576,17 +597,17 @@ PY
 }
 
 @test "console: the token mint is POST-only, and no task lists tokens to reuse one" {
-  local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+  local p="$REPO_ROOT/platform/playbooks/tasks/provision-semaphore-service-identity.yml"
   python3 - "$p" <<'PY'
 import sys, yaml
-play = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]
+tasks_list = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 def tasks(seq):
     for t in seq or []:
         if isinstance(t, dict):
             yield t
             for sec in ("block", "rescue", "always"):
                 yield from tasks(t.get(sec))
-token_calls = [t["ansible.builtin.uri"] for t in tasks(play["tasks"])
+token_calls = [t["ansible.builtin.uri"] for t in tasks(tasks_list)
                if "ansible.builtin.uri" in t and "api/user/tokens" in str(t["ansible.builtin.uri"].get("url", ""))]
 assert token_calls, "no token call"
 for c in token_calls:
@@ -595,18 +616,21 @@ for c in token_calls:
 PY
 }
 
-@test "console: the read-only proof reads tasks/last (200) and proves refused launch with template -1 (403)" {
-  local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
-  python3 - "$p" <<'PY'
+@test "console: the read-only proof reads tasks/last (200) and proves the launch gate answers the role's status (403 for guest)" {
+  local p="$REPO_ROOT/platform/playbooks/tasks/provision-semaphore-service-identity.yml"
+  local play="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+  python3 - "$p" "$play" <<'PY'
 import sys, yaml
-play = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]
+tasks_list = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+# The expected status is the console's input to the shared file: guest is refused at the gate with 403.
+assert yaml.safe_load(open(sys.argv[2], encoding="utf-8"))[1]["vars"]["_svc_launch_status"] == 403
 def tasks(seq):
     for t in seq or []:
         if isinstance(t, dict):
             yield t
             for sec in ("block", "rescue", "always"):
                 yield from tasks(t.get(sec))
-all_tasks = list(tasks(play["tasks"]))
+all_tasks = list(tasks(tasks_list))
 def one(name):
     hits = [t for t in all_tasks if t.get("name") == name]
     assert len(hits) == 1, (name, len(hits))
@@ -617,10 +641,11 @@ def conditions(t):
 # Each status is checked by its own assert task, scoped by name.
 read = one("Require the token to read the project's tasks (200)")
 assert any("_probe_read.status == 200" in c for c in conditions(read)), conditions(read)
-refused = one("Require the launch probe to answer 403 (read-only: guest cannot run tasks)")
-assert any("_probe_launch.status == 403" in c for c in conditions(refused)), conditions(refused)
+# The expected status is the play's input, not a literal: one assert serves guest (403) and task_runner (404).
+refused = one("Require the launch probe to answer the role's expected status (guest 403; task_runner 404: gate passed, template -1 absent, nothing launched)")
+assert any("_probe_launch.status == (_svc_launch_status | int)" in c for c in conditions(refused)), conditions(refused)
 # The launch probe sends template -1, and only that task does.
-launch = one("Probe the token cannot launch: POST /api/project/{p}/tasks with template -1")
+launch = one("Probe the token's launch gate: POST /api/project/{p}/tasks with template -1")
 assert launch["ansible.builtin.uri"]["body"]["template_id"] == -1, launch["ansible.builtin.uri"]["body"]
 hits = [t for t in all_tasks if "ansible.builtin.uri" in t
         and t["ansible.builtin.uri"].get("method") == "POST"
@@ -632,18 +657,18 @@ PY
 }
 
 @test "console: a stored token is reused only when GET /api/user proves svc-console, non-admin" {
-  local p="$REPO_ROOT/platform/playbooks/provision-console-semaphore-access.yml"
+  local p="$REPO_ROOT/platform/playbooks/tasks/provision-semaphore-service-identity.yml"
   python3 - "$p" <<'PY'
 import sys, yaml
-play = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))[1]
+tasks_list = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 def tasks(seq):
     for t in seq or []:
         if isinstance(t, dict):
             yield t
             for sec in ("block", "rescue", "always"):
                 yield from tasks(t.get(sec))
-hits = [t for t in tasks(play["tasks"])
-        if t.get("name") == "Hold whether the stored token is the svc-console token"]
+hits = [t for t in tasks(tasks_list)
+        if t.get("name") == "Hold whether the stored token is the service account's token"]
 assert len(hits) == 1, len(hits)
 # Scoped to the set_fact that decides the reuse: the value is a folded string, and each check sits on one source line.
 expr = str(hits[0]["ansible.builtin.set_fact"]["_stored_ok"])
@@ -767,9 +792,11 @@ assert "_pid" not in play["vars"], sorted(play["vars"])
 names = [t.get("name") for t in play["tasks"] if isinstance(t, dict)]
 refuse = names.index("Refuse a production run with no declared Semaphore project for the console")
 resolve = names.index("Resolve the Semaphore project the console is bound to")
-first_uri = [i for i, t in enumerate(play["tasks"])
-             if isinstance(t, dict) and "ansible.builtin.uri" in t][0]
-assert refuse < resolve < first_uri, (refuse, resolve, first_uri)
+# The first request is the shared file's include: the play itself sends none.
+assert not any(isinstance(t, dict) and "ansible.builtin.uri" in t for t in play["tasks"])
+first_request = [i for i, t in enumerate(play["tasks"])
+                 if isinstance(t, dict) and "provision-semaphore-service-identity.yml" in str(t)][0]
+assert refuse < resolve < first_request, (refuse, resolve, first_request)
 guard = play["tasks"][refuse]
 assert guard.get("when") == "not (local_mode | default(false) | bool)", guard.get("when")
 assert play["tasks"][resolve]["ansible.builtin.set_fact"]["_pid"], play["tasks"][resolve]

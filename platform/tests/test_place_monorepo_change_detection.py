@@ -15,6 +15,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 
@@ -81,7 +82,9 @@ def _gnu_rsync():
     exe = shutil.which("rsync")
     if not exe:
         return False
-    out = subprocess.run([exe, "--version"], capture_output=True, text=True).stdout
+    out = subprocess.run(
+        [exe, "--version"], capture_output=True, text=True, timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
+    ).stdout
     return "openrsync" not in out
 
 

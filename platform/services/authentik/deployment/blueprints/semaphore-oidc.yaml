@@ -7,7 +7,7 @@
 # Semaphore has native OIDC: the callback is <web_host>/api/auth/oidc/<key>/
 # redirect, where <key> is the provider key in Semaphore's oidc_providers
 # ("authentik"). This is true SSO (login as your Authentik identity), unlike the
-# forward_auth gates (n8n/NetBox/OpenBao). Semaphore's API/token-driven deploys
+# forward_auth gates (NetBox/OpenBao). Semaphore's API/token-driven deploys
 # are unaffected — OIDC only fronts the browser UI login.
 version: 1
 metadata:

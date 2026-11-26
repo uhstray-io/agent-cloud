@@ -38,7 +38,9 @@ setup() {
 @test "plane: the overlay switches optional services off with a profile, not replicas" {
   # podman-compose 1.6.0 ignores deploy.replicas: 0 and would start Plane AI, Argus and email.
   local svc
-  for svc in importer-worker email pi-api pi-beat pi-worker pi-agent-worker argus pi-db-init pi-migrator argus-migrator; do
+  # runner: Plane ships it on, but its image needs x86-64-v3, which no production node that can
+  # hold Plane backs (docs/MISTAKES.md 2.34).
+  for svc in importer-worker email pi-api pi-beat pi-worker pi-agent-worker argus pi-db-init pi-migrator argus-migrator runner; do
     python3 - "$OVERLAY" "$svc" <<'PY'
 import sys, yaml
 class L(yaml.SafeLoader): pass
@@ -202,6 +204,15 @@ PY
   # Strict redirect on Plane's own callback path (developer-docs govern/oidc-sso.md).
   grep -qF "plane_redirect_uri | default('https://plane.agent-cloud.test:8443/auth/oidc/callback/')" "$bp"
   grep -qF 'matching_mode: strict' "$bp"
+  # The mobile app signs in through /auth/mobile/oidc/, which sends its own callback
+  # (backend-commercial views/app/mobile/oidc.py); without it Authentik answers "Redirect URI Error".
+  grep -qF "plane_redirect_mobile: \"{{ (plane_redirect_uri | default('https://plane.agent-cloud.test:8443/auth/oidc/callback/')) | replace('/auth/oidc/callback/', '/auth/mobile/oidc/callback/') }}\"" "$bp"
+  # Every redirect entry is strict, the mobile one included: the strict grep above already
+  # passes on the web entry alone. Scoped to the redirect_uris construct.
+  local redirects
+  redirects=$(sed -n '/redirect_uris:/,/property_mappings:/p' "$bp")
+  grep -qF 'url: !Context plane_redirect_mobile' <<<"$redirects"
+  [ "$(grep -c 'matching_mode: strict' <<<"$redirects")" -eq "$(grep -c 'url: ' <<<"$redirects")" ]
   grep -qF 'client_secret: !Env PLANE_OIDC_CLIENT_SECRET' "$bp"
   grep -qF "scope_name, email" "$bp"
   # Catalogued with production guards, the secret owned by authentik.
@@ -230,4 +241,38 @@ main, local = (yaml.load(open(f), Loader=L)["services"]["api"]["volumes"] for f 
 assert set(main) <= set(local), set(main) - set(local)
 PY
   grep -qF 'COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS} compose.local-ca.yml"' "$DEPLOY_DIR/deploy.sh"
+}
+
+@test "plane: the API health wait outlasts a first-run migration and is passed from inventory" {
+  # A fresh production database migrated for ~36 minutes (Semaphore task 11696 failed at 600s).
+  run grep -c 'wait_for_healthy plane-api "$API_HEALTH_TIMEOUT"' "$DEPLOY_DIR/deploy.sh"
+  [ "$output" = "2" ]
+  grep -q 'API_HEALTH_TIMEOUT="${PLANE_API_HEALTH_TIMEOUT:-3600}"' "$DEPLOY_DIR/deploy.sh"
+  refute_grep 'wait_for_healthy plane-api [0-9]' "$DEPLOY_DIR/deploy.sh"
+  run grep -c "PLANE_API_HEALTH_TIMEOUT: \"{{ plane_api_health_timeout | default('') }}\"" "$PLAYBOOK"
+  [ "$output" = "2" ]
+}
+
+@test "plane: the GitHub integration is gated, its App secrets operator-owned, and the webhook proven signed" {
+  # Operator-owned values are never generated; the webhook secret is, once.
+  grep -qF 'name: plane_github_client_secret, type: existing' "$PLAYBOOK"
+  grep -qF 'name: plane_github_private_key, type: existing' "$PLAYBOOK"
+  grep -qE 'name: plane_github_webhook_secret, type: random' "$PLAYBOOK"
+  # Required only when the inventory turns the integration on, so local-dev (no App) still deploys.
+  grep -qF "if plane_github_app_id is defined else []" "$PLAYBOOK"
+  # env.j2 renders all six or fails (test_plane_env_github.py renders it); the App gets the same secret.
+  grep -qF "the GitHub integration needs all six values" "$ENV_TPL"
+  grep -qF 'set-hook-secret' "$PLAYBOOK"
+  # Spike 0.16: 401 to an unsigned delivery is silo verifying; the edge skip depends on it.
+  grep -qF "assert c == 401" "$PLAYBOOK"
+  # The edge skip is the exact webhook path on Plane's host, nothing wider.
+  grep -qF 'http.request.uri.path eq \"/silo/api/github/github-webhook\"' "$REPO_ROOT/platform/infra/cloudflare/waf.tf"
+  refute_grep -qF 'starts_with(http.request.uri.path, \"/silo' "$REPO_ROOT/platform/infra/cloudflare/waf.tf"
+  # It skips the managed rules too (AC-687: they blocked signed deliveries), never the rate limit.
+  sed -n '/ref *= "plane-github-webhook-bypass-challenge"/,/^    },*$/p' "$REPO_ROOT/platform/infra/cloudflare/waf.tf" > "$BATS_TEST_TMPDIR/hook.tf"
+  assert_grep -qF 'expression  = "(http.host eq \"plane.uhstray.io\" and http.request.uri.path eq \"/silo/api/github/github-webhook\")"' "$BATS_TEST_TMPDIR/hook.tf"
+  assert_grep -qF 'phases   = ["http_request_sbfm", "http_request_firewall_managed"]' "$BATS_TEST_TMPDIR/hook.tf"
+  refute_grep -qF 'http_ratelimit' "$BATS_TEST_TMPDIR/hook.tf"
+  # Appended after the Plane MCP rule, so no existing rule moved.
+  [ "$(grep -E '^      ref +=' "$REPO_ROOT/platform/infra/cloudflare/waf.tf" | cut -d'"' -f2 | awk 'p { print; exit } $0 == "plane-mcp-bypass-challenge" { p = 1 }')" = "plane-github-webhook-bypass-challenge" ]
 }

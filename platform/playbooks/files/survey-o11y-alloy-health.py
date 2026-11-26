@@ -26,6 +26,7 @@ RUN_STATES = {
 }
 HEALTH_STATES = {"healthy", "unhealthy", "starting", "none", "unknown"}
 ZERO_STARTED_AT = re.compile(r"0001-01-01T00:00:00(?:\.0+)?(?:Z|\+00:00)")
+CHECKOUT_SHA = re.compile(rb"([0-9a-f]{40})\n")
 
 
 class Refusal(Exception):
@@ -212,7 +213,43 @@ def inspect() -> dict[str, object]:
     return _project(data)
 
 
-def main() -> int:
+def checkout_head(monorepo_dir: str) -> dict[str, str]:
+    """Return only the current checkout HEAD, or one fixed unavailable state."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD^{commit}"],
+            cwd=monorepo_dir,
+            check=False,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=8,
+        )
+    except (OSError, TypeError, ValueError, subprocess.TimeoutExpired):
+        return {"meaning": "checkout_head", "status": "unavailable"}
+    if type(result.returncode) is not int or result.returncode != 0 or result.stderr != b"":
+        return {"meaning": "checkout_head", "status": "unavailable"}
+    if not isinstance(result.stdout, bytes):
+        return {"meaning": "checkout_head", "status": "unavailable"}
+    match = CHECKOUT_SHA.fullmatch(result.stdout)
+    if match is None:
+        return {"meaning": "checkout_head", "status": "unavailable"}
+    return {
+        "meaning": "checkout_head",
+        "sha": match.group(1).decode("ascii"),
+        "status": "observed",
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    if arguments:
+        report = (
+            checkout_head(arguments[1])
+            if len(arguments) == 2 and arguments[0] == "--checkout-head"
+            else {"meaning": "checkout_head", "status": "unavailable"}
+        )
+        print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+        return 0
     try:
         report = inspect()
         status = 0

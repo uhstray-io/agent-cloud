@@ -18,7 +18,7 @@ All of the following operations MUST go through Semaphore. Direct SSH execution 
 
 | Operation Category | Examples | Rationale |
 |--------------------|----------|-----------|
-| **Service deployment** | `deploy-netbox.yml`, `deploy-nocodb.yml`, `deploy-all.yml` | AppRole injected via Semaphore environment; deploy.sh has no vault access |
+| **Service deployment** | `deploy-netbox.yml`, `deploy-all.yml` | AppRole injected via Semaphore environment; deploy.sh has no vault access |
 | **Secret management** | `manage-secrets.yml`, `check-secrets.yml`, `validate-secrets.yml` | Secrets flow OpenBao -> Ansible memory -> Jinja2 templates; never on disk as intermediary files |
 | **SSH key distribution** | `distribute-ssh-keys.yml`, `harden-ssh.yml` | Keys fetched from OpenBao at runtime; verify-before-harden pattern |
 | **VM provisioning** | `provision-vm.yml`, `provision-template.yml` | Proxmox API calls require tokens stored in OpenBao |
@@ -128,7 +128,7 @@ AppRoles enforce least-privilege access to OpenBao secrets. Three tiers of AppRo
 |------|---------|-------|-----|----------------|---------|
 | **Orchestrator** | `semaphore` | `secret/data/services/*`, `sys/policies/acl/*`, `auth/approle/role/*` | token: 30m, secret_id: 0 (see note) | 0 (unlimited) | Cross-service orchestration, AppRole provisioning, policy management |
 | **Runtime (current)** | `orb-agent` | `secret/data/services/netbox/orb_agent_*`, `secret/data/services/netbox/snmp_community` | token: 30m, secret_id: 0 (see note) | 0 (see note) | Agent fetches Diode + SNMP credentials at runtime via vault references |
-| **Runtime (planned)** | Per-service (e.g., `netbox-deploy`, `nocodb-deploy`) | Scoped to single service path | token: 30m, secret_id: 90d | 25 | Deploy-time credential fetch for a single service |
+| **Runtime (planned)** | Per-service (e.g., `netbox-deploy`) | Scoped to single service path | token: 30m, secret_id: 90d | 25 | Deploy-time credential fetch for a single service |
 
 **Note on TTL enforcement:** The `manage-approle.yml` task currently hardcodes `secret_id_ttl: 0` and `token_num_uses: 0`, which contradicts the 90-day TTL requirement in CREDENTIAL-LIFECYCLE-PLAN.md. See [APPROLE-TTL-ENFORCEMENT-PLAN.md](../development/APPROLE-TTL-ENFORCEMENT-PLAN.md) for the remediation plan.
 
@@ -212,24 +212,15 @@ Services are at different stages of migration from the legacy clone-and-deploy p
 | **NetBox** | Composable (5-phase) | `deploy-netbox.yml` | `manage-secrets.yml` + Jinja2 templates | Fully migrated; reference implementation |
 | **Orb Agent** | Composable (standalone) | `deploy-orb-agent.yml` | `manage-diode-credentials.yml` + agent.yaml template | Independent workflow, uses NetBox secrets |
 | **OpenBao** | Legacy (clone-and-deploy) | `deploy-openbao.yml` -> `deploy-service.yml` | Self-bootstrapping (special case) | Cannot use composable pattern for its own secrets |
-| **NocoDB** | Legacy (clone-and-deploy) | `deploy-nocodb.yml` -> `deploy-service.yml` | deploy.sh manages secrets directly | Migration planned |
-| **n8n** | Legacy (clone-and-deploy) | `deploy-n8n.yml` -> `deploy-service.yml` | deploy.sh manages secrets directly | Migration planned |
 | **Semaphore** | Legacy (clone-and-deploy) | `deploy-semaphore.yml` -> `deploy-service.yml` | deploy.sh manages secrets directly | New-VM-only deploy |
-| **NemoClaw** | Legacy (clone-and-deploy) | `deploy-nemoclaw.yml` -> `deploy-service.yml` | deploy.sh manages secrets directly | AI agent tier |
 | **Caddy** | Not yet integrated | -- | Manual | Reverse proxy; integration pending |
-| **WisAI** | Not yet integrated | -- | Manual | Local LLM inference; separate repo |
-| **WisBot** | Not yet integrated | -- | Manual | Discord bot; separate repo |
-| **Nextcloud** | Not yet integrated | -- | Manual | Auxiliary tier; integration pending |
-| **Wiki.js** | Not yet integrated | -- | Manual | Auxiliary tier; integration pending |
 | **Postiz** | Not yet integrated | -- | Manual | Auxiliary tier; integration pending |
 | **a2a-registry** | Not yet integrated | -- | Manual | Auxiliary tier; integration pending |
 
 ### Migration Priority
 
-1. **NocoDB + n8n** -- Automation tier, highest value from composable pattern (secret drift risk)
-2. **NemoClaw** -- AI tier, needs tightened AppRole policy (currently uses wildcard)
-3. **Caddy** -- Infrastructure tier, minimal secrets (TLS certs via ACME)
-4. **Auxiliary services** -- Lower priority, simpler 3-phase pattern sufficient
+1. **Caddy** -- Infrastructure tier, minimal secrets (TLS certs via ACME)
+2. **Auxiliary services** -- Lower priority, simpler 3-phase pattern sufficient
 
 ### Legacy vs Composable Flow Comparison
 

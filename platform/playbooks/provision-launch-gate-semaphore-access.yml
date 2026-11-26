@@ -1,0 +1,113 @@
+---
+# provision-launch-gate-semaphore-access.yml — the launch gate's own Semaphore identity: user svc-launch-gate at
+# project role task_runner. The gate is the only identity that asks Semaphore to launch on an agent's behalf
+# (skynet-launch-containment, design decision 8), so this account holds the launch right that svc-skynet gave up
+# (provision-skynet-semaphore-access.yml, guest since 2026-10-31).
+#
+# Why task_runner here, and why one account only. Launch rights are runner rights (AGENTS.md, "Launch rights are
+# runner rights"): a launch's task environment becomes the playbook's extra vars, so any role with
+# CanRunProjectTasks can inject extra vars, templated ones included, into a run on the shared runner. The
+# controller holds the AppRole, so that right is granted to the one account whose launches pass the gate. The
+# containment is the gate, not this role: it authenticates the caller, checks the caller's agent and the template
+# allowlist, asks OPA for a decision, and refuses any survey field the template does not declare, before it creates
+# a task. The token is stored at secret/services/launch-gate:semaphore_api_token and read only by the launch-gate
+# deploy, which writes it into the gate's .env.
+#
+# Why a user of its own, not the controller token. secret/services/semaphore is the operator's and the
+# controller's identity. The gate's own account means a launch names the gate's account in Semaphore's history.
+#
+# Re-roling. On an instance where svc-launch-gate already holds another role, this play moves that member to
+# task_runner in place (the shared task's membership step) and creates no account. The stored token is kept when
+# it still proves svc-launch-gate, and the launch probe then expects 404 with that token.
+#
+# Launch probe. The shared body (tasks/provision-semaphore-service-identity.yml) POSTs template -1 and expects 404
+# for task_runner: the role passes the permission gate, finds no template -1, and launches nothing. A 403 would
+# mean the role does not hold the launch right, and the play fails on it.
+#
+# Order.
+#   1. Run this play once per instance, before declaring svc-launch-gate in semaphore_project_members:
+#      manage-semaphore-access.yml refuses a declared team member that has no Semaphore account yet.
+#   2. Run it before Deploy launch-gate: the deploy reads semaphore_api_token as an existing secret and stops,
+#      before any OpenBao write, when it is absent.
+#
+# Store. The play merges semaphore_password and semaphore_api_token into secret/services/launch-gate. It never
+# overwrites the path: the deploy's caller_skynet_token stays (tasks/bao-merge-keys.yml, a KV-v2 merge-patch; a
+# create with cas: 0 only when the path is absent).
+#
+# Project. This play runs on localhost, so it reads the project from the launch_gate_svc host by hostvars: that
+# host's launch_gate_semaphore_project (site-config inventory). Production refuses a run with no declared project;
+# only local_mode falls back to project 1. An extra var (-e launch_gate_semaphore_project=N) outranks the inventory
+# value and wins when passed, as for skynet.
+#
+# Check mode: reads run; every write is skipped, and the launch probe is never sent.
+#
+# Unverified here: no live run has been made from this change. The 404 for task_runner comes from the upstream
+# source the shared body cites (api/projects/tasks.go:45-48) at tag v2.19.11; the image the production controller
+# runs is not checked here.
+#
+# Usage: the Semaphore template that runs this playbook is declared in templates.yml (and templates-local.yml for
+# local-dev). The template name is the catalog's; this playbook does not name it.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Provision the launch gate's Semaphore identity (svc-launch-gate, task_runner)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # The controller's own API, loopback only. This play holds an admin token, so the URL is fixed.
+    _semaphore_url: "http://127.0.0.1:3000"
+    # The launch_gate_svc host that declares the project. Empty when the group is absent (never an error).
+    _launch_gate_svc_hosts: "{{ groups['launch_gate_svc'] | default([]) }}"
+    _launch_gate_svc_project: >-
+      {{ hostvars[_launch_gate_svc_hosts[0]].launch_gate_semaphore_project | default('')
+         if (_launch_gate_svc_hosts | length > 0) else '' }}
+    # _pid is set by the resolve task below, before any Semaphore call. It is not a play var.
+    _svc_user: "svc-launch-gate"
+    _svc_display_name: "launch gate"
+    # task_runner: the launch right, held by this account alone (see the header). The shared body's launch probe
+    # expects 404 for this role (the gate passes, no template -1 exists).
+    _svc_role: "task_runner"
+    _svc_launch_status: 404
+    _svc_email: "svc-launch-gate@{{ dev_zone | default('agent-cloud.test') }}"
+    _store_path: "services/launch-gate"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # Every HTTP status, so a probe or write answers to a visible assert with its code, not to a
+    # censored uri failure (no_log hides the message of a failed task).
+    _any_status: "{{ range(100, 600) | list }}"
+
+  tasks:
+    - name: "Refuse a controller API destination override before authentication"
+      ansible.builtin.assert:
+        # Both the public override and the URL the requests actually use (as skynet's provisioning does).
+        that:
+          - _semaphore_url == 'http://127.0.0.1:3000'
+          - (semaphore_url | default(_semaphore_url)) == 'http://127.0.0.1:3000'
+        fail_msg: "Launch-gate access provisioning may only use the controller's fixed loopback API."
+
+    # Before any login or write: the project is the launch_gate_svc host's declaration, else the extra var.
+    # Production never falls back to project 1; only local_mode does.
+    - name: "Refuse a production run with no declared Semaphore project for the launch gate"
+      ansible.builtin.assert:
+        that:
+          - (_launch_gate_svc_project | string | length > 0) or (launch_gate_semaphore_project is defined)
+        fail_msg: >-
+          No Semaphore project is declared for the launch gate. Set launch_gate_semaphore_project on the
+          launch_gate_svc host in site-config, or pass it as an extra var. Production never binds svc-launch-gate
+          to project 1 by default.
+      when: not (local_mode | default(false) | bool)
+
+    - name: "Resolve the Semaphore project the launch gate is bound to"
+      ansible.builtin.set_fact:
+        _pid: >-
+          {{ _launch_gate_svc_project if (_launch_gate_svc_project | string | length > 0)
+             else (launch_gate_semaphore_project | default(1)) }}
+
+    # Every OpenBao and Semaphore request follows: the transport guard is the shared file's first task.
+    - name: "Provision the service identity (shared tasks: account, membership, token, proof)"
+      ansible.builtin.include_tasks: tasks/provision-semaphore-service-identity.yml

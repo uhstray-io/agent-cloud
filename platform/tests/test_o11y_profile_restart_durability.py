@@ -4,6 +4,7 @@ import os
 import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import ansible_python, needs_ansible
@@ -437,6 +438,7 @@ print(json.dumps(results))
         input=json.dumps({"expression": expression, "ids": [5854, 5855]}),
         text=True, capture_output=True, check=False,
         env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(tmp_path)},
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stderr

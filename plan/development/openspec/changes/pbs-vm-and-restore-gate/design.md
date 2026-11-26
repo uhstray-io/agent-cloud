@@ -1,12 +1,12 @@
 ## Context
 
-See [proposal.md](proposal.md) for motivation and [the capability spec](specs/pbs-vm-restore-gate/spec.md) for required behavior. The GET-only pinned thick-LVM preflight passed in Dev-bound Semaphore task 6992, but it deliberately left write authorization false. The selected disk is operator-attested local hardware; the API pin and direct PV join detect drift but do not independently prove its chassis origin. The merged private inventory has no PBS VM host declaration. A direct workstation Proxmox template query failed with a stale local token identity; the next live discovery must use the current OpenBao credential through Semaphore. The existing `provision-vm.yml` reads private inventory and clones a cloud-init template; its default template is not evidence of a supported Debian base. [PBS installation](https://pbs.proxmox.com/docs/installation.html) supports installation on Debian, and [PBS requirements](https://pbs.proxmox.com/docs/system-requirements.html) call for at least four recommended cores, 4 GiB base memory plus storage cache, and 32 GiB OS space.
+See [proposal.md](proposal.md) for motivation and [the capability spec](specs/pbs-vm-restore-gate/spec.md) for required behavior. The GET-only pinned thick-LVM preflight passed in Dev-bound Semaphore task 6992, but it deliberately left write authorization false. The API pin and direct PV join detect identity drift and storage lineage but do not independently prove chassis origin. Operator decision (2026-10-29): physical-origin/BMC/chassis attestation is not a prerequisite; retain the API identity pin, exact storage/VG/PV lineage, SMART, and headroom gates. Historical initial-planning observations only: the private inventory snapshot consulted then lacked a PBS VM host declaration, and a workstation Proxmox template query failed using a stale local token identity. These observations do not describe current private inventory or prove current API credentials. Current declaration and provenance acceptance must come from the private inventory readback; live discovery must use the current OpenBao credential through Semaphore. The existing `provision-vm.yml` reads private inventory and clones a cloud-init template; its default template is not evidence of a supported Debian base. [PBS installation](https://pbs.proxmox.com/docs/installation.html) supports installation on Debian, and [PBS requirements](https://pbs.proxmox.com/docs/system-requirements.html) call for at least four recommended cores, 4 GiB base memory plus storage cache, and 32 GiB OS space.
 
 ## Goals / Non-Goals
 
 **Goals:** Make PBS bootstrap, backup, and isolated restore repeatable and fail-closed; keep exact private identities and credentials out of public code and durable logs; preserve current o11y data and deployment state.
 
-**Non-Goals:** Formatting any host physical disk, treating an API identity pin as independent chassis proof, destructive o11y redeploy, claiming a PBS protected bit is immutable storage, or increasing o11y retention in this change.
+**Non-Goals:** Formatting any host physical disk, claiming an API identity pin proves chassis origin, destructive o11y redeploy, claiming a PBS protected bit is immutable storage, or increasing o11y retention in this change.
 
 ## Decisions
 
@@ -208,10 +208,117 @@ cover privileged users or unmanaged code. Target absence, restore success,
 cleanup proof, and task-output authenticity remain future workflow
 responsibilities and cannot be inferred from these guards.
 
+### Protected execution-environment follow-up (2026-10-29)
+
+Dev-bound capability task 10282 refused protected credential extra vars from
+its shared Semaphore environment before authentication. Retain that refusal.
+The repair uses the existing isolated seed-environment provisioner to give each
+owned protected PBS workflow an empty environment with encrypted AppRole inputs.
+The source environment and unrelated template bindings remain unchanged.
+
+Add one Dev-bound controller wrapper with an exact reviewed-checkout gate,
+fixed controller-loopback API destination, and an OpenBao destination anchored
+to the sole private inventory service declaration before credentials are used.
+Its selectable targets are only the five explicit Dev catalog rows named in
+task 5.2f: the five protected PBS/restore targets. Each declares a distinct
+isolated environment. Generic VM writer isolation is handled separately below.
+Reuse the provisioner's base-instance selection for these already-suffixed names
+and require their declared repository to remain `agent-cloud dev`; do not
+generate another Dev suffix or change the shared provisioner's variant policy.
+
+Supply and verify explicit project, inventory, and current source-environment
+bindings. Preserve the provisioner's source preservation, encrypted credential
+handling, single-template ownership, pre-mutation rechecks, and ambiguous-write
+readback. A scoped publisher may create the new controller entry and publish
+surveys; existing target rebinding goes only through this reviewed provisioner.
+Do not mutate the shared environment, use a full-catalog publication, or weaken
+the restore preflight to admit legacy credential extra vars. Generic VM
+templates are outside this wrapper's bounded convergence scope; their
+environment isolation follows the separate general-writer provisioner decision
+below.
+
+Converge the capability-verification template first and rerun its read-only
+verifier. Only a successful effective-policy/capability receipt permits the
+remaining four owned environment convergences. Their later VM/disk operations
+still require their independent declaration, identity, capacity, writer-drain,
+and lifecycle gates. Source tests and environment creation are not live restore
+or backup acceptance.
+
+### Semaphore environment-array compatibility repair (2026-10-30)
+
+At reviewed Dev `338799e5e66a3a2260856258319200b3bbba25d3`, scoped
+publication task 10684 succeeded and readback proved one new controller with
+unchanged prior template configurations, source environment, repository and
+inventory. Environment task 10688 later failed its final binding assertion.
+Reconciliation found the dedicated environment created with empty JSON and
+plaintext configuration and exactly two encrypted AppRole inputs, but the
+selected template remained bound to the shared source environment. That partial result authorized no retry, capability acceptance, or subsequent
+protected workflow. It is a historical checkpoint superseded for environment
+convergence by the verified receipts below; reconcile state before any future
+write and never retry an uncertain operation blindly.
+
+The failed revision changed only legacy `environment_id` while copying the
+live `environment_ids` array unchanged. The pinned upstream model treats the
+array as authoritative and falls back to the scalar only when the array is
+absent ([Template model](https://github.com/semaphoreui/semaphore/blob/0c3f373/db/Template.go#L284-L290));
+the SQL update applies that rule before writing environment associations
+([store](https://github.com/semaphoreui/semaphore/blob/0c3f373/db/sql/template.go#L150-L154)).
+The repaired shared provisioner writes and verifies a consistent paired
+scalar/array binding while preserving every other setting and survey, encrypted
+inputs, source/unrelated environments and templates, active-work refusal, and
+safe rerun behavior. The acceptance receipt below verifies this repaired
+behavior across the five declared environments.
+
+The shared seed client now enforces the complete effective binding before
+staging credentials, when proving exclusive ownership/active use, and immediately
+before task submission. It retains legacy scalar-only compatibility and refuses
+empty, malformed, contradictory or multi-environment seed bindings and drift.
+Regressions cover a supplied array winning over the scalar, secondary-group
+ownership and pre-submit drift. The existing isolated-environment metadata
+guards remain in place. Review, final-head CI, guarded Dev merge, and the
+reconciled runtime acceptance are recorded below; capability acceptance
+preceded convergence of the other four workflows.
+
+### General VM writers' environments (2026-10-30)
+
+Task 5.2a put the preflight and guard in front of the five general VM writers,
+while the earlier version of the protected-wrapper section kept generic
+templates on the shared environment. Together those made the writers fail on
+every production launch (tasks 9493, 10259, 10295). The shared environment holds
+the AppRole only as the plaintext extra vars the preflight refuses, and the
+writers log in only from `BAO_ROLE_ID`/`BAO_SECRET_ID`. Operator decision
+2026-10-30: give the five writers isolated environments through the same
+reviewed provisioner. Neither the guard nor the shared environment changes.
+`test_restore_guard_environment.py` now requires every template that reaches the
+preflight to declare one.
+The `main`-bound copies need the same environments (`seed_variant=main`) before `dev` is
+promoted, because promotion brings them the guard.
+
+### Verified isolated-environment acceptance (2026-10-31)
+
+At merged Dev SHA `d41482be4944d5916030fbbbde147e5a686238f8`, tasks 10752,
+10762, 10763, 10765, and 10769 accepted all five declared isolated
+PBS/restore environment bindings. Readback verified empty plaintext and
+extra-var configuration, encrypted AppRole metadata, sole-template ownership,
+and preserved shared/unrelated settings, surveys, repository, and inventory.
+Capability task 10761 verified source policy plus effective data and metadata
+capabilities for fixed coordination records only; it performed no record
+read/write and authorizes no allocation or restore operation. Scoped publisher
+task 10767 created the missing `Provision PBS VM (Dev)` workflow catalog
+row. Rerun task 10770 converged to the same binding and encrypted-input
+metadata without duplicate environments or inputs; the binding update request remains part of
+that rerun. No VM, disk, filesystem, backup, restore, or cleanup operation was
+performed. Task 5.2g is complete; all parent declaration, writer-drain, guest,
+backup/restore, capacity, retention, and growth gates remain separate and open.
+Physical-origin attestation remains waived. The PBS package-source choice is
+pending the user's decision; neither enterprise subscription readiness nor
+no-subscription risk acceptance is declared. See the [task receipt](tasks.md)
+and [Dev runbook](implementation/dev-bootstrap-publication-runbook.md).
+
 ## Risks / Trade-offs
 
 - **Failure-domain scope** → the PBS target placement and its relationship to the source are defined by private site-config inventory and are not asserted in public code. Keep retention growth blocked until the independent-copy requirement is met.
-- **Physical origin not independently proved** → preserve the user's local-hardware attestation separately from the API identity pin. Every write rechecks the pin and only allocates a virtual disk; no host disk operation is authorized.
+- **Physical origin is not independently proved** → user decision dated 2026-10-29 removes chassis/BMC attestation as a prerequisite. Keep API identity pins and exact storage/VG/PV lineage checks; every write rechecks them and only allocates a virtual disk. No host disk operation is authorized.
 - **Concurrent storage growth** → re-evaluate VG/PV/disk capacity immediately before allocation and refuse on mismatch or less than 30% residual headroom. A preflight receipt is not a reservation.
 - **NetBox assignment identity** → provisioning accepts only the exact unassigned address reservation. An active assignment has no proven Proxmox VMID mapping in the current API response, so reruns refuse before writes if discovery activates it. Add a reviewed identity mapping before relying on provisioning to reconcile an active record.
 - **Semaphore environment identity** → the candidate survey receives OpenBao connection fields from its declared Semaphore environment. Its runtime guard must accept those fields while proving the endpoint equals the single private OpenBao inventory declaration and refusing a launch-supplied `service_url`; otherwise it refuses before a Proxmox query. Launch-time placement overrides remain forbidden.

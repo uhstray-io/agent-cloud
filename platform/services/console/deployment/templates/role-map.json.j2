@@ -1,0 +1,6 @@
+{#- console role map — rendered by deploy-console.yml to config/role-map.json (plan 17, 8.2b) from
+    platform/playbooks/vars/access-role-map.yml, which mirrors the authoritative table in
+    plan/architecture/04-credentials-access.md ("Access Level -> Per-Service Role Mapping"). Cell text and
+    level names only: no address, no secret. The server reads it with CONSOLE_ROLE_MAP_FILE (app/src/server/access.rs).
+    Do NOT edit by hand. -#}
+{{ _access_role_map | to_nice_json }}

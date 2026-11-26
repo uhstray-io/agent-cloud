@@ -22,9 +22,7 @@ The CI pipeline (`.github/workflows/lint-and-test.yml`) runs 3 jobs with 8 linte
 
 ### What Is Missing
 
-**11 services with zero tests:** caddy, inference, n8n, nextcloud, nocodb, o11y, openbao, postiz, semaphore, wikijs, a2a-registry
-
-**3 agents with zero tests:** nemoclaw, netclaw, cowork
+**7 services with zero tests:** caddy, inference, o11y, openbao, postiz, semaphore, a2a-registry
 
 **No tests exist for:**
 - Compose file validation (valid YAML, required services, no hardcoded credentials)
@@ -89,7 +87,6 @@ ignore = ["BLE001"]  # blind except is intentional in worker error handling
 - `platform/lib/common.sh`, `platform/lib/bao-client.sh`
 - `platform/services/*/deployment/deploy.sh`
 - `platform/services/netbox/deployment/lib/common.sh`, `lib/generate-secrets.sh`
-- `agents/nemoclaw/deployment/deploy.sh`, `update.sh`, `validate.sh`
 
 **Tool:** `shellcheck` (install via `brew install shellcheck` or CI action). Scans the entire repo (excluding `netbox-docker/`).
 
@@ -134,7 +131,7 @@ exclude_paths:
 
 **Scope:** 8 HCL files in `platform/services/openbao/deployment/config/`
 - `openbao.hcl` (server config)
-- `policies/*.hcl` (7 AppRole policies: semaphore-read, semaphore-write, orb-agent, nemoclaw-read, nemoclaw-rotate, nocodb-write, n8n-write)
+- `policies/*.hcl` (3 AppRole policies: semaphore-read, semaphore-write, orb-agent)
 
 **Tool:** `openbao policy fmt -check` or `terraform fmt -check` for syntax validation. These are security-critical files — invalid policy syntax could lock out services.
 

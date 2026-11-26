@@ -3,6 +3,8 @@
 >
 > **Depends on:** 00, 01
 >
+> **Status:** ACTIVE (2026-11-04) — the core discovery pipeline (Phases 1–2c) is IMPLEMENTED; SNMPv3 (Phase D) and LLDP (Phase E) are DEFERRED; the NetBox local engine fix is ACTIVE; the discovery stall diagnosis of 2026-08-24 is PROPOSED. The section statuses below govern.
+>
 > Part of the dependency-ordered `plan/development/` set (00–10). The source
 > plans are merged verbatim below under provenance dividers to preserve all
 > detail; read in numbered order to execute.
@@ -240,7 +242,7 @@ The cleanup playbook is a permanent operational tool, not a one-time fix.
 
 ### Phase D: SNMPv3 Upgrade
 
-Moved to a dedicated plan: [SNMPV3-UPGRADE-PLAN.md](SNMPV3-UPGRADE-PLAN.md)
+Moved to a dedicated plan: [SNMPv3 Upgrade Plan, embedded below](#snmpv3-upgrade-plan)
 
 **Status:** DEFERRED
 **Rationale:** SNMPv2c is sufficient for current device set. SNMPv3 adds authentication and encryption but requires per-device credential management.
@@ -565,7 +567,7 @@ Upgrade the existing SNMP discovery from SNMPv2c (plaintext community string) to
 
 # Discovery Pipeline Stalled Since 2026-04-23 — Diagnosis & Fix Plan
 
-**Status:** open. Found 2026-08-24 while checking whether two newly-provisioned hosts
+**Status:** PROPOSED. Found 2026-08-24 while checking whether two newly-provisioned hosts
 would be auto-registered in IPAM. They were not, and the reason is not specific to them.
 
 ## Symptom

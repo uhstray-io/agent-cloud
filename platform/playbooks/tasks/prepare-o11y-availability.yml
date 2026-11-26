@@ -26,7 +26,8 @@
         'limits': o11y_availability_probe_limits | default(none),
         'receiver_environment': o11y_environment | default('local' if (local_mode | default(false) | bool) else 'prod'),
         'cluster': o11y_cluster | default('agent-cloud-local'),
-        'shared_sample_limit': o11y_scrape_sample_limit | default(2000)
+        'shared_sample_limit': o11y_scrape_sample_limit | default(2000),
+        'drill': _o11y_availability_drill | default(none)
       } | to_json }}
   register: _o11y_availability_validation
   changed_when: false
@@ -112,7 +113,9 @@
         'reviewed': (o11y_expected_metrics_targets_reviewed | default(false) | bool) or (_o11y_availability.enabled | bool),
         'targets': o11y_expected_metrics_targets | default([]),
         'availability': _o11y_availability,
-        'shared_limits': o11y_scrape_limits | default({}),
+        'shared_limits': o11y_scrape_limits | default(none) | o11y_effective_scrape_limits(
+            o11y_scrape_sample_limit | default(2000) | int, local_mode | default(false) | bool,
+            o11y_scrape_limits_reviewed | default(false) | bool),
         'environment': o11y_environment | default('local' if (local_mode | default(false) | bool) else 'prod'),
         'cluster': o11y_cluster | default('agent-cloud-local'),
         'lower_bound': none,
@@ -129,6 +132,24 @@
     ((o11y_expected_metrics_targets_reviewed | default(false) | bool) and
      (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
       selectattr('instance', 'equalto', 'alloy:12345') | list | length == 1))
+
+- name: Validate the fixed current source diagnostic category
+  ansible.builtin.set_fact:
+    _o11y_current_source_diagnostic: >-
+      {{ _o11y_current_source_raw | o11y_availability_source_gate_diagnostic }}
+  no_log: true
+  when: >-
+    (_o11y_availability.enabled | bool) or
+    ((o11y_expected_metrics_targets_reviewed | default(false) | bool) and
+     (o11y_expected_metrics_targets | default([]) | selectattr('job', 'equalto', 'alloy') |
+      selectattr('instance', 'equalto', 'alloy:12345') | list | length == 1))
+
+- name: Report only the fixed current source diagnostic category
+  ansible.builtin.debug:
+    msg: "Current self-metrics producer diagnostic: {{ _o11y_current_source_diagnostic }}"
+  when:
+    - _o11y_current_source_diagnostic is defined
+    - _o11y_current_source_diagnostic != 'producer_observed'
 
 - name: Require one fresh and unambiguous current self-metrics producer
   ansible.builtin.assert:
@@ -174,6 +195,19 @@
     O11Y_DEPLOYMENT_DIR: "{{ _deploy_dir }}"
     COMPOSE_OVERLAYS: "{{ ((['capacity/compose.textfile.yml'] if (not (local_mode | default(false) | bool) or (o11y_inference_probe_enabled | default(false) | bool)) else []) + (['compose.otlp-tls.yml'] if (o11y_otlp_tls_enabled | default(false) | bool) else []) + (['compose.availability.yml'] if (_o11y_availability.enabled | bool) else []) + (['compose.availability-ca.yml'] if (((_o11y_availability.targets | selectattr('trust', 'equalto', 'internal-ca') | list | length > 0)) and not (o11y_otlp_tls_enabled | default(false) | bool)) else [])) | join(' ') }}"
   when: _o11y_availability.enabled | bool
+
+- name: Validate the fixed availability namespace diagnostic category
+  ansible.builtin.set_fact:
+    _o11y_namespace_diagnostic: "{{ _o11y_namespace_preplacement | o11y_availability_namespace_diagnostic }}"
+  no_log: true
+  when: _o11y_availability.enabled | bool
+
+- name: Report only the fixed availability namespace diagnostic category
+  ansible.builtin.debug:
+    msg: "Availability namespace diagnostic: {{ _o11y_namespace_diagnostic }}"
+  when:
+    - _o11y_namespace_diagnostic is defined
+    - _o11y_namespace_diagnostic != 'isolated'
 
 - name: Require actual current Alloy network namespace isolation before placement
   ansible.builtin.assert:

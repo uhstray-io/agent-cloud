@@ -1,0 +1,406 @@
+---
+# reconcile-netbox-duplicate-vms.yml — remove the duplicate VM records one service left in NetBox.
+#
+# Two records exist for one VM when the workflow's validate-address step created a bare record before Proxmox
+# discovery reconciled the VM by name (validate-address-free.yml: the marker description, no vcpus, no comments).
+# Discovery's record is the one that stays: Proxmox discovery recreates it on every sync. A same-name pair
+# qualifies only when the group holds exactly two records, one bare and one discovery record (its comments start
+# with "VMID:" and its vcpus is set: platform/services/netbox/deployment/workers/proxmox_discovery/proxmox_discovery/__init__.py
+# writes both). Any other group of more than one record is ambiguous and is never touched.
+#
+# This playbook NEVER writes a workflow field. Only the conformance collector writes the workflow status fields (spec
+# "Only the collector writes status"; platform/tests/test_workflow_registry.py enforces it). A real run therefore deletes
+# each verified bare record and nothing else. The discovery record keeps its own fields. The collector rewrites them on
+# its next 15-minute run, from the Semaphore history. The bare record's workflow status is not moved. A status older
+# than that history window that only the bare record held is lost. That loss is accepted.
+#
+# Runs on the netbox_svc host through the NetBox Django shell, in the same exec pattern as
+# provision-netbox-automation-token.yml. There is NO API token and no OpenBao read. The script has the shell's full
+# authority, so its guards are code, and the reviewed Semaphore template is the only way in.
+#
+# Why there is no API token (review of 82ed8032, checked against NetBox v4.5.0):
+#   1. The changelog API (core.objectchange) returns prechange and postchange data of every object type, including
+#      Webhook.secret and DataSource.parameters. ObjectChangeViewSet (netbox/core/api/views.py) does not call
+#      restrict(). A token that reads the changelog to judge provenance can read those values.
+#   2. An ObjectPermission's constraints bind only where a view calls restrict(). A user who gains a group or
+#      superuser grant is not checked against them. (The review's claim; not re-verified in this playbook.)
+#   3. A token limited to deleting bare records could delete any record this playbook would refuse, because the
+#      limit sits on the token and not in the playbook's logic.
+#
+# For each candidate pair, inside one transaction (nothing is written before the whole plan is known):
+#   origin    bare: its only create entry in the changelog is by workflow-vm-recorder. Discovery: created by another
+#             account. Anything else, including a pruned changelog, is unverified_origin and untouched.
+#   refusal   a bare record holding an interface, a virtual disk or a primary IP is refused and untouched. The counter
+#             caches decide the plan; under the row lock the real relations (interfaces, virtualdisks) decide again, so a
+#             stale counter cannot let a record with children through. The other pairs of the run proceed, and the play
+#             fails after printing the plan.
+#   write     DELETE each verified bare record, then check that it is gone. A real run writes; a dry run does not.
+#   verify    the delete must have its own changelog row, by workflow-vm-reconciler, under this run's request id, inside
+#             the transaction. A missing row rolls the run back. After the commit the bare record is read back.
+#
+# The account and the changelog:
+#   - The writes run inside netbox/netbox/context_managers.py event_tracking, with a NetBoxFakeRequest (utilities/request.py)
+#     that carries the account and a uuid4 request id. That request shape is the one copy_safe_request builds. NetBox
+#     records a change only inside a request (netbox/core/signals.py handle_changed_object returns when there is none).
+#   - The account is workflow-vm-reconciler. It is created on the first real run that has a delete to make, inactive and
+#     with an unusable password. A pre-existing account is used only if it is inactive, holds no grant (no groups, no
+#     ObjectPermission, not superuser or staff), has no usable password and has no API token (users/models/tokens.py,
+#     the Token model). Any other state stops the run before a write.
+#   - Configured event rules and webhooks FIRE on these deletes, as they would for any change made in a request:
+#     event_tracking queues each change and flushes the queue when the context exits (netbox/extras/events.py
+#     flush_events, process_event_queue). The flush happens inside the transaction. flush_events catches only
+#     ImportError, so any other failure there rolls the delete back.
+#   - The origin check filters changelog rows to action=create, so the account's delete rows cannot change a pair's origin.
+#
+# Limits, stated and not hidden:
+#   - NetBox prunes changelog entries after CHANGELOG_RETENTION days (default 90, netbox/netbox/config/parameters.py).
+#     A pair whose creation entry was pruned reads unverified_origin and is never reconciled.
+#   - The origin check trusts the user_name NetBox stores on each create entry.
+#   - The bare record's workflow status is not moved (above). The discovery record keeps its own.
+#
+# Inputs (Semaphore survey, or -e):
+#   reconcile_names  optional JSON list of VM names, e.g. ["dns"]; blank = every verified pair
+#
+# Check mode (--check) runs the same plan with dry_run=true, prints it, and writes nothing. A refusal fails the dry
+# run as well, so the dry run exits non-zero exactly when the real run would refuse.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Reconcile duplicate NetBox VM records (workflow bare record deleted, discovery record kept)"
+  hosts: netbox_svc
+  gather_facts: false
+  become: false
+
+  vars:
+    # The same exec pattern as provision-netbox-automation-token.yml: the configured engine and container.
+    _manage: "{{ container_engine | default('docker') }} exec -i {{ netbox_app_container | default('netbox-netbox-1') }} /opt/netbox/netbox/manage.py shell"
+    # The Python the NetBox shell runs. The shell receives PARAMS (dry_run, names) on the line above this body.
+    # No Jinja markers in it: Ansible templates variable values, so a brace pair here would be evaluated.
+    _reconcile_body: |
+      import json
+      import uuid
+
+      from core.models import ObjectChange
+      from django.contrib.auth import get_user_model
+      from django.db import transaction
+      from netbox.context_managers import event_tracking
+      from users.models import ObjectPermission, Token
+      from utilities.request import NetBoxFakeRequest
+      from virtualization.models import VirtualMachine
+
+      MARKER = "Declared by the service deployment workflow (validate-address)"
+      RECORDER = "workflow-vm-recorder"
+      RECONCILER = "workflow-vm-reconciler"
+      PREFIX = "RECONCILE_RESULT "
+
+
+      def row_of(vm):
+          return {
+              "id": vm.id,
+              "name": vm.name,
+              "cluster_id": vm.cluster_id,
+              "cluster": vm.cluster.name if vm.cluster else "none",
+              "tenant": vm.tenant.name if vm.tenant else "none",
+              "created": str(vm.created),
+              "description": vm.description or "",
+              "vcpus": vm.vcpus,
+              "comments": vm.comments or "",
+              "interface_count": vm.interface_count,
+              "virtual_disk_count": vm.virtual_disk_count,
+              "primary_ip4_id": vm.primary_ip4_id,
+              "primary_ip6_id": vm.primary_ip6_id,
+          }
+
+
+      def is_bare(row):
+          return row["description"] == MARKER and row["vcpus"] is None and row["comments"] == ""
+
+
+      def is_disc(row):
+          return row["comments"].startswith("VMID:") and row["vcpus"] is not None
+
+
+      def signals(row):
+          # The per-record flags an ambiguous group reports, so the operator sees why it did not qualify. Metadata only:
+          # never the description, the comments, an address or an address id.
+          return {
+              "id": row["id"],
+              "tenant": row["tenant"],
+              "created": row["created"],
+              "bare": is_bare(row),
+              "discovery": is_disc(row),
+              "marker": row["description"] == MARKER,
+              "vcpus_set": row["vcpus"] is not None,
+              "vmid_comment": row["comments"].startswith("VMID:"),
+              "comments_empty": row["comments"] == "",
+              "interfaces": row["interface_count"],
+              "virtual_disks": row["virtual_disk_count"],
+              "primary_ip": bool(row["primary_ip4_id"] or row["primary_ip6_id"]),
+          }
+
+
+      def blockers(row):
+          reasons = []
+          if row["interface_count"] is None:
+              reasons.append("interface count unknown")
+          elif row["interface_count"] > 0:
+              reasons.append("has interfaces")
+          if row["virtual_disk_count"] > 0:
+              reasons.append("has virtual disks")
+          if row["primary_ip4_id"] is not None or row["primary_ip6_id"] is not None:
+              reasons.append("has a primary IP")
+          return reasons
+
+
+      def origin_verified(bare_creators, disc_creators):
+          # The bare record's only create entry is the recorder's. The discovery record was created by another account.
+          return bare_creators == [RECORDER] and len(disc_creators) > 0 and RECORDER not in disc_creators
+
+
+      def reconcile():
+          dry_run = bool(PARAMS["dry_run"])
+          wanted = set(name.lower() for name in PARAMS["names"])
+          ok = True
+          errors = []
+          ambiguous = []
+          plan = []
+          writes = []
+          with transaction.atomic():
+              groups = {}
+              for vm in VirtualMachine.objects.select_related("cluster", "tenant"):
+                  row = row_of(vm)
+                  groups.setdefault((row["name"].lower(), row["cluster_id"]), []).append(row)
+              candidates = []
+              # A cluster id may be None; sorting None against an int raises TypeError, so the key orders None last.
+              for key in sorted(groups, key=lambda k: (k[0], k[1] is None, k[1] or 0)):
+                  group = groups[key]
+                  if len(group) < 2:
+                      continue
+                  bares = [r for r in group if is_bare(r)]
+                  discs = [r for r in group if is_disc(r)]
+                  if len(group) == 2 and len(bares) == 1 and len(discs) == 1:
+                      candidates.append((bares[0], discs[0]))
+                  else:
+                      ambiguous.append({
+                          "name": group[0]["name"],
+                          "cluster": group[0]["cluster"],
+                          "count": len(group),
+                          "records": [signals(r) for r in sorted(group, key=lambda r: r["id"])],
+                      })
+
+              ids = [row["id"] for pair in candidates for row in pair]
+              creators = {}
+              if ids:
+                  changes = ObjectChange.objects.filter(
+                      changed_object_type__app_label="virtualization",
+                      changed_object_type__model="virtualmachine",
+                      changed_object_id__in=ids,
+                      action="create",
+                  )
+                  for change in changes:
+                      creators.setdefault(change.changed_object_id, []).append(change.user_name)
+
+              verified_names = set()
+              for bare, disc in candidates:
+                  verified = origin_verified(creators.get(bare["id"], []), creators.get(disc["id"], []))
+                  if verified:
+                      verified_names.add(bare["name"].lower())
+                  if wanted and bare["name"].lower() not in wanted:
+                      continue
+                  entry = {"bare": bare, "disc": disc, "action": ""}
+                  if not verified:
+                      entry["action"] = "unverified_origin"
+                  else:
+                      reasons = blockers(bare)
+                      if reasons:
+                          entry["action"] = "refused:" + ", ".join(reasons)
+                      else:
+                          entry["action"] = "would_delete" if dry_run else "deleted"
+                  plan.append(entry)
+
+              missing = sorted(wanted - verified_names)
+              if missing:
+                  ok = False
+                  errors.append("names no verified duplicate pair: " + ", ".join(missing))
+              for entry in plan:
+                  if entry["action"].startswith("refused:"):
+                      ok = False
+                      errors.append("refused, not written: %s in cluster %s (%s)" % (
+                          entry["bare"]["name"], entry["bare"]["cluster"], entry["action"][len("refused:"):]))
+
+              # A name that matches no verified pair stops the run before any write. A refused pair is left alone and
+              # the other pairs proceed. Nothing is written in a dry run.
+              if not missing and not dry_run:
+                  writes = [e for e in plan if e["action"] == "deleted"]
+              for e in writes:
+                  # Re-read both records under a row lock. A changed shape aborts the run before any write.
+                  e["bare_obj"] = VirtualMachine.objects.select_for_update().get(pk=e["bare"]["id"])
+                  e["disc_obj"] = VirtualMachine.objects.select_for_update().get(pk=e["disc"]["id"])
+                  if not (is_bare(row_of(e["bare_obj"])) and is_disc(row_of(e["disc_obj"]))):
+                      raise RuntimeError("a pair changed between the read and the write; nothing was committed")
+                  # The refusal is read from the real relations, not the counter caches: a stale counter must not let a
+                  # record with children through. A pair found holding children is refused; the other pairs proceed.
+                  held_by = blockers(row_of(e["bare_obj"]))
+                  if e["bare_obj"].interfaces.exists() and "has interfaces" not in held_by:
+                      held_by.append("has interfaces")
+                  if e["bare_obj"].virtualdisks.exists() and "has virtual disks" not in held_by:
+                      held_by.append("has virtual disks")
+                  if held_by:
+                      e["action"] = "refused:" + ", ".join(held_by)
+                      ok = False
+                      errors.append("refused, not written: %s in cluster %s (%s)" % (
+                          e["bare"]["name"], e["bare"]["cluster"], ", ".join(held_by)))
+              writes = [e for e in writes if e["action"] == "deleted"]
+              if not writes:
+                  transaction.set_rollback(True)
+              else:
+                  # The account is created here and only here: a dry run, or a real run with nothing to delete, leaves no
+                  # trace. It is created inactive with an unusable password, and exists to attribute the changelog rows.
+                  reconciler, created = get_user_model().objects.get_or_create(
+                      username=RECONCILER, defaults={"is_active": False})
+                  if created:
+                      reconciler.set_unusable_password()
+                      reconciler.save()
+                  # The account must be inactive and hold no grant, no usable password and no API token, whether this run
+                  # created it or found it.
+                  if (reconciler.is_active or reconciler.is_superuser or getattr(reconciler, "is_staff", False)
+                          or reconciler.groups.exists() or ObjectPermission.objects.filter(users=reconciler).exists()
+                          or reconciler.has_usable_password() or Token.objects.filter(user=reconciler).exists()):
+                      raise RuntimeError("the workflow-vm-reconciler account is active, holds a grant, a usable password "
+                                         "or an API token; nothing was committed")
+                  # NetBox records a change only inside a request. This is the request shape copy_safe_request builds.
+                  request = NetBoxFakeRequest({
+                      "user": reconciler, "id": uuid.uuid4(), "META": {}, "COOKIES": {}, "POST": {}, "GET": {},
+                      "FILES": {}, "method": "SHELL", "path": "",
+                  })
+                  # The event queue flushes when this context exits, still inside the transaction, so a failed flush
+                  # rolls the delete back.
+                  with event_tracking(request):
+                      for e in writes:
+                          e["bare_obj"].delete()
+                      for e in writes:
+                          if VirtualMachine.objects.filter(pk=e["bare"]["id"]).exists():
+                              raise RuntimeError("a bare record still exists after its delete; nothing was committed")
+                          # The delete must have its own changelog row, by this account, under this request, inside this
+                          # transaction.
+                          if not ObjectChange.objects.filter(
+                                  changed_object_type__app_label="virtualization",
+                                  changed_object_type__model="virtualmachine",
+                                  changed_object_id=e["bare"]["id"], action="delete", user_name=RECONCILER,
+                                  request_id=request.id).exists():
+                              raise RuntimeError("no changelog row for a bare record's delete; nothing was committed")
+
+          # The commit is done: read the committed state back from the database.
+          for e in writes:
+              if VirtualMachine.objects.filter(pk=e["bare"]["id"]).exists():
+                  ok = False
+                  errors.append("bare record still present after commit: %s in cluster %s" % (
+                      e["bare"]["name"], e["bare"]["cluster"]))
+
+          pairs = []
+          for e in plan:
+              bare, disc = e["bare"], e["disc"]
+              pairs.append({
+                  "name": bare["name"],
+                  "cluster": bare["cluster"],
+                  "bare_id": bare["id"],
+                  "bare_tenant": bare["tenant"],
+                  "bare_created": bare["created"],
+                  "disc_id": disc["id"],
+                  "disc_tenant": disc["tenant"],
+                  "disc_created": disc["created"],
+                  "action": e["action"],
+              })
+          result = {"ok": ok, "dry_run": dry_run, "pairs": pairs, "ambiguous": ambiguous, "errors": errors}
+          print(PREFIX + json.dumps(result, sort_keys=True))
+
+
+      reconcile()
+
+  tasks:
+    # ── the selection the operator asked for ────────────────────────────────────────────
+    # The Semaphore survey passes a JSON string; `-e reconcile_names='["dns"]'` arrives as a list.
+    # Both are accepted; a blank survey value means every verified pair.
+    - name: "Hold the requested VM names (a JSON list)"
+      ansible.builtin.set_fact:
+        _names: >-
+          {{ reconcile_names if (reconcile_names is defined and reconcile_names is sequence and reconcile_names is not string)
+             else (((reconcile_names | default('')) | string | trim | from_json)
+                   if ((reconcile_names | default('')) | string | trim | length) > 0 else []) }}
+
+    - name: "Refuse a reconcile_names value that is not a JSON list of strings"
+      ansible.builtin.assert:
+        that: >-
+          _names is sequence and _names is not string
+          and (_names | select('string') | list | length) == (_names | length)
+        fail_msg: 'reconcile_names must be a JSON list of VM names, for example ["dns"], or blank for every pair.'
+        quiet: true
+
+    # ── the plan (check mode): the same script with dry_run true, and nothing is written ─────
+    # Read-only by construction: dry_run is hard-coded true, the transaction is rolled back, and the write path is
+    # never reached. It runs under check mode on purpose, so a dry run prints the plan and exits non-zero on refusal.
+    - name: "Dry run: plan the reconciliation in the NetBox Django shell (nothing is written)"
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        import json
+        PARAMS = json.loads({{ {'dry_run': true, 'names': _names} | to_json | to_json }})
+        {{ _reconcile_body }}
+        PYSCRIPT
+      # Its own name: Ansible stores a skipped task's result under its register name, so a shared name would let the
+      # skipped real task overwrite this result (the dry run's output was lost that way).
+      register: _reconcile_dry
+      when: ansible_check_mode
+      check_mode: false
+      changed_when: false
+
+    # ── the reconciliation (a real run): the same script with dry_run false, in one transaction ──
+    - name: "Reconcile in the NetBox Django shell (one transaction; refused pairs are left untouched)"
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        import json
+        PARAMS = json.loads({{ {'dry_run': false, 'names': _names} | to_json | to_json }})
+        {{ _reconcile_body }}
+        PYSCRIPT
+      register: _reconcile_real
+      when: not ansible_check_mode
+      changed_when: true
+
+    # ── the result: exactly one line (ids, pair and cluster names, tenant names, created times, actions, and the flags of each record in an ambiguous group) ──
+    - name: "Hold the result line the NetBox shell printed"
+      ansible.builtin.set_fact:
+        # The conditional reads only the branch that ran, so the skipped task's result is never touched.
+        _result_lines: "{{ ((_reconcile_dry if ansible_check_mode else _reconcile_real).stdout_lines | default([])) | select('match', '^RECONCILE_RESULT ') | list }}"
+
+    - name: "Require exactly one result line"
+      ansible.builtin.assert:
+        that: _result_lines | length == 1
+        fail_msg: "The NetBox shell printed {{ _result_lines | length }} result line(s), expected 1. Nothing is judged from that output."
+        quiet: true
+
+    - name: "Hold the parsed result (ids, names, tenants, created times, actions)"
+      ansible.builtin.set_fact:
+        _result: "{{ _result_lines[0] | regex_replace('^RECONCILE_RESULT ', '') | from_json }}"
+
+    - name: "Show the result (ids, names, tenants, created times, actions, per-record flags of ambiguous groups)"
+      ansible.builtin.debug:
+        var: _result
+
+    - name: "Require every selected pair to be reconciled"
+      ansible.builtin.assert:
+        that: _result.ok | bool
+        fail_msg: >-
+          {{ 'Dry run: ' if ansible_check_mode else '' }}not every selected pair was reconciled: {{ _result.errors | join('; ') }}.
+          A refused pair is left untouched; the play fails here so the run is not reported as a success.
+        quiet: true
+
+    - name: "Summarise the run (counts)"
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'check mode: nothing changed; ' if ansible_check_mode else '' }}{{
+          _result.pairs | selectattr('action', 'in', ['deleted', 'would_delete']) | list | length }} bare record(s)
+          {{ 'would be' if ansible_check_mode else 'were' }} deleted;
+          {{ _result.pairs | selectattr('action', 'equalto', 'unverified_origin') | list | length }} unverified origin, not touched;
+          {{ _result.ambiguous | length }} ambiguous group(s), not touched.

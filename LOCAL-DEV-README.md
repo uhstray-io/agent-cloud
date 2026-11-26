@@ -37,7 +37,7 @@ flowchart TB
       DNS["hickory-dns<br/>*.agent-cloud.test -> 127.0.0.1"]
       CAD["Caddy<br/>internal-CA TLS + reverse proxy"]
       AK["Authentik (IdP)<br/>SSO: OIDC + forward_auth"]
-      SVC["service stacks<br/>netbox / grafana / erpnext / n8n / opa / ..."]
+      SVC["service stacks<br/>netbox / grafana / erpnext / opa / ..."]
     end
   end
   PROD["Production<br/>(only via the promotion pipeline)"]
@@ -58,7 +58,7 @@ flowchart TB
 |---|---|---|
 | Secrets | OpenBao (persistent file backend; generated locally, seed fixtures carry `LOCAL_FAKE_`; survives restart) | OpenBao (real, source of truth) |
 | Orchestration | Semaphore (1 container, SQLite) | Semaphore (full) |
-| **Identity / SSO** | **Authentik IdP — one login (`agent-cloud-admin`) for every app: OIDC (Semaphore/Grafana/ERPNext/OpenBao) + Caddy `forward_auth` (NetBox/OpenBao/n8n); n8n also keeps its own owner login** | **same Authentik + blueprints; real OIDC clients** |
+| **Identity / SSO** | **Authentik IdP — one login (`agent-cloud-admin`) for every app: OIDC (Semaphore/Grafana/ERPNext/OpenBao) + Caddy `forward_auth` (NetBox/OpenBao)** | **same Authentik + blueprints; real OIDC clients** |
 | Deploys | the unchanged `deploy-*.yml` playbooks | same playbooks |
 | Names + TLS | hickory-dns + Caddy serving a step-ca (internal CA) cert | DNS + Caddy (Let's Encrypt/Cloudflare) |
 | Engine | local Semaphore controls the VM's rootful Podman socket | rootless Podman default; declared Docker exceptions |
@@ -84,9 +84,9 @@ make local-tls-trust        # trust the local CA (sudo)
 ```
 
 `make local-all` remains a convenience target for a fixed subset: foundation,
-o11y, OPA, ERPNext, the legacy NetBox app-tier helper, and best-effort n8n,
-followed by host DNS/TLS wiring. It does not deploy every service in the catalog;
-an n8n failure does not fail that target. Validate the required services explicitly.
+o11y, OPA, ERPNext, and the legacy NetBox app-tier helper, followed by host
+DNS/TLS wiring. It does not deploy every service in the catalog. Validate the
+required services explicitly.
 The NetBox helper is not a Semaphore-driven full-stack deployment and does not
 establish production discovery health.
 
@@ -110,7 +110,7 @@ Authentik SSO credentials so you can sign in and test immediately — `agent-clo
 **Deploy a service** (through local Semaphore, like prod):
 
 ```bash
-make local-deploy-<name>    # e.g. make local-deploy-uhhcraft
+make local-deploy-<name>    # e.g. make local-deploy-erpnext
 make local-validate         # health-check everything deployed
 ```
 
@@ -195,7 +195,7 @@ to Authentik and back.
 | Integration | Apps | How |
 |---|---|---|
 | **OIDC** (native SSO) | Semaphore, Grafana, ERPNext | the app redirects to Authentik and gets identity + group claims back |
-| **`forward_auth`** (Caddy gate) | NetBox, OpenBao, n8n | Caddy authenticates each request at Authentik's embedded outpost before proxying |
+| **`forward_auth`** (Caddy gate) | NetBox, OpenBao | Caddy authenticates each request at Authentik's embedded outpost before proxying |
 
 **RBAC tiers** — the Authentik groups every app maps against (the stable contract):
 
@@ -207,9 +207,6 @@ to Authentik and back.
 
 - **NetBox** — `forward_auth` + header `REMOTE_AUTH`: your Authentik groups sync to
   NetBox groups, and `platform-admins` maps to superuser + staff.
-- **n8n** — community edition has **no SSO**: `forward_auth` gates *access*, then n8n
-  has its **own** owner login, seeded as `agent-cloud-admin@agent-cloud.test` with a
-  separate password (`make local-creds` shows it).
 - **OpenBao** — `forward_auth` gates the UI; once through, pick the **OIDC** login
   method (`agent-cloud-admin` → the `platform-admin` policy). Token / AppRole still
   works too (the escrowed root token is in `~/.agent-cloud-local/openbao-init.json`).
@@ -270,11 +267,8 @@ Other services need their own declared deployment and validation.
 | o11y (Grafana/Prometheus/Loki/Alloy) | Tier-3 | implemented | observability; Grafana login via Authentik OIDC |
 | OPA | Tier-3 | implemented | Guardrail-layer agent-action policy engine (`opa test` in the deploy) |
 | ERPNext | Tier-3 | implemented | slim local tier; login via Authentik OIDC |
-| n8n | Tier-3 | implemented | workflow automation; `forward_auth` + seeded owner account |
 | NetBox | Tier-3 | legacy app-only helper | Podman app-tier script exists; local Docker setup is not established. Production is the current discovery-validation target; do not use the direct container-to-IPAM helper as a sanctioned discovery path |
-| UhhCraft | Tier-3 | ⛔ blocked | image `ghcr.io/uhstray-io/uhhcraft` is private — needs a `read:packages` PAT or a local build |
 | Postiz | Tier-3 | local bring-up recorded | Separate `make local-deploy-postiz`; five-container base plus required search overlay. Local sign-in and API-key checks passed on 2026-09-05; scheduled publishing remains open (see the Postiz README) |
-| NocoDB | Tier-3 | retired | Kept for decommissioning; do not start a new migration/deployment from the old plan |
 
 ---
 
@@ -311,9 +305,9 @@ data shapes. Full contract + the risk-class table are in the
 |---|---|
 | `make local-preflight` | verify toolchain + podman machine |
 | `make local-init` | create the gitignored working inventory (`REFRESH=1` to regenerate) |
-| `make local-all` | Fixed subset described above, then Mac DNS/TLS wiring and local credentials; n8n is best-effort |
+| `make local-all` | Fixed subset described above, then Mac DNS/TLS wiring and local credentials |
 | `make local-bootstrap` | Genesis: OpenBao + secure foundation (dns, step-ca, caddy, authentik) + OIDC-secured Semaphore (no sudo) |
-| `make local-up` | Foundation plus o11y/OPA/ERPNext, legacy NetBox helper and best-effort n8n |
+| `make local-up` | Foundation plus o11y/OPA/ERPNext and the legacy NetBox helper |
 | `make local-creds` | show the Authentik SSO logins (`agent-cloud-admin` + `akadmin`) for browser testing |
 | `make local-deploy-<svc>` | deploy a single service through local Semaphore |
 | `make local-service-down SERVICE=<group>` | stop ONE idle service's containers (e.g. `SERVICE=erpnext_svc`); containers, images and volumes are kept. Restart with the service's `make local-deploy-<svc>` (how it restarts a stopped container varies by service; see [Stopping an idle service](docs/LOCAL-DEV.md)); NetBox's orb agent comes back only via `Deploy Orb Agent (Local)`. Local hosts only |

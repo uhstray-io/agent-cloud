@@ -1,0 +1,454 @@
+---
+# cleanup-proxmox-backup-archives.yml — delete Proxmox backup archives nobody needs, behind a confirm.
+#
+# Why: the nightly vzdump jobs have failed since 2026-10-04 on full backup storages, and a backup job
+# whose archive for a guest fails never prunes that guest's archives (docs/MISTAKES.md 3.25), so the
+# space has to be freed by hand-picked deletes. This playbook makes that pick code, reviewed and repeatable.
+#
+# What it deletes: backup archives only, from exactly two sources:
+#   - gone:     an archive whose guest (vmid) no longer exists in the cluster, on a storage no other
+#               cluster can write to: a node-local one, or CephFS on this cluster's own Ceph (taken on the
+#               operator's word, below). On any other shared storage (NFS, CIFS, PBS, an external CephFS)
+#               the vmid may belong to another cluster's guest, so those archives are counted
+#               (gone_on_shared) and kept unless declared. That no client outside this cluster's storage
+#               configuration mounts its own CephFS is the operator's statement (operator, 2026-11-18),
+#               not a read: no read this run makes shows such a mount. Confirm it before the first real run;
+#   - declared: an archive matching a (vmid, storage) pair in the inventory variable
+#               proxmox_backup_cleanup_pairs (site-config; never an extra var). A pair that an enabled
+#               vzdump job still backs up to that storage is refused, naming the job.
+# What it never deletes: a protected archive, an archive with no vmid, and every other archive; those
+# are only counted per storage. Nothing at all is listed while any node is not online.
+#
+# The confirm flow: run it in dry run (check mode). It prints the list and its sha256 and deletes
+# nothing. Review the list, then launch the real run with confirm_delete set to that sha256. The real
+# run computes the list by the same code and deletes only when it hashes to the same value; any other
+# value is refused, naming the current sha256. The sha256 is not secret.
+#
+# Permission: Proxmox deletes a backup volume with an owner vmid only for a token holding
+# Datastore.AllocateSpace on /storage/<storage> and VM.Backup on /vms/<vmid>. Every listed archive
+# also needs VM.Audit on /vms/<vmid>: the guest listing hides every guest the token lacks it on, so
+# without it a live guest would look gone, or an enabled job backing it up would not be seen. For the
+# same reason, each enabled pool job that could write a declared archive's storage needs Pool.Audit on
+# /pool/<pool>: without it the listing drops the guest's pool. A backup job list the token may not
+# read (403: Sys.Audit on /) refuses the run by name. A vzdump job with no storage writes to vzdump's default
+# storage, so it counts as covering every declared pair's storage. The run reads the
+# token's own effective privileges (GET /access/permissions) and refuses before any delete when one
+# is missing, naming each one with its path. After the deletes it re-reads the storages and refuses
+# if a listed archive is still there or an archive it did not list disappeared.
+#
+# It shares the backup-storage survey's Proxmox token and TLS switch (proxmox_validate_certs).
+# Certificate verification stays off until plan 19 Phase 2 pins the Proxmox CA; the operator
+# accepted that deferral for this playbook on 2026-11-17 (AC-964). The token-bearing requests and the
+# helper commands whose input carries their results are no_log; the list, the counts and every
+# refusal are printed.
+
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# The run reads the Proxmox token and executes the helpers from the Dev checkout, so it runs only
+# at the exact commit a review approved (expected_repository_sha).
+- name: Require the exact reviewed checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/cleanup-proxmox-backup-archives.yml
+      - platform/playbooks/files/cleanup_backup_archives.py
+      - platform/playbooks/files/survey_backup_storage.py
+      - platform/semaphore/templates.yml
+
+- name: Clean up Proxmox backup archives
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+      follow_redirects: none
+      method: GET
+      status_code: [200, 403]
+  vars:
+    _survey: "{{ playbook_dir }}/files/survey_backup_storage.py"
+    _cleanup: "{{ playbook_dir }}/files/cleanup_backup_archives.py"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+  tasks:
+    - name: Refuse the cleanup pairs as an extra var
+      ansible.builtin.assert:
+        that: "'proxmox_backup_cleanup_pairs' not in ('' | extra_var_names)"
+        fail_msg: "proxmox_backup_cleanup_pairs is declared in inventory only (site-config), never as an extra var."
+
+    - name: Require confirm_delete to be empty or a sha256
+      ansible.builtin.assert:
+        that: (confirm_delete | default('') | string) is match('^([0-9a-f]{64})?$')
+        fail_msg: "confirm_delete must be empty (dry run) or the 64-character sha256 a dry run printed."
+
+    - name: Refuse public cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Read Proxmox API credentials from OpenBao
+      ansible.builtin.set_fact:
+        _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/proxmox', url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+      no_log: true
+
+    - name: Derive Proxmox API connection values
+      ansible.builtin.set_fact:
+        _pve_host: "{{ _pve_data.url | default('') }}"
+        _pve_token_id: "{{ _pve_data.token_id | default('') }}"
+        _pve_secret: "{{ _pve_data.api_token }}"
+      no_log: true
+
+    - name: Require Proxmox API over HTTPS
+      ansible.builtin.assert:
+        that: _pve_host is match('^https://')
+        fail_msg: "The Proxmox API URL from OpenBao must use HTTPS."
+
+    - name: Require the stored Proxmox token id
+      ansible.builtin.assert:
+        that: _pve_token_id | length > 0
+        fail_msg: >-
+          secret/services/proxmox has no token_id. Store the Proxmox API token id
+          (<user>@<realm>!<token-name>) beside api_token; there is no built-in default.
+
+    # These three answer every token (pve-manager Nodes.pm and Cluster.pm, pve-storage Config.pm), so any
+    # other answer fails here.
+    - name: Read the cluster's nodes, storage configuration and guests
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/{{ item }}"
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: [nodes, storage, "cluster/resources?type=vm"]
+      register: _cluster_reads
+      no_log: true
+      check_mode: false
+
+    # The backup job list answers 403 without Sys.Audit on / (pve-manager PVE/API2/Backup.pm index), and the
+    # declared-pair refusal needs every job, so the run stops here, by name, before any storage is read.
+    - name: Read the backup jobs
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/backup"
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _jobs_read
+      no_log: true
+      check_mode: false
+
+    - name: Require the backup job list
+      ansible.builtin.assert:
+        that: _jobs_read.status == 200
+        fail_msg: "Cleanup refused: the Proxmox token may not list the backup jobs (needs Sys.Audit on /)."
+
+    - name: Select the online nodes
+      ansible.builtin.set_fact:
+        _online_nodes: "{{ _cluster_reads.results[0].json.data | selectattr('status', 'equalto', 'online')
+          | map(attribute='node') | list }}"
+      no_log: true
+
+    - name: Require well-formed node names before building storage URLs
+      ansible.builtin.assert:
+        that:
+          - _online_nodes | length > 0
+          - _online_nodes | reject('match', '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') | list | length == 0
+        fail_msg: "Proxmox reported no online node, or a malformed node name; nothing else was read."
+
+    - name: Read each online node's storage status
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ item }}/storage"
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _online_nodes }}"
+      register: _node_storage_reads
+      no_log: true
+      check_mode: false
+
+    - name: Plan which backup storages to read
+      ansible.builtin.command:
+        argv: [python3, "{{ _survey }}", plan]
+        stdin: >-
+          {{ {'nodes': _cluster_reads.results[0].json.data,
+              'storage_config': _cluster_reads.results[1].json.data,
+              'jobs': _jobs_read.json.data,
+              'storage_listings': _node_storage_reads.results} | to_json }}
+      register: _plan_run
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require a valid storage plan
+      ansible.builtin.assert:
+        that: _plan_run.rc == 0
+        fail_msg: "Cleanup refused: {{ (_plan_run.stdout | from_json).refusal | default('the planner failed') }}"
+
+    - name: Keep the storage plan
+      ansible.builtin.set_fact:
+        _plan: "{{ _plan_run.stdout | from_json }}"
+
+    - name: Read the backup volumes on each backup storage
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ item.node }}/storage/{{ item.storage | urlencode }}/content?content=backup"
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _plan.reads }}"
+      loop_control:
+        label: "{{ item.storage }}"
+      register: _content_reads
+      no_log: true
+      check_mode: false
+
+    - name: Collect the list's input
+      ansible.builtin.set_fact:
+        _list_input: >-
+          {{ {'nodes': _cluster_reads.results[0].json.data,
+              'vms': _cluster_reads.results[2].json.data,
+              'jobs': _jobs_read.json.data,
+              'storage_config': _cluster_reads.results[1].json.data,
+              'plan': _plan,
+              'content_reads': _content_reads.results,
+              'pairs': proxmox_backup_cleanup_pairs | default(none),
+              'confirm_delete': confirm_delete | default('') | string,
+              'check_mode': ansible_check_mode} }}
+      no_log: true
+
+    - name: List the archives to delete
+      ansible.builtin.command:
+        argv: [python3, "{{ _cleanup }}", list]
+        stdin: "{{ _list_input | to_json }}"
+      register: _list_run
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require a valid archive list
+      ansible.builtin.assert:
+        that: _list_run.rc == 0
+        fail_msg: "Cleanup refused: {{ (_list_run.stdout | from_json).refusal | default('the lister failed') }}"
+
+    - name: Keep the archive list
+      ansible.builtin.set_fact:
+        _list: "{{ _list_run.stdout | from_json }}"
+
+    - name: Report the archives this run deletes (a dry run deletes none)
+      ansible.builtin.debug:
+        msg:
+          volumes: "{{ _list.volumes }}"
+          count: "{{ _list.count }}"
+          total_gib: "{{ _list.total_gib }}"
+          sha256: "{{ _list.sha256 }}"
+          not_listed: "{{ _list.not_listed }}"
+          delete: "{{ _list.delete }}"
+
+    - name: Read the token's privileges on each storage, guest and pool in the list
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/access/permissions?path={{ item | urlencode }}"
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _list.acl_paths }}"
+      register: _permission_reads
+      no_log: true
+      check_mode: false
+
+    - name: Check the token may delete every listed archive
+      ansible.builtin.command:
+        argv: [python3, "{{ _cleanup }}", authorize]
+        stdin: >-
+          {{ {'volumes': _list.volumes, 'pools': _list.pools,
+              'permission_reads': _permission_reads.results | default([])} | to_json }}
+      register: _authorize_run
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require the token's delete privileges
+      ansible.builtin.assert:
+        that: _authorize_run.rc == 0
+        fail_msg: "Cleanup refused: {{ (_authorize_run.stdout | from_json).refusal | default('the permission check failed') }}"
+
+    - name: Delete the listed archives
+      when: _list.delete and not ansible_check_mode
+      block:
+        # The jobs, guests and nodes were read before the storages, the privilege reads and the confirm. All
+        # three are read again and the list rebuilt by the same code: a job enabled since that covers a
+        # declared pair refuses the run naming the job, a guest that came back changes the sha256, and a node
+        # no longer online refuses the run. Proxmox holds no lock on these, so this narrows the window to the
+        # seconds before the first DELETE; it does not close it.
+        - name: Read the backup jobs, guests and nodes again before deleting
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/{{ item }}"
+            headers:
+              Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+          loop: [cluster/backup, "cluster/resources?type=vm", nodes]
+          register: _rereads
+          failed_when: false
+          no_log: true
+
+        - name: Require the second job, guest and node reads
+          ansible.builtin.assert:
+            that: _rereads.results | map(attribute='status') | list == [200, 200, 200]
+            fail_msg: "Cleanup refused before deleting: the second read of the backup jobs, guests and nodes
+              answered {{ _rereads.results | map(attribute='status') | list }}, not [200, 200, 200]."
+
+        - name: Rebuild the list from the second reads
+          ansible.builtin.command:
+            argv: [python3, "{{ _cleanup }}", list]
+            stdin: >-
+              {{ _list_input | combine({'jobs': _rereads.results[0].json.data,
+                                        'vms': _rereads.results[1].json.data,
+                                        'nodes': _rereads.results[2].json.data}) | to_json }}
+          register: _relist_run
+          failed_when: false
+          changed_when: false
+          no_log: true
+
+        # An empty rebuilt list passes the helper's own confirm check, so the sha256 is compared here.
+        - name: Require the same list before deleting
+          ansible.builtin.assert:
+            that:
+              - _relist_run.rc == 0
+              - (_relist_run.stdout | from_json).sha256 == _list.sha256
+              - (_relist_run.stdout | from_json).pools == _list.pools
+            fail_msg: "Cleanup refused before deleting: {{ (_relist_run.stdout | from_json).refusal
+              | default('the backup jobs or guests changed since the list was confirmed') }}"
+
+        # From here on no task ends the block: a refused DELETE, a poll that runs out, a failed re-read or a
+        # verifier that gives no result is counted, and the one check at the end reports them all after the
+        # read-back.
+        - name: Delete each listed archive
+          ansible.builtin.uri:
+            url: >-
+              {{ _pve_host }}/api2/json/nodes/{{ item.node }}/storage/{{ item.storage | urlencode
+              }}/content/{{ item.volid | urlencode }}?delay=30
+            method: DELETE
+            status_code: 200
+            # Proxmox may hold the request up to `delay` (30 s) before answering; the socket timeout must outlast it.
+            timeout: 60
+            headers:
+              Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+          loop: "{{ _list.volumes }}"
+          loop_control:
+            label: "{{ item.volid }}"
+          register: _delete_runs
+          failed_when: false
+          no_log: true
+
+        # Every reply shape is tested with `defined` first: any other test (`equalto`, `none`, `mapping`) given a
+        # missing key raises in ansible-core 2.20, and a raise here would end the block. A DELETE whose reply was
+        # cut off has no `status` at all.
+        - name: Keep the accepted DELETE answers
+          ansible.builtin.set_fact:
+            _delete_accepted: "{{ _delete_runs.results | selectattr('status', 'defined')
+              | selectattr('status', 'equalto', 200) | list }}"
+          no_log: true
+
+        # A delete still running after `delay` answers with its task id (UPID); one that finished answers
+        # null. Every other accepted answer (no body, or a body without `data`) counts as running, so a reply
+        # the poll cannot use is counted as not stopped instead of dropped.
+        - name: Select the accepted deletes still running
+          ansible.builtin.set_fact:
+            _delete_running: "{{ (_delete_accepted | selectattr('json', 'defined') | selectattr('json.data', 'defined')
+              | rejectattr('json.data', 'none') | list)
+              + (_delete_accepted | selectattr('json', 'defined') | rejectattr('json.data', 'defined') | list)
+              + (_delete_accepted | rejectattr('json', 'defined') | list) }}"
+          no_log: true
+
+        # Each is polled on the node its delete went to (item.item, its volume).
+        - name: Wait for each running delete task
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ item.item.node }}/tasks/{{ item.json.data | urlencode }}/status"
+            status_code: 200
+            headers:
+              Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+          loop: "{{ _delete_running }}"
+          register: _task_polls
+          # Total for every reply: a non-200 answer, or one without `data` or `status`, is one more retry
+          # (a raise here would end the item's retries at once).
+          until: (_task_polls.status | default(0)) == 200 and (_task_polls.json.data | default(none)) is mapping
+            and (_task_polls.json.data.status | default('')) == 'stopped'
+          retries: 60
+          delay: 5
+          # A task still running when the retries run out fails the poll whatever failed_when says (ansible-core
+          # marks it failed after failed_when). It must not skip the read-back: the count is checked below,
+          # against _delete_running, so a poll that fails whole counts every task as not seen stopped.
+          ignore_errors: true
+          no_log: true
+
+        - name: Collect the delete tasks' end states
+          ansible.builtin.set_fact:
+            _delete_stopped: "{{ _task_polls.results | default([]) | selectattr('status', 'defined')
+              | selectattr('status', 'equalto', 200) | selectattr('json', 'defined')
+              | selectattr('json.data', 'defined') | map(attribute='json.data') | select('mapping')
+              | selectattr('status', 'defined') | selectattr('status', 'equalto', 'stopped') | list }}"
+          no_log: true
+
+        - name: Keep the delete tasks that ended OK
+          ansible.builtin.set_fact:
+            _delete_ok: "{{ _delete_stopped | selectattr('exitstatus', 'defined')
+              | selectattr('exitstatus', 'equalto', 'OK') | list }}"
+          no_log: true
+
+        - name: Re-read the backup volumes on each backup storage
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ item.node }}/storage/{{ item.storage | urlencode }}/content?content=backup"
+            headers:
+              Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+          loop: "{{ _plan.reads }}"
+          loop_control:
+            label: "{{ item.storage }}"
+          register: _content_rereads
+          # A read that fails is passed to the verifier, which refuses any answer but 200 by name.
+          failed_when: false
+          no_log: true
+          check_mode: false
+
+        - name: Verify exactly the listed archives are gone
+          ansible.builtin.command:
+            argv: [python3, "{{ _cleanup }}", verify]
+            stdin: >-
+              {{ {'volumes': _list.volumes, 'before': _content_reads.results,
+                  'after': _content_rereads.results} | to_json }}
+          register: _verify_run
+          failed_when: false
+          changed_when: false
+          check_mode: false
+          no_log: true
+
+        # The verifier prints one JSON document for every result and refusal it knows. Any other output (none,
+        # or a partial document from a crash) fails the parse, which is ignored, and the next task makes it a
+        # refusal, so the check below still runs.
+        - name: Keep the read-back's result
+          ansible.builtin.set_fact:
+            _verify: "{{ _verify_run.stdout | from_json }}"
+          register: _verify_parse  # unread: ansible-lint's ignore-errors rule accepts a registered task
+          ignore_errors: true
+          no_log: true
+
+        - name: Treat a read-back with no result as a refusal
+          ansible.builtin.set_fact:
+            _verify: "{{ _verify if (_verify | default(none)) is mapping
+              else dict(refusal='the verifier gave no result') }}"
+          no_log: true
+
+        # Every task after the first DELETE leaves the block running, so this one check sees every failure at
+        # once and none hides another. It prints counts and the read-back's refusal, never a request result.
+        - name: Require every DELETE accepted, every delete task stopped and OK, and the read-back verified
+          ansible.builtin.assert:
+            that:
+              - _delete_accepted | length == _delete_runs.results | length
+              - _delete_stopped | length == _delete_running | length
+              - _delete_ok | length == _delete_stopped | length
+              - (_verify_run.rc | default(1)) == 0 and 'refusal' not in _verify
+            fail_msg: "Cleanup incomplete: {{ _delete_runs.results | length - _delete_accepted | length }} DELETE
+              request(s) not accepted, {{ _delete_running | length - _delete_stopped | length }} delete task(s) not
+              seen stopped, {{ _delete_stopped | length - _delete_ok | length }} delete task(s) not ended OK.
+              Read-back: {{ _verify.refusal | default('every listed archive is gone') }}"
+
+        - name: Report the cleanup
+          ansible.builtin.debug:
+            msg: "{{ _verify }}"

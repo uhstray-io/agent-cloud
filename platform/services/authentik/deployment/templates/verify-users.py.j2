@@ -2,6 +2,8 @@
 # Rendered by deploy-authentik.yml (post-apply VERIFY). Confirms that the blueprints
 # the deploy placed were actually APPLIED, and that the accounts they declare exist
 # in the state declared — present and active, or absent. Fails the deploy otherwise.
+# With the console app enabled it also proves the Dispatch Console's directory token
+# (CONSOLE_DIRECTORY_TOKEN) reads the directory (200) and cannot write (403) — section 5.
 #
 # Why this exists: blueprint application is asynchronous in the worker. A deploy
 # that placed the files and saw a healthy server has proven only that the files
@@ -141,6 +143,83 @@ for name in EXPECT_ABSENT:
         bad.append("retired user %s: still exists (%d account(s))" % (name, len(found)))
     else:
         print("OK   absent    %-40s" % name)
+
+# ── 5. The Dispatch Console's view-only directory token (console app enabled only) ──
+# The console app's blueprint (console-oidc.yaml) is in the set placed above, so once it is
+# "successful" the svc-console-directory account, its group and its token exist. The token is
+# read from the server env (never argv). Names and status codes only, never the token.
+{% if 'console' in (_enabled_apps | default([])) %}
+CONSOLE_DIRECTORY_USER = "svc-console-directory"
+CONSOLE_DIRECTORY_READS = ["/api/v3/core/users/?page_size=1", "/api/v3/core/groups/?page_size=1"]
+CONSOLE_WRITE_PROBE = "console-directory-write-probe"
+
+
+def call(method, path, token, body=None):
+    conn = http.client.HTTPConnection("localhost", 9000, timeout=10)
+    headers = {"Authorization": "Bearer " + token}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    conn.request(method, path, body=data, headers=headers)
+    resp = conn.getresponse()
+    raw = resp.read()
+    conn.close()
+    return resp.status, raw
+
+
+console_tok = os.environ.get("CONSOLE_DIRECTORY_TOKEN")
+if not console_tok:
+    bad.append("console directory token missing from the server env (CONSOLE_DIRECTORY_TOKEN)")
+else:
+    # The reads must be 200 with the view grant. The token is applied with its blueprint, so a
+    # read a few seconds after "successful" is polled to the settle window before it fails.
+    for path in CONSOLE_DIRECTORY_READS:
+        read_deadline = time.time() + SETTLE_SECONDS
+        status, _ = call("GET", path, console_tok)
+        while status != 200 and time.time() < read_deadline:
+            time.sleep(5)
+            status, _ = call("GET", path, console_tok)
+        resource = path.split("?")[0]
+        if status == 200:
+            print("OK   console directory token: GET %s -> 200" % resource)
+        else:
+            bad.append("console directory token: GET %s -> %s (the directory read must be 200)" % (resource, status))
+    # The write must be refused. 403 is the permission check turning the POST away before it
+    # validates anything. Any other status means the token reached the write path.
+    status, raw = call("POST", "/api/v3/core/groups/", console_tok, {"name": CONSOLE_WRITE_PROBE})
+    if status == 403:
+        print("OK   console directory token: POST /api/v3/core/groups/ -> 403 (write refused)")
+    else:
+        bad.append("console directory token: POST /api/v3/core/groups/ -> %s (must be 403: the token is not read-only)" % status)
+        if status == 201:
+            # The probe created a group. Remove it with the bootstrap token, then fail regardless.
+            pk = (json.loads(raw or b"{}") or {}).get("pk")
+            if pk is None:
+                bad.append("console directory token: the write probe created group %s but its id is unknown — remove it" % CONSOLE_WRITE_PROBE)
+            else:
+                dstat, _ = call("DELETE", "/api/v3/core/groups/%s/" % pk, tok)
+                if dstat not in (200, 204):
+                    bad.append("console directory token: the write probe created group %s and its removal returned %s — remove it" % (CONSOLE_WRITE_PROBE, dstat))
+
+# The account itself: exactly one, not a superuser, not in platform-admins. Section 3 already
+# refuses an undeclared platform-admins member; this states the rule for this account directly.
+dir_found = [u for u in get("/api/v3/core/users/?username=%s&page_size=50" % CONSOLE_DIRECTORY_USER)["results"]
+             if u.get("username") == CONSOLE_DIRECTORY_USER]
+if len(dir_found) != 1:
+    bad.append("user %s: expected exactly 1 account, found %d" % (CONSOLE_DIRECTORY_USER, len(dir_found)))
+else:
+    du = dir_found[0]
+    dgroups = sorted(g.get("name", "?") for g in (du.get("groups_obj") or []))
+    refused = len(bad)
+    if du.get("is_superuser") is not False:
+        bad.append("user %s: is_superuser is not false; the directory reader must not be a superuser" % CONSOLE_DIRECTORY_USER)
+    if ADMIN_GROUP in dgroups:
+        bad.append("user %s: a member of %s; the directory reader must not hold the admin tier" % (CONSOLE_DIRECTORY_USER, ADMIN_GROUP))
+    # The OK line states "superuser=false", so it is printed only when neither refusal above fired.
+    if len(bad) == refused:
+        print("OK   user      %-40s superuser=false, groups=%s" % (CONSOLE_DIRECTORY_USER, dgroups))
+{% endif %}
 
 if bad:
     print("VERIFY FAILED (declared state and live state disagree):")

@@ -6,29 +6,10 @@
 - [x] 0.2 Read-only inventory through Semaphore: confirm no o11y containers run on any
       production host today; record the result in `design.md` Context
       2026-10-02 rescope: PARTIAL — tasks 1105/1134 found no `o11y-*` on every reachable host;
-      `grafanapodman` retired by the operator 2026-09-26 (site-config#33). `nemoclaw`,
-      `nocodb`, `openhands` were never reached; rerun `Audit o11y Containers (Dev)` or close
-      as superseded now that the dedicated receiver runs.
+      `grafanapodman` retired by the operator 2026-09-26 (site-config#33).
       2026-10-04: `Audit o11y Containers (Dev)` task 2743 at `21891372` reached 15 hosts; only the o11y
-      receiver host runs `o11y-*` containers (its own seven, expected). `nocodb`, `nemoclaw` and
-      `openhands` were unreachable over SSH ("Host is unreachable"), so the task ended in error.
-      Not ticked: the operator decides whether to close as superseded or investigate those three.
-      2026-10-12: investigated (operator: investigate first). Task ids and output as reported by
-      the coordinator; not read from Semaphore here. Verify Host Access (Dev) tasks 4857
-      (nocodb_svc), 4858 (nemoclaw_svc), 4859 (openhands_svc): each NO-GO, ssh port 22 "Host is
-      unreachable", and no per-service key in the store. Probe Reachability (Dev) from caddy_svc,
-      tasks 4860-4862: openhands 3000+22, nocodb 8181+22, nemoclaw 22 all error. The three VMs are
-      network-unreachable from both the controller and the Caddy host, so this is VM state, not
-      credentials; power state not read (no read-only hypervisor-status template). Operator to
-      confirm whether these VMs are powered off, moved or retired; 0.2 stays open.
-      2026-10-13: investigation so far (task ids as reported by the coordinator): the nocodb,
-      nemoclaw and openhands VMs were network-unreachable from the controller and from Caddy
-      (tasks 4857-4862). The operator's decision on their VM state is pending. Not ticked.
-      2026-10-14: ticked. Operator decision 2026-10-13: the nocodb, nemoclaw and openhands VMs
-      are RETIRED, which closes the inventory (they were unreachable in tasks 4857-4862). Open
-      and separate: root `CLAUDE.md` still lists OpenHands as deployed at `canvas.uhstray.io`,
-      and the Caddy route for canvas is still declared and live; removing the route, the
-      inventory entries and those docs is its own step.
+      receiver host runs `o11y-*` containers (its own seven, expected).
+      2026-10-14: ticked.
 - [x] 0.3 Allocate the o11y VM in site-config `proxmox/vm-specs.yml` (Auxiliary tier,
       Podman) and provision it through the onboarding checklist phases 1 to 2
       2026-10-02 rescope: PARTIAL — the VM is reserved and provisioned under

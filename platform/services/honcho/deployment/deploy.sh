@@ -2,7 +2,7 @@
 # honcho — container lifecycle only.
 #
 # Ansible's deploy-honcho.yml templates .env (JWT secret + DB password from
-# OpenBao, Gemini key shared-read from nemoclaw) BEFORE this runs. This script
+# OpenBao, Gemini key from secret/services/honcho) BEFORE this runs. This script
 # does NOT generate secrets — it pulls the GHCR-built image, starts the four
 # rootless containers (api, deriver, db, redis), and waits for the api to
 # report healthy (first boot runs the alembic migrations, incl. the pgvector

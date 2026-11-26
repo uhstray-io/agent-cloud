@@ -162,7 +162,6 @@ bao_kv_put() {
 
 **Files (each contains one or more `/v1/secret/data/services/…` or `/secret/metadata/…` references — substitute the same pattern as Task 4):**
 - `platform/playbooks/bootstrap-local-dev.yml` (the OpenBao OIDC client-secret read + any KV reads)
-- `platform/playbooks/seed-n8n-secrets.yml`
 - `platform/playbooks/sync-secrets-to-openbao.yml`
 - `platform/playbooks/check-secrets.yml`, `validate-secrets.yml`
 - `platform/playbooks/deploy-*.yml` and `clean-deploy-*.yml` that read/write KV directly (audit with the grep in Step 2)
@@ -202,8 +201,8 @@ grep -rn "v1/secret/data\|v1/secret/metadata\|/secret/data/services\|/secret/met
 ## Task 7: Template the OpenBao policies
 
 **Files:**
-- Rename: 9 files `platform/services/openbao/deployment/config/policies/*.hcl` → `*.hcl.j2`
-  (`inference-comfyui`, `inference-hunyuan3d`, `n8n-write`, `nemoclaw-read`, `nemoclaw-rotate`, `nocodb-write`, `orb-agent`, `semaphore-read`, `semaphore-write`)
+- Rename: 3 files `platform/services/openbao/deployment/config/policies/*.hcl` → `*.hcl.j2`
+  (`orb-agent`, `semaphore-read`, `semaphore-write`)
 - Modify: `platform/playbooks/tasks/apply-openbao-policy.yml` (file → template lookup)
 - Modify: `platform/playbooks/apply-policy-*.yml` (7 files) + `apply-openbao-policies.yml` — update `_policy_file` extension to `.hcl.j2`
 
@@ -244,7 +243,7 @@ path "{{ bao_kv_mount | default('secret') }}/metadata/services/*" {
 ## Task 8: Parameterize `scripts/local-dev.sh`
 
 **Files:**
-- Modify: `scripts/local-dev.sh` (the `creds()` reads of `secret/data/services/authentik`, `…/n8n`, etc.)
+- Modify: `scripts/local-dev.sh` (the `creds()` reads of `secret/data/services/authentik`, etc.)
 
 - [ ] **Step 1: Resolve the mount once + use it** — add near the top of `creds()` (and any other KV read):
 

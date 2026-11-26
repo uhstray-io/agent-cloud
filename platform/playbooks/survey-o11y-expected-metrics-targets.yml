@@ -121,7 +121,9 @@
             'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
             'targets': o11y_expected_metrics_targets | default([]),
             'availability': _expected_source_availability,
-            'shared_limits': o11y_scrape_limits | default({}),
+            'shared_limits': o11y_scrape_limits | default(none) | o11y_effective_scrape_limits(
+                o11y_scrape_sample_limit | default(2000) | int, local_mode | default(false) | bool,
+                o11y_scrape_limits_reviewed | default(false) | bool),
             'environment': o11y_environment | default('prod'),
             'cluster': o11y_cluster | default('agent-cloud-local'),
             'lower_bound': none,
@@ -147,21 +149,42 @@
         _expected_target_native_source_raw.stdout is defined
 
     - name: Survey expected-target coverage with private input protected
-      ansible.builtin.command:
-        argv:
-          - python3
-          - -c
-          - "{{ lookup('ansible.builtin.file', _expected_target_helper, rstrip=false) }}"
-          - --expected-target-coverage
-        stdin: >-
-          {{ {'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
-              'targets': o11y_expected_metrics_targets | default([])} | to_json }}
-      register: _expected_target_coverage_raw
-      changed_when: false
-      failed_when: false
-      check_mode: false
-      no_log: true
       when: not ansible_check_mode
+      block:
+        - name: Allocate a private receiver helper workspace
+          ansible.builtin.tempfile:
+            state: directory
+            path: /tmp
+            prefix: o11y-expected-targets-
+          register: _expected_target_helper_workspace
+
+        - name: Stage the exact reviewed helper bytes
+          ansible.builtin.copy:
+            content: >-
+              {{ hostvars['localhost']['_reviewed_checkout_payloads']['platform/playbooks/files/summarize-o11y-scrape-baseline.py'] | b64decode }}
+            dest: "{{ _expected_target_helper_workspace.path }}/summarize.py"
+            mode: "0600"
+
+        - name: Survey expected-target coverage with private input protected
+          ansible.builtin.command:
+            argv:
+              - python3
+              - "{{ _expected_target_helper_workspace.path }}/summarize.py"
+              - --expected-target-coverage
+            stdin: >-
+              {{ {'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
+                  'targets': o11y_expected_metrics_targets | default([])} | to_json }}
+          register: _expected_target_coverage_raw
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+      always:
+        - name: Remove the private receiver helper workspace
+          ansible.builtin.file:
+            path: "{{ _expected_target_helper_workspace.path }}"
+            state: absent
+          when: (_expected_target_helper_workspace | default({})).path is defined
 
     - name: Keep the validated coverage receipt private until projection
       ansible.builtin.set_fact:

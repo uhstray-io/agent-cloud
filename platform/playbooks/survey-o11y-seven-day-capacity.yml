@@ -93,3 +93,7 @@
         fail_msg: >-
           Seven-day capacity history is unavailable or incomplete. Sanitized result:
           {{ _capacity_history.stdout | trim }}
+
+    - name: Record the bounded successful seven-day capacity receipt
+      ansible.builtin.debug:
+        msg: "{{ _capacity_history.stdout | from_json | to_nice_json }}"

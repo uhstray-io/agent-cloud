@@ -9,6 +9,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 from jinja2 import Environment
@@ -778,7 +779,8 @@ def test_playbook_refuses_invalid_receipt_before_from_json(stdout):
     )
 
     # Exercise the same Python JSON validator command declared by the playbook.
-    result = subprocess.run(validator["ansible.builtin.command"]["argv"], input=stdout, text=True, capture_output=True)
+    result = subprocess.run(validator["ansible.builtin.command"]["argv"], input=stdout, text=True,
+                            capture_output=True, timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
     assert result.returncode != 0
 
 

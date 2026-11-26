@@ -283,7 +283,7 @@ ALLOWED = {
     "enable auth": 'uri: {url: "{{ b }}/v1/sys/auth/approle", method: POST, headers: {X-Vault-Token: t}}',
     "role write": 'uri: {url: "{{ b }}/v1/auth/approle/role/x", method: POST, headers: {X-Vault-Token: t}}',
     "OPA decision": 'uri: {url: "{{ o }}/v1/data/agentcloud/decision", method: POST}',
-    "n8n API": 'uri: {url: "{{ n }}/api/v1/credentials", headers: {X-N8N-API-KEY: k}}',
+    "pfSense API": 'uri: {url: "{{ n }}/api/v1/credentials", headers: {X-API-Key: k}}',
     "bao status": 'ansible.builtin.command: bao status',
     "ansible-vault": 'ansible.builtin.command: ansible-vault view x',
     "public key": "set_fact: {x: \"{{ lookup('community.hashi_vault.hashi_vault',\n"

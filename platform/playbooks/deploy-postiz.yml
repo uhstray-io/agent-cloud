@@ -18,7 +18,7 @@
 #
 # Auth is native OIDC to Authentik (blueprints/postiz-oidc.yaml, applied by
 # Deploy Authentik) rather than a Caddy forward_auth gate, so the
-# /api/public/v1 automation path stays usable by n8n with an API key.
+# /api/public/v1 automation path stays usable with an API key.
 #
 # Caddy + inventory are wired separately (see the plan). Local-dev additionally
 # distributes the step-ca trust bundle: the app's backend makes server-side OIDC
@@ -62,7 +62,7 @@
     # All three generated values are STATEFUL — manage-secrets generates them
     # once into OpenBao and reuses them on every later run:
     #   jwt_secret          signs sessions AND API keys; regenerating would log
-    #                       everyone out and invalidate every key n8n holds
+    #                       everyone out and invalidate every key already issued
     #   db_password         regenerating locks the app out of its existing volume
     #   temporal_db_password  same, for the workflow engine's own datastore
     _secret_definitions:

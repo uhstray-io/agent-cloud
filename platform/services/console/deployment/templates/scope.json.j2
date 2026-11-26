@@ -1,4 +1,6 @@
 {# console scope file — rendered by deploy-console.yml from the inventory (console_tenants,
    console_scope_is_example). The console shows only what this declares: tenants, their orgs,
-   and each org's sites with the environments of each. Not a secret. Do NOT edit by hand. #}
+   and each org's sites with the environments of each. Not a secret. Do NOT edit by hand.
+   A site may carry an optional netbox_site (a NetBox site slug, D23). It passes through unchanged here, so
+   the console reads it from this file; deploy-console.yml refuses a slug declared on two sites. #}
 {{ {"example": console_scope_is_example | default(false) | bool, "tenants": console_tenants | default([])} | to_nice_json }}

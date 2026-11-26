@@ -9,14 +9,12 @@ import json
 import os
 import shutil
 import subprocess
-import threading
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import playbook_yaml
 import pytest
 import yaml
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOK = ROOT / "platform/playbooks/manage-semaphore-access.yml"
@@ -83,15 +81,13 @@ def run(tmp_path, *, declared, integrations=(), check=False, ignore_put=False, a
         "members": [{"id": 2, "username": "runner-a", "role": "task_runner"},
                     {"id": 3, "username": "viewer-b", "role": "guest"}],
         "integrations": list(integrations)}
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Fake)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
+    with serve(Fake) as url:
         play = playbook_yaml.plays(PLAYBOOK)[0]
         names = [t["name"] for t in play["tasks"]]
         # Everything after the loopback check and the credential lookup, unchanged.
         tasks = play["tasks"][names.index("Semaphore runtime access (injected token, or the controller AppRole)") + 1:]
         harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
-                    "vars": {"_semaphore_url": f"http://127.0.0.1:{server.server_port}", "_pid": 1,
+                    "vars": {"_semaphore_url": url, "_pid": 1,
                              "_token": TOKEN, "semaphore_admin_users": list(admin_users),
                              **({"semaphore_project_members": declared} if declared is not None else {}),
                              **({"platform_admins": platform_admins} if platform_admins is not None else {})},
@@ -103,9 +99,6 @@ def run(tmp_path, *, declared, integrations=(), check=False, ignore_put=False, a
         result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path), *(["--check"] if check else [])],
                                 cwd=ROOT, env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL,
                                 timeout=120)
-    finally:
-        server.shutdown()
-        server.server_close()
     output = result.stdout + result.stderr
     assert TOKEN not in output
     return result.returncode, output

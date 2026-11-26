@@ -11,15 +11,13 @@ import copy
 import json
 import os
 import subprocess
-import threading
-from http.server import HTTPServer
 from pathlib import Path
 
 import playbook_yaml
 import pytest
 import yaml
 from ansible_python import needs_ansible
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 REPO = Path(__file__).resolve().parents[2]
 TASK = REPO / "platform/playbooks/tasks/push-loki-lines.yml"
@@ -46,7 +44,7 @@ def test_collector_includes_the_shared_push_task():
     }
     assert task["when"] == [
         "not ansible_check_mode",
-        "local_mode | default(false) | bool",
+        "(groups['all'] | local_dev_inventory)",
         "collector_loki_url is defined",
         "_agg.loki_streams | length > 0",
     ]
@@ -114,13 +112,9 @@ class _OtlpUnknownAck(DrainingHandler):
 @pytest.fixture
 def loki():
     handler = type("Loki", (_Loki,), {"status": 204, "statuses": [], "requests": []})
-    server = HTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    handler.url = f"http://127.0.0.1:{server.server_address[1]}"
-    yield handler
-    server.shutdown()
-    server.server_close()
+    with serve(handler) as url:
+        handler.url = url
+        yield handler
 
 
 def _run(tmp_path: Path, tasks: list, vars_: dict, *args: str) -> subprocess.CompletedProcess:
@@ -131,7 +125,8 @@ def _run(tmp_path: Path, tasks: list, vars_: dict, *args: str) -> subprocess.Com
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_STDOUT_CALLBACK="default",
                ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path))
-    return subprocess.run(["ansible-playbook", "-i", "localhost,", str(path), *args],
+    # A local-dev inventory: the collector takes its branch from the inventory (plan 24), not local_mode.
+    return subprocess.run(["ansible-playbook", "-i", "localhost,collector-local,", str(path), *args],
                           cwd=REPO, env=env, text=True, capture_output=True, timeout=60, check=False)
 
 
@@ -216,7 +211,6 @@ def test_collector_publishes_receipt_separately_after_data_ack(
         {"name": "Report", **by_name["Report"]},
     ]
     vars_ = {
-        "local_mode": True,
         "collector_loki_url": loki.url,
         "ansible_check_mode": False,
         "_completion_ready": True,
@@ -245,11 +239,8 @@ def test_collector_publishes_receipt_separately_after_data_ack(
 @needs_ansible
 def test_unknown_otlp_data_ack_suppresses_the_separate_receipt_post(tmp_path):
     handler = type("OtlpUnknownAck", (_OtlpUnknownAck,), {"requests": []})
-    server = HTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        url = f"http://127.0.0.1:{server.server_address[1]}/v1/logs"
+    with serve(handler) as base:
+        url = f"{base}/v1/logs"
         tasks = _collector_tasks()
         selected = [next(t for t in tasks if t.get("name") == name) for name in (
             "Production Alloy: deliver conformance records over OTLP/HTTP",
@@ -266,7 +257,7 @@ def test_unknown_otlp_data_ack_suppresses_the_separate_receipt_post(tmp_path):
             "name": "unknown OTLP acknowledgement suppresses the receipt",
             "hosts": "localhost", "connection": "local", "gather_facts": False,
             "vars": {
-                "local_mode": False, "ansible_check_mode": False,
+                "ansible_check_mode": False,
                 "_collector_otlp_url": url, "_completion_ready": True,
                 "_agg": {"loki_streams": STREAMS, "otlp_payload": payload, "report": {}},
                 "_parser": str(REPO / "platform/workflows/service-onboarding/lib/step_results.py"),
@@ -285,9 +276,6 @@ def test_unknown_otlp_data_ack_suppresses_the_separate_receipt_post(tmp_path):
         assert handler.requests[0]["path"] == "/v1/logs"
         assert handler.requests[0]["body"] == payload
         assert "private invalid OTLP response" not in result.stdout + result.stderr
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 @needs_ansible
@@ -298,7 +286,6 @@ def test_collector_reports_skipped_when_it_has_no_loki(tmp_path, loki):
     show = {"name": "loki report", "ansible.builtin.debug": {
         "msg": "LOKI=" + report["ansible.builtin.debug"]["msg"]["loki"]}}
     result = _run(tmp_path, [include, show], {
-        "local_mode": False,
         "_conformance_loki_status": 0,
         "_conformance_loki_skipped": True,
     })

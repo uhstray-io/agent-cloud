@@ -44,7 +44,7 @@ the root [`AGENTS.md`](../../../../../AGENTS.md) and the plan it implements:
   log; trace-to-metrics and log-to-trace still need functional UI receipts after
   the receiver deploys this revision.
 - OpenBao audit ingestion, orb-agent OpenTelemetry, and future
-  Reliability/NetClaw consumers remain separately gated.
+  Reliability consumers remain separately gated.
 
 ## Bounded signal identity
 

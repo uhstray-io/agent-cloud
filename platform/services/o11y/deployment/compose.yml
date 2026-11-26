@@ -152,6 +152,13 @@ services:
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
       GF_METRICS_ENABLED: "true"
+      # Grafana's SQLite store fails a read the moment a writer holds the lock under its
+      # defaults (wal=false, query_retries=0). WAL lets reads proceed beside a writer; 10
+      # lock attempts wait about 3.3 s in all. Removing GF_DATABASE_WAL does NOT leave WAL.
+      # Evidence, retry arithmetic, rollback and escalation: o11y README, "Grafana's store
+      # is SQLite".
+      GF_DATABASE_WAL: "true"
+      GF_DATABASE_QUERY_RETRIES: "10"
     volumes:
       - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro

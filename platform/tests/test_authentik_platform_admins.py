@@ -18,6 +18,7 @@ import subprocess
 from pathlib import Path
 
 import forgeries
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import needs_ansible
@@ -158,6 +159,7 @@ def _run(tmp: Path, play: dict, extra: dict):
     env["ANSIBLE_NOCOLOR"] = "1"
     done = subprocess.run(
         ["ansible-playbook", "-i", "localhost,", str(tmp / "play.yml"), "-e", json.dumps(extra)],
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         cwd=tmp,
         env=env,
         text=True,
@@ -325,6 +327,7 @@ def _validate(tmp: Path, inventory: dict) -> subprocess.CompletedProcess:
     env["ANSIBLE_NOCOLOR"] = "1"
     return subprocess.run(
         ["ansible-playbook", "-i", "localhost,", str(tmp / "validate.yml"), "-e", json.dumps(inventory)],
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         cwd=tmp,
         env=env,
         text=True,
@@ -450,6 +453,7 @@ def test_the_credential_print_allow_list_is_the_stored_passwords(tmp_path):
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     done = subprocess.run(
         ["ansible-playbook", "-i", "localhost,", str(tmp_path / "h.yml")],
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         cwd=tmp_path,
         env=env,
         text=True,
@@ -498,6 +502,7 @@ def _collision_guard(tmp: Path, inventory: dict) -> subprocess.CompletedProcess:
     env["ANSIBLE_NOCOLOR"] = "1"
     return subprocess.run(
         ["ansible-playbook", "-i", "localhost,", str(tmp / "playbooks/guard.yml"), "-e", json.dumps(inventory)],
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         cwd=tmp,
         env=env,
         text=True,
@@ -524,24 +529,10 @@ HOSTILE_KEYS = ["db", "bootstrap", "secret_key", "db_password", "grafana_oidc_cl
 
 
 def _print_playbook(tmp: Path, extra: dict) -> subprocess.CompletedProcess:
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
     # An unreachable loopback store: a run that got past the guards would fail HERE, not at a guard.
     args = {"openbao_addr": "http://127.0.0.1:9", "i_understand_this_prints_secrets": True, **extra}
-    return subprocess.run(
-        [
-            "ansible-playbook",
-            "-i",
-            "localhost,",
-            str(PLAYBOOKS / "print-platform-user-credentials.yml"),
-            "-e",
-            json.dumps(args),
-        ],
-        cwd=REPO,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
+    return harness_sandbox.run_playbook(
+        PLAYBOOKS / "print-platform-user-credentials.yml", tmp, "-e", json.dumps(args)
     )
 
 
@@ -662,6 +653,7 @@ def _evaluate_allowed(tmp_path: Path, facts: dict, extra: dict) -> list:
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     done = subprocess.run(
         ["ansible-playbook", "-i", "localhost,", str(tmp_path / "h.yml"), "-e", json.dumps(extra)],
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         cwd=tmp_path,
         env=env,
         text=True,

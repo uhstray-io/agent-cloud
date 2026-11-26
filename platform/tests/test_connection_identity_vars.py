@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 
 import forgeries
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -82,7 +83,8 @@ def test_the_guard_covers_what_ansible_reads_a_connection_from():
         "    for opt in yaml.safe_load(mod.DOCUMENTATION)['options'].values():\n"
         "        names |= {v['name'] for v in opt.get('vars', [])}\n"
         "print(' '.join(sorted(names)))")
-    read = subprocess.run([ansible_python(), "-c", script], text=True, capture_output=True, check=True).stdout.split()
+    read = subprocess.run([ansible_python(), "-c", script], text=True, capture_output=True, check=True,
+                          timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS).stdout.split()
     # ansible-core 2.19 also lists expressions such as "delegated_vars['ansible_host']" as host
     # sources. They read a name already listed here, so only plain variable names are judged.
     read = [n for n in read if re.fullmatch(r"[A-Za-z_]\w*", n)]
@@ -199,7 +201,7 @@ except AnsibleFilterError as exc:
     print("ERROR", exc, "| cause:", exc.__cause__, "| suppressed:", exc.__suppress_context__)
 """
     return subprocess.run([ansible_python(), "-c", script], text=True, capture_output=True, check=True,
-                          stdin=subprocess.DEVNULL)
+                          stdin=subprocess.DEVNULL, timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
 
 
 @needs_ansible

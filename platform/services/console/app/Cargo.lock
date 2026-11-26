@@ -398,6 +398,7 @@ dependencies = [
  "dioxus",
  "openidconnect",
  "reqwest",
+ "rsa",
  "rusqlite",
  "serde",
  "serde_json",

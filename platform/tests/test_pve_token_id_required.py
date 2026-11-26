@@ -11,11 +11,10 @@ fails a test rather than a production provision. Requires ansible-playbook for t
 
 import copy
 import json
-import os
 import re
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -28,15 +27,19 @@ TOKEN_ID_VAR = {
     "attach-pbs-data-disk.yml": "_pve_token_id",
     "backup-o11y-to-pbs.yml": "_pve_token_id",
     "cleanup-o11y-isolated-restore.yml": "_cleanup_pve_token_id",
+    "cleanup-proxmox-backup-archives.yml": "_pve_token_id",
     "configure-pbs-backup-access.yml": "_pve_token_id",
     "destroy-vm.yml": "_pve_token_id",
     "enable-o11y-pbs-import-content.yml": "_pve_token_id",
+    "migrate-vm.yml": "_pve_token_id",
+    "provision-console-proxmox-token.yml": "_pve_token_id",
     "provision-template.yml": "_pve_token_id",
     "provision-vm.yml": "_pve_token_id",
     "provision-pbs-debian-template.yml": "_pve_token_id",
     "register-o11y-pbs-restore-storage.yml": "_proxmox_secret.token_id",
     "prepare-pbs-guest-data-disk.yml": "_pve_token_id",
     "preflight-o11y-restore-target.yml": "_pve_token_id",
+    "probe-console-sources.yml": "_probe_pve_token_id",
     "proxmox-validate.yml": "_pve_token_id",
     "reconcile-o11y-backup-job.yml": "_pve_token_id",
     "restore-o11y-isolated.yml": "_restore_pve_token_id",
@@ -45,6 +48,7 @@ TOKEN_ID_VAR = {
     "survey-o11y-backup-artifact.yml": "_pve_token_id",
     "survey-o11y-backup-readiness.yml": "_pve_token_id",
     "survey-pbs-vm-census.yml": "_pve_token_id",
+    "survey-proxmox-backup-storage.yml": "_pve_token_id",
     "survey-pbs-provisioning-candidates.yml": "_pve_token_id",
     "survey-o11y-pbs-physical-storage.yml": "_pve_token_id",
     "validate-address-free.yml": "_pve.token_id",
@@ -124,6 +128,7 @@ def _token_id_sources(play):
     Play vars and facts set in an earlier play's vars do not cross the play boundary."""
     names = (
         "_pve_token_id",
+        "_probe_pve_token_id",
         "_pve_tid",
         "_pve_headers",
         "_pve",
@@ -159,6 +164,7 @@ def _token_id_comes_from_store(play, prior_plays):
         r"|_pve_credentials\.token_id|_restore_pve_secret\.token_id|_cleanup_pve\.token_id"
         r"|_proxmox_secret\.token_id"
         r"|_pve_secret_record\.token_id"
+        r"|_probe_bao_proxmox\.json\.data\.data\.console_token_id"
     )
     if any(re.search(stored, source) for source in sources):
         return True
@@ -278,7 +284,6 @@ def _run_guards(tmp_path, name, token_id):
             "_restore_copy_token_id": "o11y-copy-restore@pbs!pve-restore",
             "_restore_copy_token": "synthetic-restore-reader",
             "_restore_copy_fingerprint": "c" * 64,
-            "_restore_semaphore_secret": {"url": "https://semaphore.test", "api_token": "synthetic"},
             "_restore_semaphore_project_id": 1,
             "_restore_copy_vm_storage_id": "pbs-vm-store",
             "_restore_copy_storage_id": "pbs-vm-store",
@@ -292,6 +297,11 @@ def _run_guards(tmp_path, name, token_id):
             "_proxmox_secret": {**pve, "token_id": pve_token_id},
             "_pbs_secret": pbs_copy_secret,
         },
+        # The probe's guard sits behind its token-minted gate and reads its own token id fact.
+        "probe-console-sources.yml": {
+            "_probe_pve_called": True,
+            "_probe_pve_token_id": pve_token_id,
+        },
     }
     harness = [{
         "hosts": "localhost", "connection": "local", "gather_facts": False,
@@ -304,10 +314,7 @@ def _run_guards(tmp_path, name, token_id):
     }]
     path = tmp_path / "guards.yml"
     path.write_text(yaml.safe_dump(harness, sort_keys=False))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    return subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    return harness_sandbox.run_playbook(path, tmp_path)
 
 
 @needs_ansible
@@ -337,8 +344,6 @@ def test_the_token_writer_names_a_token_id_only_when_the_run_does(tmp_path, toke
     path = tmp_path / "writer.yml"
     path.write_text(yaml.safe_dump([{"hosts": "localhost", "connection": "local", "gather_facts": False,
                                      "vars": extra, "tasks": [merge]}], sort_keys=False))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    done = harness_sandbox.run_playbook(path, tmp_path)
     assert done.returncode == 0, done.stdout[-1500:]
     assert json.loads(out.read_text()) == expected

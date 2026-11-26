@@ -1,9 +1,9 @@
 # postiz — automation contract
 
-How platform automation (n8n today, agents later) drives Postiz to create, upload
-media for, and schedule social posts. **This is a contract document only** — it
-describes the surface so workflows can be built against something stable. No n8n
-deployment or configuration is part of the Postiz onboarding.
+How platform automation and agents drive Postiz to create, upload media for, and
+schedule social posts. **This is a contract document only** — it describes the surface
+so clients can be built against something stable. No automation client is deployed or
+configured by the Postiz onboarding.
 
 ## Endpoint and auth
 
@@ -21,9 +21,9 @@ break. See `deployment/CLAUDE.md`.
 
 The key is captured by `store-postiz-api-key.yml` (Semaphore: `Store Postiz API
 Key`) into `secret/services/postiz:postiz_api_key` — postiz owns it, the same
-ownership convention as the OIDC client secret. When the n8n workflows are built,
-n8n reads it from there via a manage-secrets `_shared_read` — never a copy under
-`secret/services/n8n`, and never a workflow node's literal fields.
+ownership convention as the OIDC client secret. A client that needs the key reads it
+from OpenBao at that path. It is never copied under another service's path, and never
+written into a client's literal configuration.
 
 ## Why the public host and not the LAN
 
@@ -31,7 +31,7 @@ Automation calls `https://postiz.uhstray.io`, not `http://<postiz-vm>:5000`.
 
 This looks like an unnecessary hop and is deliberate. The host firewall permits
 `:5000` from the **central Caddy only** (`firewall_upstream_source`), so a direct
-call would require adding the n8n host as a second permitted source — a second
+call would require adding each calling host as a second permitted source — a second
 access path to maintain, in cleartext on the LAN, diverging from how any other
 caller reaches the service. The public path is already TLS-terminated, already
 permitted, and identical to what an external integrator would use.
@@ -43,23 +43,23 @@ narrowed.
 ## The flow
 
 ```
-n8n workflow
+automation client
   │
-  ├─ 1. compose content            (LLM / template / RSS — n8n's business)
+  ├─ 1. compose content            (LLM / template / RSS — the client's own logic)
   ├─ 2. POST  /api/public/v1/upload         → media id      (only if attaching media)
   ├─ 3. POST  /api/public/v1/posts          → post id
   │        body: content, channel/integration ids, publishDate, media ids
   └─ 4. GET   /api/public/v1/posts          → verify it is scheduled
 
-        ...then n8n's job is DONE.
+        ...then the client's job is DONE.
 
 Postiz's Temporal workflow engine owns execution from here:
   scheduled time arrives → orchestrator publishes → per-channel result recorded
 ```
 
-**n8n does not publish.** It schedules. Execution belongs to the workflow engine
+**The client does not publish.** It schedules. Execution belongs to the workflow engine
 inside the Postiz stack, which is why that engine is a hard dependency of this
-service rather than an optional extra (see `deployment/compose.yml`). A workflow
+service rather than an optional extra (see `deployment/compose.yml`). A client call
 that "succeeds" only proves the post was *accepted*, not that it went out — check
 the post's state for that.
 
@@ -80,6 +80,6 @@ the post's state for that.
 
 ## Not in scope here
 
-No n8n workflows, credentials, or nodes are created by the Postiz onboarding. When
-they are built, they belong with the n8n service, and this document is the contract
-they should be written against.
+The Postiz onboarding creates no automation clients, workflows, or credentials. A
+client built against this surface reads its key from OpenBao at
+`secret/services/postiz:postiz_api_key` and is written against this document.

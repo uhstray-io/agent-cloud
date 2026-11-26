@@ -1,0 +1,27 @@
+---
+# assert-local-mode-identity.yml — refuse a local_mode that disagrees with the inventory.
+#
+# An extra var outranks the inventory, so `-e local_mode=true` on production would take the local
+# branch there. The inventory decides instead: local-dev is every host but `localhost` named
+# `<name>-local` (filter_plugins/local_dev.py), read from `groups` because `-e` cannot set groups
+# (clean-service.yml:85-89). Unset is refused on a local-dev inventory and accepted elsewhere.
+#
+# Include it first, before any read of local_mode: in a shared task, or in a playbook's first play
+# (deploy-skynet.yml, deploy-launch-gate.yml). A templated extra var renders
+# afresh at each read, so one check does not close it (docs/MISTAKES.md 1.15).
+#
+# Expects no variables: it reads only `groups` and `local_mode`, inline in the assertion, so no task
+# variable of its own stands between them and the check.
+
+- name: "Refuse a local_mode that disagrees with the inventory's identity"
+  ansible.builtin.assert:
+    that:
+      - (local_mode | default('unset')) != 'unset' or not (groups['all'] | local_dev_inventory)
+      - (local_mode | default('unset')) == 'unset' or (local_mode | bool) == (groups['all'] | local_dev_inventory)
+    fail_msg: >-
+      Refusing: local_mode is {{ local_mode | default('unset') }}, but this inventory is
+      {{ 'local-dev (every host but localhost is named <name>-local)' if (groups['all'] | local_dev_inventory)
+         else 'not local-dev' }}.
+      The mode follows the inventory, not the variable: a local-dev inventory sets local_mode: true,
+      and any other leaves it unset or false. Nothing changed.
+    quiet: true

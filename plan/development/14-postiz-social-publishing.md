@@ -1,24 +1,25 @@
 # 14 — Postiz Social Publishing (postiz.uhstray.io)
 
-> **Depends on:** 00 (local-dev), 01 (secrets), 02 (sso-auth), 11 (tududi/honcho — the rootless-podman + native-OIDC pattern this reuses)
+> **Depends on:** 00 (local-dev), 01 (secrets), 02 (sso-auth), 11 (honcho — the rootless-podman pattern this reuses)
 >
 > Part of the dependency-ordered `plan/development/` set (00–14). Read 11 first: this plan applies the same mechanism to a heavier stack.
 
 **Date:** 2026-08-21
 **Status:** ACTIVE
 
-**Context:** Onboard **Postiz** — self-hosted social-media scheduling and publishing — as a composable rootless-podman service at `postiz.uhstray.io`, on an existing prod VM reachable today only by bootstrap password. Postiz becomes the publishing plane for uhstray's social presence; **n8n** drives it over the Postiz public API to automate post creation, media upload, and scheduling. Local-dev first (`make local-deploy-postiz`), then promotion to the prod VM with Authentik SSO, a Caddy public subdomain, a per-service SSH key, and the UFW firewall.
+**Context:** Onboard **Postiz** — self-hosted social-media scheduling and publishing — as a composable rootless-podman service at `postiz.uhstray.io`, on an existing prod VM reachable today only by bootstrap password. Postiz becomes the publishing plane for uhstray's social presence. Local-dev first (`make local-deploy-postiz`), then promotion to the prod VM with Authentik SSO, a Caddy public subdomain, a per-service SSH key, and the UFW firewall.
 
 The service directory exists today as a **compose-only stub with hardcoded credentials** (`platform/services/postiz/deployment/compose.yml`) and no automation — flagged in the archived lint plan as "must not be deployed anywhere". This plan replaces it.
+
+**Scope update (2026-11-12, AC-762):** The first production rollout connects X and LinkedIn only, the member profile and the company page. YouTube and Discord stay seedable but are deferred. The automation client is the Activepieces-based `social-content-automation` flows, which call Postiz's public API with the key at `secret/services/postiz:postiz_api_key`. n8n was retired on 2026-11-10. Postiz keeps its own bundled Temporal, which runs Postiz's internal publish executor, not the platform's automation tool.
 
 ## Decisions (settled 2026-08-21)
 
 | # | Decision | Rationale |
 |---|---|---|
-| D1 | **Pin `v2.23.0` and run a TRIMMED Temporal** — `postiz` + `postiz-postgres` + `postiz-redis` + `temporal` + `temporal-postgresql` (5 containers) | Postiz ≥ v2.12.0 executes scheduled publishing through Temporal (`apps/orchestrator` is a Temporal worker), so Temporal is not optional for the actual goal. Upstream's reference compose adds Elasticsearch, `temporal-ui`, and `temporal-admin-tools` — none is needed: `temporalio/auto-setup` runs standard visibility on its Postgres with `ENABLE_ES=false`. Pinning beats `:latest` (SOURCE-OF-TRUTH §1.2) |
+| D1 | **Pin `v2.23.0` and run a TRIMMED Temporal** — `postiz` + `postiz-postgres` + `postiz-redis` + `temporal` + `temporal-postgresql` (5 containers) — six with the required search overlay since 2026-08-30 ([service README](../../platform/services/postiz/deployment/README.md)) | Postiz ≥ v2.12.0 executes scheduled publishing through Temporal (`apps/orchestrator` is a Temporal worker), so Temporal is not optional for the actual goal. Upstream's reference compose adds Elasticsearch, `temporal-ui`, and `temporal-admin-tools` — none is needed: `temporalio/auto-setup` runs standard visibility on its Postgres with `ENABLE_ES=false`. **Superseded 2026-08-30:** the search node is required as of v2.23.0 (service README). Pinning beats `:latest` (SOURCE-OF-TRUTH §1.2) |
 | D2 | **Config via Option B** — app config in `config/postiz.env` bind-mounted at `/config/postiz.env`; compose *substitution* vars in a separate `.env` | Option B is the only variant where the 60+ provider secrets are never subject to compose `$`-interpolation (a `$` inside a client secret silently corrupts Option A/C). It also maps 1:1 onto OpenBao → Jinja2 → env-file, so no secret enters git |
-| D3 | **Native OIDC to Authentik** (`POSTIZ_GENERIC_OAUTH`), not Caddy forward_auth | Postiz ships a generic OIDC provider; Authentik is the platform IdP. Decisive factor: forward_auth would gate `/api/public/v1` too, breaking n8n's API-key calls unless every API path were exempted. In-app OIDC leaves the API path clean. Same shape as tududi (D1 in plan 11) |
-| D4 | **n8n reaches Postiz over the public host** `https://postiz.uhstray.io/api/public/v1` | No extra firewall rule (Caddy is already the only permitted upstream), TLS end-to-end, and identical to how any external caller integrates. A direct LAN path would add a second access route to maintain in cleartext |
+| D3 | **Native OIDC to Authentik** (`POSTIZ_GENERIC_OAUTH`), not Caddy forward_auth | Postiz ships a generic OIDC provider; Authentik is the platform IdP. Decisive factor: forward_auth would gate `/api/public/v1` too, breaking API-key calls unless every API path were exempted. In-app OIDC leaves the API path clean |
 | D5 | **Greenfield** — no data migrated from the `dev-test` instance | Nothing of value there; a fresh DB lets `manage-secrets` own a strong generated password instead of inheriting the upstream default `postiz-user:postiz-password` |
 | D6 | **Local media storage** (`STORAGE_PROVIDER=local`) on a named volume | Matches the prior deployment, zero extra config, no external dependency. R2 stays a config-only swap (`CLOUDFLARE_*`) if volume backup ever becomes the constraint |
 | D7 | **VM `.153` already exists and is bootstrap-password reachable** (user `uhstray`, password backed up at `site-config/secrets/ssh_password.txt`) | Go straight to key-hardening; no Proxmox clone step. Mirrors D5 in plan 11 |
@@ -41,7 +42,6 @@ Read from source, because the docs do not state them:
 ```mermaid
 flowchart TD
     U["Browser"] --> CF["Cloudflare (DNS-01 TLS)"]
-    N8N["n8n (automation)"] -->|"/api/public/v1 + API key"| CF
     CF --> CAD["Central Caddy .112"]
     CAD -->|"postiz.uhstray.io -> :5000"| PZ
 
@@ -49,16 +49,17 @@ flowchart TD
         PZ["postiz :5000<br/>nginx: /api-&gt;3000, /-&gt;4200"]
         PZ --> PG[("postiz-postgres 17")]
         PZ --> RD[("postiz-redis 7.2")]
-        PZ -->|":7233 workflows"| TMP["temporal (auto-setup)<br/>ENABLE_ES=false"]
+        PZ -->|":7233 workflows"| TMP["temporal (auto-setup)"]
+        TMP --> ES[("search node<br/>(compose.search.yml, required)")]
         TMP --> TPG[("temporal-postgresql 16")]
     end
 
     PZ -->|"OIDC: authorize / token / userinfo"| AK["Authentik .186"]
-    PZ -->|"publish"| SOC["X, LinkedIn, YouTube, Discord"]
+    PZ -->|"publish"| SOC["X, LinkedIn<br/>(YouTube, Discord deferred)"]
     BAO["OpenBao"] -.->|"manage-secrets (Ansible memory)"| PZ
 ```
 
-Postiz sits in the Platform layer, reached through the central Caddy. Users authenticate against Authentik via Postiz's own OIDC client; n8n authenticates with a Postiz API key on the public API path, which is deliberately ungated at the edge (D3).
+Postiz sits in the Platform layer, reached through the central Caddy. Users authenticate against Authentik via Postiz's own OIDC client; the public API path takes a Postiz API key and is deliberately ungated at the edge (D3).
 
 ## Component design
 
@@ -73,8 +74,6 @@ Postiz sits in the Platform layer, reached through the central Caddy. Users auth
 | `templates/postiz.env.j2` | **Option B payload.** All app config: URLs, `JWT_SECRET`, `DATABASE_URL`, `REDIS_URL`, `TEMPORAL_ADDRESS`, `IS_GENERAL`, `RUN_CRON`, `DISABLE_REGISTRATION`, `API_LIMIT`, storage vars, the OIDC block, and every social provider slot (empty-rendered when unseeded, so adding a provider later is a seed + redeploy with no code change) |
 | `README.md` / `CLAUDE.md` | Operator + agent docs |
 
-Also `platform/services/postiz/context/use-cases.md` — the n8n integration contract (see Phase 4).
-
 ### Secrets — `secret/services/postiz`
 
 | Key | Type | Source |
@@ -87,6 +86,7 @@ Also `platform/services/postiz/context/use-cases.md` — the n8n integration con
 | `x_api_key`, `x_api_secret` | seeded | `seed-postiz-secrets.yml` |
 | `youtube_client_id`, `youtube_client_secret` | seeded | `seed-postiz-secrets.yml` |
 | `postiz_oidc_client_secret` | `_shared_read` | owned by `authentik`; never stored back here |
+| `postiz_api_key` | app-minted | captured from the app's own Postgres by `store-postiz-api-key.yml` (`Store Postiz API Key`) |
 
 All three generated values are **stateful**: a new `jwt_secret` invalidates every session and API key; a new DB password locks the app out of its existing volume. `manage-secrets` generate-once-then-reuse is what protects them across redeploys.
 
@@ -94,17 +94,17 @@ Client *IDs* are not strictly secret but live in OpenBao alongside their secrets
 
 ### Authentik OIDC client
 
-New `platform/services/authentik/deployment/blueprints/postiz-oidc.yaml`, cloned from `tududi-oidc.yaml`:
+New `platform/services/authentik/deployment/blueprints/postiz-oidc.yaml`:
 
 - `client_id: postiz`, `client_type: confidential`, `client_secret: !Env POSTIZ_OIDC_CLIENT_SECRET`
 - `redirect_uris`: `matching_mode: strict`, url `!Context postiz_redirect` — rendered from `postiz_redirect_uri`, which **must** be `<public-url>/settings` (upstream fact 1)
 - `property_mappings`: `openid`, `profile`, `email` — `email` is load-bearing (upstream fact 3)
-- `signing_key`: RS256 self-signed, as tududi. Unused by this flow but harmless and consistent
+- `signing_key`: RS256 self-signed. Unused by this flow but harmless
 - `authentik_core.application` slug `postiz`, `meta_launch_url` = the public URL
 
 `deploy-authentik.yml` templates the blueprint and injects `POSTIZ_OIDC_CLIENT_SECRET` into the worker env from OpenBao; Postiz reads the same value via `_shared_reads`. No secret in git.
 
-**Local-dev TLS trust:** Postiz's Node backend makes server-side calls to Authentik's token and userinfo endpoints at `https://auth.agent-cloud.test:8443` (a step-ca-minted leaf). `deploy-postiz.yml` includes `tasks/distribute-ca-root.yml` gated on `local_mode`, and `compose.local.yml` mounts the bundle and sets `NODE_EXTRA_CA_CERTS` — the exact tududi pattern. Prod needs none of this (public chain).
+**Local-dev TLS trust:** Postiz's Node backend makes server-side calls to Authentik's token and userinfo endpoints at `https://auth.agent-cloud.test:8443` (a step-ca-minted leaf). `deploy-postiz.yml` includes `tasks/distribute-ca-root.yml` gated on `local_mode`, and `compose.local.yml` mounts the bundle and sets `NODE_EXTRA_CA_CERTS`. Prod needs none of this (public chain).
 
 ### Edge
 
@@ -153,12 +153,12 @@ Pass 2 of the firewall (picking up the detected `:5000`) runs in Phase 3, after 
 | 2.4 | Register `postiz_svc` in all three inventory files (`local-dev.yml`, `local-dev.yml.example`, and the public-placeholder `platform/inventory/production.yml`); add the Caddy route; add `Deploy Postiz (Local)` + `Clean Deploy Postiz (Local)` to `templates-local.yml`, and `Deploy Postiz` + `Clean Deploy Postiz` + `Seed Postiz Secrets` to `templates.yml` | `make local-bootstrap` picks up the new templates; `setup-templates.yml` is what publishes the prod three |
 | 2.5 | `seed-postiz-secrets.yml` against the local OpenBao | `Check Secrets` lists all 9 seeded provider keys |
 | 2.6 | `make local-deploy-authentik` | Blueprint applied; the `postiz` application + provider exist in Authentik |
-| 2.7 | `make local-deploy-postiz` | All 5 containers healthy. `postiz.env` rendered `0600` with no unsubstituted `{{` |
+| 2.7 | `make local-deploy-postiz` | All 6 containers healthy (five plus the search overlay). `postiz.env` rendered `0600` with no unsubstituted `{{` |
 | 2.8 | Browse `https://postiz.agent-cloud.test:8443` | Page loads over the step-ca wildcard cert; the login screen shows the **Authentik** button |
 | 2.9 | **OIDC round-trip** | Authentik login → redirect to `/settings` → session established, account created. Failure here is almost always a redirect-URI mismatch or a missing `email` claim (upstream facts 1 and 3) |
 | 2.10 | Flip `postiz_disable_registration: true`, redeploy | A second, unknown identity can no longer register |
 | 2.11 | **The Temporal gate (D1/D8).** Connect one account, schedule a post a few minutes out | The post actually publishes. Confirms `ENABLE_ES=false` standard visibility is sufficient for `apps/orchestrator`. **If it fails**, add Elasticsearch back as an inventory-gated compose block and re-run — the fallback is designed in, not improvised |
-| 2.12 | Generate a Postiz API key; call `GET /api/public/v1/posts` | 200 with the key, 401 without. Proves the API path is ungated at the edge (D3/D4) |
+| 2.12 | Generate a Postiz API key; call `GET /api/public/v1/posts` | 200 with the key, 401 without. Proves the API path is ungated at the edge (D3) |
 | 2.13 | BATS coverage for `deploy.sh`; `make local-smoke --full` | Green, and the new tests fail if `deploy.sh` regresses |
 
 ## Phase 3 — Promote to prod
@@ -169,27 +169,18 @@ Pass 2 of the firewall (picking up the detected `:5000`) runs in Phase 3, after 
    OpenTofu root's platform-subdomain set and the record exists live (confirmed by a
    plan run). The zone is config-as-code — never dashboard clicks — so any DNS change
    here is an edit to `platform/infra/cloudflare/` plus an `Apply Cloudflare Tofu` run.
-4. **Operator: update the OAuth redirect/callback URIs at Discord, LinkedIn, X, and YouTube** to the new host. Automation cannot reach those consoles; connecting an account fails until this is done.
+4. **Operator: update the OAuth redirect/callback URIs at X and LinkedIn (member and company page)** to the new host; YouTube and Discord are deferred (2026-11-12). Automation cannot reach those consoles; connecting an account fails until this is done.
 5. `dev` → `main` promotion PR (merge commit), so prod Semaphore deploys from `main`.
-6. Prod Semaphore, in order: `Provision Seed Environment` (`seed_template=Seed Postiz Secrets`, `seed_variant=main`) → the read-only access check (`Seed Postiz Secrets` with `postiz_verify_access_only=true`) → seed the values with `scripts/postiz-seed-input.py` (encrypted inputs, one task, inputs removed; procedure in `platform/semaphore/README.md`) → `Check Secrets` → `Deploy Authentik` (applies the blueprint with prod URLs) → `Deploy Postiz` → verify 5 containers healthy → `Manage Caddy Sites` → verify `https://postiz.uhstray.io` serves → **`Apply Firewall` pass 2** (now detects `:5000` and allows it from the Caddy host only) → re-verify the public URL still serves and SSH still works.
+6. Prod Semaphore, in order: `Provision Seed Environment` (`seed_template=Seed Postiz Secrets`, `seed_variant=main`) → the read-only access check (`Seed Postiz Secrets` with `postiz_verify_access_only=true`) → seed the values with `scripts/postiz-seed-input.py` (encrypted inputs, one task, inputs removed; procedure in `platform/semaphore/README.md`) → `Check Secrets` → `Deploy Authentik` (applies the blueprint with prod URLs) → `Deploy Postiz` → verify 6 containers healthy → `Manage Caddy Sites` → verify the public URL (`postiz_public_url`) serves → **`Apply Firewall` pass 2** (now detects `:5000` and allows it from the Caddy host only) → re-verify the public URL still serves and SSH still works.
 7. First OIDC login on prod, then flip `postiz_disable_registration: true` and redeploy.
-
-## Phase 4 — n8n integration contract
-
-No n8n deployment or configuration work — only the documented contract, so the automation can be built against a stable surface. `platform/services/postiz/context/use-cases.md` records:
-
-- **Base URL** `https://postiz.uhstray.io/api/public/v1`, API key from the Postiz UI (Settings), stored in OpenBao at `secret/services/n8n` when n8n workflows are built.
-- **Flow**: upload media → create post with channel selection + scheduled time → poll/verify. Postiz's Temporal orchestrator owns execution; n8n's job ends at scheduling.
-- **Rate ceiling**: `API_LIMIT` (upstream default 90/hr on the create-post endpoint) is the budget n8n workflows must respect. Templated as `postiz_api_limit` so it is tunable from inventory.
-- **Why the public host and not the LAN** (D4), so a future contributor does not "optimize" it into a direct call and quietly add a second unencrypted access path.
 
 ## Risks and open items
 
 | Risk | Mitigation |
 |---|---|
-| **The trimmed Temporal (D1) is unverified upstream** — nobody publishes a Postiz + `ENABLE_ES=false` configuration | Phase 2.11 is a hard gate before prod is touched. Fallback (add Elasticsearch back as an inventory-gated compose block) is designed in |
+| **The trimmed Temporal (D1) is unverified upstream** — nobody publishes a Postiz + `ENABLE_ES=false` configuration | Phase 2.11 is a hard gate before prod is touched. Fallback (add Elasticsearch back as an inventory-gated compose block) is designed in. **Fired 2026-08-30:** the search overlay is now required (service README) |
 | The dev-test social credentials have sat in a plaintext `.env` | Seeded as-is now (operator decision), but treat rotation as a follow-up; OpenBao becomes the source of truth so rotation is a `seed-postiz-secrets` re-run |
-| OAuth redirect URIs at four providers need manual updates | Called out as Phase 3 step 4; account connection is the visible failure if skipped |
+| OAuth redirect URIs at the first-rollout providers (X, LinkedIn) need manual updates | Called out as Phase 3 step 4; account connection is the visible failure if skipped |
 | `FRONTEND_URL` must match the browser origin **exactly**, and locally that includes `:8443` unless `make local-https` is running | Parameterized as `postiz_public_url` per environment, never a constant |
 | Uploads live on a VM volume (D6) | Accepted. R2 is a config-only swap (`STORAGE_PROVIDER=cloudflare` + `CLOUDFLARE_*` from OpenBao) if VM loss becomes the concern |
 | `postiz-config` named volume and the `:ro` bind at `/config/postiz.env` overlap on `/config` | Bind the single file, not the directory, so the named volume still serves the rest of `/config`. Verified in Phase 2.7 |

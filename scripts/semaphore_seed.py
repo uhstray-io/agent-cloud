@@ -27,6 +27,8 @@ _RULE = importlib.util.spec_from_file_location(
 _rule = importlib.util.module_from_spec(_RULE)
 _RULE.loader.exec_module(_rule)
 seed_environment_problems = _rule.seed_environment_problems
+effective_environment_ids = _rule.effective_environment_ids
+template_environment_memberships = _rule.template_environment_memberships
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "platform/semaphore/templates.yml"
@@ -175,6 +177,40 @@ class Target(NamedTuple):
     inventory_id: int
 
 
+def assert_exclusive_environment(api, template_id, expected_env):
+    """Refuse unknown ownership, secondary group owners, and active use."""
+    rows = api("/templates")
+    if not isinstance(rows, list):
+        raise Refusal("Template ownership list is unreadable")
+    templates = {}
+    for item in rows:
+        if not isinstance(item, dict) or isinstance(item.get("id"), bool) or not isinstance(item.get("id"), int):
+            raise Refusal("Template ownership metadata is malformed")
+        memberships = template_environment_memberships(item)
+        if memberships is None:
+            raise Refusal("Template environment membership metadata is malformed")
+        templates[item["id"]] = item
+        if expected_env in memberships and item["id"] != template_id:
+            raise Refusal(
+                "Seed environment is bound to other templates; provision a dedicated environment through code"
+            )
+    if template_id not in templates:
+        raise Refusal("Seed template is missing from the ownership list")
+    tasks = api("/tasks/last")
+    if not isinstance(tasks, list):
+        raise Refusal("Active task list is unreadable")
+    for task in tasks:
+        if not isinstance(task, dict):
+            raise Refusal("Active task metadata is malformed")
+        if task.get("status") not in TERMINAL:
+            owner = templates.get(task.get("template_id"))
+            memberships = template_environment_memberships(owner)
+            if memberships is None:
+                raise Refusal("Active task template environment membership metadata is malformed")
+            if expected_env in memberships:
+                raise Refusal("Another task is using the seed environment")
+
+
 def seed_target(api, decl, variant, inventory):
     """The template and environment for this declaration and variant, and the APPROVED
     repository and inventory the template must still be bound to. Every seed CLI resolves
@@ -206,21 +242,13 @@ def preflight(api, project, target):
             or template.get("name") != target.template_name
             or template.get("app") != "ansible"
             or template.get("arguments") not in (None, "[]", [])
-            or template.get("environment_id") != expected_env):
+            or effective_environment_ids(template) != [expected_env]):
         raise Refusal("Template name, playbook, app, arguments or environment binding differs; "
                       "run Provision Seed Environment")
     for field in ("repository_id", "inventory_id"):
         if template.get(field) != getattr(target, field):
             raise Refusal(f"Template {field} differs from its approved binding")
-    templates = {item["id"]: item for item in api("/templates")}
-    if any(item.get("environment_id") == expected_env and item.get("id") != template_id
-           for item in templates.values()):
-        raise Refusal("Seed environment is bound to other templates; provision a dedicated environment through code")
-    for task in api("/tasks/last"):
-        if task.get("status") not in TERMINAL:
-            owner = templates.get(task.get("template_id"), {})
-            if owner.get("environment_id") == expected_env:
-                raise Refusal("Another task is using the seed environment")
+    assert_exclusive_environment(api, template_id, expected_env)
     # Read LAST, so the environment the caller stages into is the one every check above saw.
     before = api(f"/environment/{expected_env}")
     if before.get("project_id") != project or before.get("id") != expected_env:
@@ -274,8 +302,11 @@ def stage_and_seed(api, project, target, values, *, extra=None,
     print("Created encrypted input IDs: " + ", ".join(str(item_id) for item_id in created_ids), flush=True)
     now = api(f"/templates/{template_id}")
     pinned = ("id", "name", "playbook", "environment_id", "repository_id", "inventory_id", "arguments", "app")
-    if any(now.get(key) != template.get(key) for key in pinned):
+    if (any(now.get(key) != template.get(key) for key in pinned)
+            or now.get("environment_ids", None) != template.get("environment_ids", None)
+            or effective_environment_ids(now) != [expected_env]):
         raise Refusal("Seed template changed; retain inputs for reconciliation")
+    assert_exclusive_environment(api, template_id, expected_env)
     # No retry/finally around submission: an uncertain response can mean a live
     # task still needs these inputs. Leave them encrypted and reconcile by task ID.
     submission = {"project_id": project, "template_id": template_id, "message": message}

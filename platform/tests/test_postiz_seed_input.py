@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 from jinja2 import Environment
@@ -162,7 +163,8 @@ def test_provider_config_survives_actual_loader(tmp_path, value, newline):
     child = "import json, os; print(json.dumps(dict(os.environ)))"
     script = loader.replace("$$", "$").replace("/config/postiz.env", shlex.quote(str(config)))
     script += shlex.join([sys.executable, "-c", child])
-    result = subprocess.run([*command[:2], script], text=True, capture_output=True, check=True)
+    result = subprocess.run([*command[:2], script], text=True, capture_output=True, check=True,
+                            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
     actual = json.loads(result.stdout)
     assert {name: actual[name] for name in fields} == dict.fromkeys(fields, value or "")
 

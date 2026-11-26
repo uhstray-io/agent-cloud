@@ -29,17 +29,22 @@ Authentik as the platform's central **IdP / SSO**. Read with the root
 
 ## Config-as-code (blueprints)
 
-`blueprints/*.yaml` are committed and mounted read-only at `/blueprints/custom`;
-the worker applies them idempotently on boot. The seed creates an `agent-cloud`
-group. Flows, OIDC providers, and per-app gating are added here as services are
-onboarded — never click-configured in the UI (that would drift from code).
+`deployment/blueprints/*.yaml` is the committed library, and it is not mounted directly.
+`deploy-authentik.yml` renders the shared blueprints and each enabled app's blueprint
+(from `app-catalog.yml`) into `blueprints-active/`, next to `compose.yml`. The server and
+the worker mount that directory read-only at `/blueprints/custom` (`compose.yml`), and the
+worker applies the mounted files on boot. `blueprints-active/` is gitignored
+(`deployment/.gitignore`) and assembled on each deploy. The seed creates an `agent-cloud`
+group. Flows, OIDC providers, and per-app gating are added to the library and listed in
+`app-catalog.yml` as services are onboarded — never click-configured in the UI (that would
+drift from code).
 
 ## Platform administrators — one declared list
 
 Every member of `platform-admins` (the Authentik superuser group, the top role in every
 SSO'd app) is declared in ONE list, `platform_admins`, and rendered from it: the account
-blueprint (`templates/platform-admins.yaml.j2` → `blueprints-active/platform-admins.yaml`),
-the worker env's password lines (`templates/env.j2`) and the OpenBao password fields
+blueprint (`deployment/templates/platform-admins.yaml.j2` → `blueprints-active/platform-admins.yaml`),
+the worker env's password lines (`deployment/templates/env.j2`) and the OpenBao password fields
 (`platform/playbooks/vars/secret-declarations/authentik.yml`) are all looped over the same
 entries. The gateway deploy derives a per-person identity from the same list
 (`platform/playbooks/vars/platform-admins.yml` is the shared reader). There are no fixed
@@ -105,7 +110,7 @@ inventory list `platform_retired_accounts` (default empty) and run Deploy Authen
    user the users blueprint creates, including env.j2 defaults, or a declared
    `platform_admins_exceptions` member; names are compared without regard to case), and refuses the
    system accounts `akadmin`, `AnonymousUser` and `ak-outpost-*`, before it applies anything.
-2. The deploy renders `templates/platform-retired.yaml.j2` into `blueprints-active/platform-retired.yaml`:
+2. The deploy renders `deployment/templates/platform-retired.yaml.j2` into `blueprints-active/platform-retired.yaml`:
    one `state: absent` `authentik_core.user` per name. With an empty list nothing is rendered and a
    stale copy is pruned, so a platform that retires nobody carries no extra blueprint.
 3. The verify step expects that blueprint applied and every listed name gone from the live API;
@@ -122,7 +127,7 @@ administrator is not deleted by this.
 
 Blueprint application is **asynchronous** in the worker: a deploy that placed the files
 and saw a healthy server has proven only that the files landed. So the last step of
-`deploy-authentik.yml` renders `templates/verify-users.py.j2` and runs it inside
+`deploy-authentik.yml` renders `deployment/templates/verify-users.py.j2` and runs it inside
 `authentik-server` (bootstrap token from the container env, same as the OIDC check).
 It fails the deploy unless:
 
@@ -141,6 +146,20 @@ It fails the deploy unless:
 
 It prints usernames, group names and blueprint statuses — never a credential. Handing
 a new user their first login waits on this step passing.
+
+## Dispatch Console directory reader (view-only)
+
+The console reads the user and group directory with `svc-console-directory`, a service
+account whose only group is `console-directory-readers` (not a superuser, never in
+`platform-admins`). That group's role grants `authentik_core.view_user` and
+`authentik_core.view_group` and nothing else; `console-oidc.yaml` declares all of it, and the
+blueprint applies only when the `console` app is enabled. Its token is `CONSOLE_DIRECTORY_TOKEN`,
+from its own OpenBao field `secret/services/authentik:console_directory_token`, not the platform
+service account's token. The verify (section 5 of `verify-users.py.j2`) reads the directory with the
+token (both lists must return 200), attempts a group create (must return 403), and checks the account
+is neither superuser nor in `platform-admins`. A token that can create a group fails the deploy, and
+the probe group it created is removed with the bootstrap token first. The role's two view permissions
+are pinned by the blueprint on every apply; the verify does not read the role's permission list back.
 
 ## Files
 

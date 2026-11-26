@@ -71,24 +71,10 @@ git sparse-checkout set \
   collections
 ```
 
-**NocoDB VM:**
-```bash
-git sparse-checkout set \
-  platform/services/nocodb/deployment \
-  platform/lib
-```
-
 **OpenBao VM:**
 ```bash
 git sparse-checkout set \
   platform/services/openbao/deployment \
-  platform/lib
-```
-
-**NemoClaw VM:**
-```bash
-git sparse-checkout set \
-  agents/nemoclaw/deployment \
   platform/lib
 ```
 
@@ -166,7 +152,7 @@ The `LIB_DIR` path changes from relative (`../../../lib`) to explicit (`$CLONE_D
 
 ### Phase 3: Migrate remaining services
 
-Apply the same pattern to NocoDB, n8n, OpenBao, Semaphore, NemoClaw:
+Apply the same pattern to OpenBao, Semaphore:
 - Each gets its own sparse checkout config
 - Each gets a runtime dir
 - deploy.sh updated to use `$CLONE_DIR`
@@ -185,11 +171,8 @@ Apply the same pattern to NocoDB, n8n, OpenBao, Semaphore, NemoClaw:
 | VM | Sparse Paths | Runtime Dir |
 |----|-------------|-------------|
 | NetBox | `platform/services/netbox/deployment`, `platform/lib` | `~/services/netbox/` |
-| NocoDB | `platform/services/nocodb/deployment`, `platform/lib` | `~/services/nocodb/` |
-| n8n | `platform/services/n8n/deployment`, `platform/lib` | `~/services/n8n/` |
 | OpenBao | `platform/services/openbao/deployment`, `platform/lib` | `~/services/openbao/` |
 | Semaphore | `platform/services/semaphore/deployment`, `platform/lib` | `~/services/semaphore/` |
-| NemoClaw | `agents/nemoclaw/deployment`, `platform/lib` | `~/services/nemoclaw/` |
 
 ---
 

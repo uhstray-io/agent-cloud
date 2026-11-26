@@ -206,7 +206,7 @@ const qTarget = () => (selWork() ? selWork().key : FILTER ? `${FILTER.kind}: ${F
 const qPlaceholder = () => (qMode === "new" ? (TARGET ? `Tell agent-cloud what to do on ${TARGET}…` : "Describe new work, e.g. “rotate the postiz signing secret”")
   : selWork() ? `Ask about ${selWork().key}: why is it ${K.stateLabel[selWork().state].toLowerCase()}, what's next…` : `Ask about the work in ${qTarget()}…`);
 function qChips() {
-  if (qMode === "new") return ["Rotate the postiz signing secret", "Upgrade n8n after a database backup", "Give the research team an LLM key"];
+  if (qMode === "new") return ["Rotate the postiz signing secret", "Upgrade Plane after a database backup", "Give the research team an LLM key"];
   const w = selWork();
   return [...(w ? [`Why is ${w.key} ${K.stateLabel[w.state].toLowerCase()}?`] : []), "What's blocked and what does it need?", "What failed?", "What needs my approval?", "What's running right now?"];
 }

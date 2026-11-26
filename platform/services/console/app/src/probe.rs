@@ -91,6 +91,7 @@ pub fn parse_status_line(line: &str) -> Option<u16> {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+    use std::sync::mpsc;
     use std::thread;
 
     #[test]
@@ -144,5 +145,55 @@ mod tests {
     fn run_cli_exits_one_on_bad_arguments() {
         assert_eq!(run_cli(&[]), 1);
         assert_eq!(run_cli(&["/healthz".into(), "abc".into()]), 1);
+    }
+
+    #[test]
+    fn run_cli_exits_zero_on_the_expected_status_and_one_otherwise() {
+        // The whole subcommand, as deploy.sh and the deploy verify exec it: argument
+        // parsing, PORT, the socket and the exit code. The listener answers 200.
+        // Heads come back over a channel with a timeout, so a probe that never reaches
+        // the listener fails the test instead of blocking it in accept().
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        let (tx, rx) = mpsc::channel();
+        // Not joined: a probe that never connects leaves this thread blocked in accept,
+        // and the test binary still exits when the test returns.
+        let _server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut conn, _) = listener.accept().expect("accept");
+                // Read until the blank line that ends the request head.
+                let mut seen = Vec::new();
+                let mut chunk = [0u8; 256];
+                while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = conn.read(&mut chunk).expect("read request");
+                    if n == 0 {
+                        break;
+                    }
+                    seen.extend_from_slice(&chunk[..n]);
+                }
+                let _ = tx.send(String::from_utf8_lossy(&seen).into_owned());
+                conn.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                    .expect("write");
+            }
+        });
+        std::env::set_var("PORT", port.to_string());
+        let probe = |expected: &str| run_cli(&["/healthz".into(), expected.into()]);
+        let matching = probe("200");
+        let wrong = probe("401");
+        std::env::remove_var("PORT");
+        let first = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("probe 1 never reached the listener");
+        let second = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("probe 2 never reached the listener");
+        assert_eq!(matching, 0);
+        assert_eq!(wrong, 1);
+        for head in [first, second] {
+            assert!(
+                head.starts_with("GET /healthz HTTP/1.0\r\n"),
+                "request line was {head:?}"
+            );
+        }
     }
 }

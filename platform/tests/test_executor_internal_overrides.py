@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import forgeries
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -247,6 +248,10 @@ def test_the_guard_ends_the_run_before_any_other_play(tmp_path, check, forge):
         assert proc.returncode != 0, proc.stdout
         assert "Refusing to run: _verdict set from outside the playbook" in proc.stdout
         assert "VERDICT" not in proc.stdout and "PLAY [tgt]" not in proc.stdout, proc.stdout
+    # The guard never rendered the forged value: the stateful forgery counts its renderings in
+    # this file and was never asked. This is what lets the guard-class tests elsewhere use
+    # forgeries.by_name (plain only); plan 21 D1, docs/MISTAKES.md 1.15.
+    assert not (tmp_path / "forgery-renders-_verdict").exists(), "the guard rendered a forged value"
 
 
 # The name each verdict is computed from, where one name carries it; any other executor is
@@ -274,7 +279,7 @@ def _forged_name(path: Path) -> str:
 @pytest.mark.parametrize("path,forge", [
     pytest.param(path, f.values[0], id=f"{path.name}-{f.id}")
     for path in EXECUTORS
-    for f in forgeries.templated_forgeries(_forged_name(path), [], {"forged": True})
+    for f in forgeries.by_name(_forged_name(path), [], {"forged": True})
 ])
 def test_a_forged_internal_name_is_refused_by_the_real_executor(path, forge, tmp_path):
     name = _forged_name(path)
@@ -283,6 +288,28 @@ def test_a_forged_internal_name_is_refused_by_the_real_executor(path, forge, tmp
     assert f"Refusing to run: {name} set from outside the playbook" in proc.stdout, proc.stdout + proc.stderr
     assert proc.stdout.count("PLAY [") == 1, proc.stdout
     assert "CUSTOM STATS" not in proc.stdout or "step_result" not in proc.stdout, proc.stdout
+
+
+# The availability drill input is read by the prepare task that the deploy and the endpoint drill
+# and its recovery import. A launch that sets it as an extra var is refused by the guard before
+# any play, under every templated spelling of the forged value.
+@needs_ansible
+@pytest.mark.parametrize("path,forge", [
+    pytest.param(REPO / "platform/playbooks" / name, f.values[0], id=f"{name}-{f.id}")
+    for name in ("deploy-o11y.yml", "survey-o11y-scrape-baseline.yml", "verify-o11y-profile-pilot.yml",
+                 "drill-o11y-endpoint-availability.yml", "recover-o11y-endpoint-drill.yml")
+    for f in forgeries.by_name(
+        "_o11y_availability_drill",
+        {"target_id": "service:alpha", "status_code": 200},
+        {"target_id": "service:alpha", "status_code": 503},
+    )
+])
+def test_the_availability_drill_input_is_refused_as_a_launch_extra_var(path, forge, tmp_path):
+    proc = _run(path, tmp_path, "-e", "target_service=demo_svc", "-e", forge(tmp_path), "--check")
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "Refusing to run: _o11y_availability_drill set from outside the playbook" in proc.stdout, (
+        proc.stdout + proc.stderr)
+    assert proc.stdout.count("PLAY [") == 1, proc.stdout
 
 
 # The `_` prefix is RESERVED: hostvars also holds inventory vars, so an inventory that defined an
@@ -319,7 +346,7 @@ def test_an_inventory_var_with_the_reserved_prefix_is_refused_with_the_rule(tmp_
 @pytest.mark.parametrize("path, forge", [
     pytest.param(path, f.values[0], id=f"{path.name}-{f.id}")
     for path in _launchable()
-    for f in forgeries.templated_forgeries("_forged_by_launch", None, {"forged": True})
+    for f in forgeries.by_name("_forged_by_launch", None, {"forged": True})
 ])
 def test_every_launchable_playbook_refuses_a_forged_internal_name(path, forge, tmp_path):
     proc = _run(path, tmp_path, "-e", "target_service=demo_svc", "-e", forge(tmp_path), "--check")
@@ -355,7 +382,8 @@ def test_the_alias_list_is_what_the_installed_plugins_read():
         "for m, opt in ((a, 'become_pass'), (b, 'become_pass'), (c, 'become_pass'), (d, 'password')):\n"
         "    names |= {v['name'] for v in yaml.safe_load(m.DOCUMENTATION)['options'][opt].get('vars', [])}\n"
         "print(' '.join(sorted(names)))")
-    out = subprocess.run([ansible_python(), "-c", script], text=True, capture_output=True, check=True).stdout.split()
+    out = subprocess.run([ansible_python(), "-c", script], text=True, capture_output=True, check=True,
+                         timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS).stdout.split()
     assert sorted(out) == sorted(PASSWORD_ALIASES)
 
 
@@ -753,12 +781,8 @@ def test_a_late_flipping_template_never_reaches_the_teardown_scripts(mode, name,
             playbook, extra = _clean_only(run), {"confirm_reset": "obs"}
         (run / "evil").write_text(f"#!/bin/sh\ntouch {marker}\n")
         (run / "evil").chmod(0o755)
-        counter = run / "renders"
-        shell = f"n=$(cat {counter} 2>/dev/null || echo 0); echo $((n+1)) > {counter}; echo $n"
-        cond = f"(lookup('ansible.builtin.pipe', {forgeries._string(shell)}) | int < {limit})"
-        template = ("{{ " + cond + " | ternary(" + forgeries._literal(honest(run)) + ", "
-                    + forgeries._literal(bad(run)) + ") }}")
-        _run(playbook, run, "-e", json.dumps({name: template}),
+        forge = forgeries.honest_for(name, honest(run), bad(run), limit, run)
+        _run(playbook, run, "-e", forge,
              "-e", json.dumps({**extra, "ansible_become": False}), inventory=inv, path_prepend=bindir)
         assert not marker.exists(), f"{mode}: {name} honest for {limit} renderings ran the smuggled command"
 
@@ -974,6 +998,11 @@ def test_password_prompts_are_not_variables_and_pass_the_guard(tmp_path):
                                 {"hosts": "localhost", "gather_facts": False,
                                  "tasks": [{"ansible.builtin.debug": {"msg": "GUARD PASSED"}}]}]))
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    # In a new session, with no controlling terminal, as under Semaphore and CI. Ansible prompts
+    # through getpass, which reads /dev/tty whenever the process has a controlling terminal and
+    # stdin only when it has none. Run from a developer's shell (the pre-push hook) the answers on
+    # stdin were never read, and the test waited out its timeout on a prompt nobody could see.
     proc = subprocess.run(["ansible-playbook", "-i", "localhost,", str(play), "--ask-pass", "--ask-become-pass"],
-                          input="pw\npw\n", cwd=REPO, env=env, text=True, capture_output=True, check=False, timeout=120)
+                          input="pw\npw\n", cwd=REPO, env=env, text=True, capture_output=True, check=False, timeout=120,
+                          start_new_session=True)
     assert proc.returncode == 0 and "GUARD PASSED" in proc.stdout, proc.stdout + proc.stderr

@@ -26,7 +26,7 @@ The operator confirmed on 2026-09-05 that the August outage report is accurate a
 
 ### Modified Capabilities
 
-None. The current main spec inventory contains `platform/n8n-automation`; no existing NetBox recovery capability was found.
+None. The current main spec inventory contains `platform/inference-edge`; no existing NetBox recovery capability was found.
 
 ## Impact
 

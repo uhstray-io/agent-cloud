@@ -16,6 +16,7 @@ import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
+from fake_http import refused_port
 from test_agw_client_tls_probe import (  # noqa: F401  (pki and listener are fixtures; F811 below is their use as arguments)
     BODY,
     DEPLOY_SUBDIR,
@@ -111,12 +112,8 @@ def test_anything_but_401_on_either_models_probe_fails_the_run_and_still_reports
     _no_leak(out)
 
 
-def test_a_gateway_that_is_not_listening_fails_the_run_with_no_http_answer(tmp_path, pki, listener):
-    gw = listener("san-first")
-    port = gw.server_port
-    gw.shutdown()
-    gw.server_close()
-    rc, out = _run(tmp_path, pki, f"https://localhost:{port}")
+def test_a_gateway_that_is_not_listening_fails_the_run_with_no_http_answer(tmp_path, pki):
+    rc, out = _run(tmp_path, pki, f"https://localhost:{refused_port()}")
     assert rc != 0 and "no HTTP answer" in out and "Gate failed" in out, out
     _no_leak(out)
 

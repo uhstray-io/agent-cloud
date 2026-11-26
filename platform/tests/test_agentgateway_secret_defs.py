@@ -7,11 +7,10 @@ ansible-core, so this loads the declaration file there exactly as the deploy doe
 """
 
 import json
-import os
 import shutil
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 
@@ -30,18 +29,16 @@ def _names(tmp_path, clients):
     }]
     path = tmp_path / "harness.yml"
     path.write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=True)
+    done = harness_sandbox.run_playbook(path, tmp_path)
+    assert done.returncode == 0, done.stdout + done.stderr
     line = next(ln for ln in done.stdout.splitlines() if "DEFS " in ln)
     return json.loads(json.loads(line.split('"msg": ', 1)[1]).split("DEFS ", 1)[1])
 
 
 def test_client_keys_join_the_declaration_as_entries(tmp_path):
-    defs = _names(tmp_path, ["skynet", "openhands"])
+    defs = _names(tmp_path, ["skynet", "console"])
     assert [d["name"] for d in defs] == [
-        "vllm_api_key", "agw_db_password", "agw_oidc_cookie_seed", "client_skynet", "client_openhands"]
+        "vllm_api_key", "agw_db_password", "agw_oidc_cookie_seed", "client_skynet", "client_console"]
     assert all(d["type"] == "random" and d["length"] == 48 for d in defs[3:])
 
 
@@ -61,9 +58,7 @@ def _upstream_key_gate(tmp_path, resolved, requires_key):
     }]
     path = tmp_path / "gate.yml"
     path.write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    return subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True).returncode
+    return harness_sandbox.run_playbook(path, tmp_path).returncode
 
 
 def test_the_upstream_key_gate_passes_a_stored_key(tmp_path):
@@ -93,7 +88,5 @@ def test_an_unproven_round_trip_fails_unless_accepted(tmp_path, refused, allow, 
     }]
     path = tmp_path / "unproven.yml"
     path.write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True)
+    done = harness_sandbox.run_playbook(path, tmp_path)
     assert (done.returncode == 0) is passes, done.stdout[-1500:]

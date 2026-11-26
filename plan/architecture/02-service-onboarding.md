@@ -3,7 +3,7 @@
 >
 > **Depends on:** 00, 01
 >
-> Part of the dependency-ordered `plan/architecture/` set (00–07). Source docs
+> Part of the dependency-ordered `plan/architecture/` set (00–09). Source docs
 > merged verbatim below under provenance dividers to preserve all detail.
 
 
@@ -16,10 +16,10 @@
 **Contributors:** Architecture, Security, Automation, Infrastructure, DevOps review agents
 
 **References:**
-- [AUTOMATION-COMPOSABILITY.md](AUTOMATION-COMPOSABILITY.md) — Composable task library and deploy patterns
-- [CREDENTIAL-LIFECYCLE-PLAN.md](CREDENTIAL-LIFECYCLE-PLAN.md) — Secret generation, storage, rotation
-- [TESTING-AND-LINTING-PLAN.md](TESTING-AND-LINTING-PLAN.md) — CI/CD, linting, and testing requirements
-- [BRANCH-TESTING-WORKFLOW.md](BRANCH-TESTING-WORKFLOW.md) — Branch deploy and validation workflow
+- [AUTOMATION-COMPOSABILITY.md](../archive/architecture/AUTOMATION-COMPOSABILITY.md) — Composable task library and deploy patterns
+- [CREDENTIAL-LIFECYCLE-PLAN.md](../archive/architecture/CREDENTIAL-LIFECYCLE-PLAN.md) — Secret generation, storage, rotation
+- [TESTING-AND-LINTING-PLAN.md](../archive/architecture/TESTING-AND-LINTING-PLAN.md) — CI/CD, linting, and testing requirements
+- [BRANCH-TESTING-WORKFLOW.md](../archive/architecture/BRANCH-TESTING-WORKFLOW.md) — Branch deploy and validation workflow
 
 ---
 
@@ -36,10 +36,9 @@ New services fall into one of four tiers, each with different integration weight
 | Tier | Examples | Integration Weight | Typical VM Size |
 | ---- | -------- | ------------------ | --------------- |
 | **Infrastructure** | OpenBao, Semaphore, NetBox, Caddy | Full (5-phase playbook, dedicated VM, AppRole if runtime vault access) | Small-Medium |
-| **Automation** | n8n, NocoDB | Full (5-phase playbook, dedicated VM) | Medium |
-| **AI/Agent** | NemoClaw, NetClaw, WisAI, WisBot | Full + agent context directory | Large (GPU for inference) |
-| **Auxiliary** | Wiki.js, Postiz, Nextcloud, a2a-registry | Simplified (3-phase playbook, may co-locate on shared VM) | Small-Medium |
-| **Website** | UhhCraft, future WebSmith-built sites | Full + signed SPEC in `context/spec/` (see §Sites Built via WebSmith below) | Medium-Large (depends on archetype) |
+| **Automation** | GitHub runners | Full (5-phase playbook, dedicated VM) | Medium |
+| **AI/Agent** | skynet, agentgateway | Full + agent context directory | Large (GPU for inference) |
+| **Auxiliary** | Postiz, honcho, a2a-registry | Simplified (3-phase playbook, may co-locate on shared VM) | Small-Medium |
 
 ### Classification Decision
 
@@ -229,8 +228,8 @@ without private addresses or credentials.
 | Tier | Cores | Memory | Disk | Use When |
 | ---- | ----- | ------ | ---- | -------- |
 | **Small** | 2 | 2 GB | 20 GB | Single-process, low-state (OpenBao, Semaphore) |
-| **Medium** | 2-4 | 4 GB | 40 GB | App + database + workers (NetBox, NocoDB, n8n) |
-| **Large** | 4+ | 8+ GB | 60-100 GB | AI sandbox, container registry, GPU workloads |
+| **Medium** | 2-4 | 4 GB | 40 GB | App + database + workers (NetBox, honcho) |
+| **Large** | 4+ | 8+ GB | 60-100 GB | Container registry, GPU workloads |
 
 Co-location guideline: two small-tier services may share a medium VM. Never co-locate services with independent failure domain requirements (OpenBao, databases, privileged containers).
 
@@ -291,75 +290,21 @@ Prerequisites: OpenBao must be running, Semaphore must have the orchestrator App
 | ------------ | --------------- | ------ |
 | deploy.sh generates secrets or calls OpenBao | deploy.sh is container lifecycle only; Ansible manages credentials | NetBox migration lesson |
 | Secrets in a `secrets/` directory on the VM | `.env` files in runtime dir, templated by Ansible, mode 0600 | Composable pattern |
-| Flat 5-step deploy.sh conflating secrets + containers | Ansible phases 1-2,4-5; deploy.sh owns phase 3 only | NocoDB/n8n legacy |
-| Wildcard AppRole policies (`secret/data/services/*`) | Enumerate specific paths in HCL policy | NemoClaw policy needs tightening |
+| Flat 5-step deploy.sh conflating secrets + containers | Ansible phases 1-2,4-5; deploy.sh owns phase 3 only | Legacy deploy pattern |
+| Wildcard AppRole policies (`secret/data/services/*`) | Enumerate specific paths in HCL policy | `semaphore-read` policy needs tightening |
 | Hardcoded IPs or credentials in committed files | Jinja2 `{{ variable }}` references; real values in site-config only | Public/private repo split |
 | SSH and run deploy.sh directly on VM | All deploys go through Semaphore | Critical Deployment Rule #1 |
 | Merging PRs before checks complete | Wait for all checks, address findings, confirm pass, then merge | PR Merge Rules |
 
 ---
 
-## In-Progress Migrations
-
-### NocoDB and n8n Composable Migration
-
-**Branch:** `feat/nocodb-n8n-composable` (incomplete)
-
-Development is in progress to migrate NocoDB and n8n from legacy deploy scripts to the composable pattern. The branch includes:
-
-- **Jinja2 env templates** (`nocodb.env.j2`, `n8n.env.j2`) replacing bash-generated env files
-- **4-phase composable playbooks** (`deploy-nocodb.yml`, `deploy-n8n.yml`) using `manage-secrets.yml`
-- **deploy.sh refactored** to container-lifecycle-only (no `generate-secrets.sh`, no OpenBao interaction)
-- **Secret seeding playbook** (`seed-secrets-from-env.yml`) for migrating existing VM `.env` secrets into OpenBao
-- **Clean-deploy playbooks** and Semaphore template entries for both services
-- **BATS tests** for template rendering validation
-
-**What is NOT yet done on that branch:**
-- Sparse checkout and runtime directory separation (uses `clone-and-deploy.yml`)
-- Integration testing against live VMs
-- Final CodeRabbit review resolution
-
-This migration serves as the reference for onboarding additional services. The design decisions (particularly around `seed-secrets-from-env.yml` for pre-existing deployments) apply to any service migrating from the legacy pattern.
-
-See `plan/architecture/01-automation-model.md` (Migration Path section) for the full rollout sequence.
-
----
-
-## Sites Built via WebSmith
-
-Websites — both customer-facing storefronts and internal portals — go through one extra layer before the standard onboarding checklist applies: the **WebSmith agent** at [`agents/websmith/`](../../agents/websmith/). WebSmith is a prompt-only meta-framework that walks a human through five phases (purpose, template, tooling, style, considerations) plus an optional intake to produce a signed `SPEC.md`. Only after the spec is signed does the build start.
-
-For a fuller treatment of the WebSmith ↔ agent-cloud contract, read [`WEBSITE-BUILDING-AGENT.md`](WEBSITE-BUILDING-AGENT.md). The short version:
-
-### How website onboarding differs
-
-1. **Decisions before code.** Phases 1-5 of WebSmith run first. No directories under `platform/services/` are created until the user signs `SPEC.md`. This is non-negotiable — it prevents the common failure mode of scaffolding a stack before deciding what the site is for.
-2. **Spec lives with the service.** The six phase artefacts + assembled `SPEC.md` land at `platform/services/<sitename>/context/spec/`. This is a deviation from WebSmith's framework default (which writes to a separate working directory) — but inside agent-cloud, the spec is committed alongside the implementation it constrains.
-3. **agent-cloud preset is surfaced during Phase 3.** Tooling phase presents the platform's defaults (Postgres, Podman, central Caddy, OpenBao, Semaphore, dedicated Proxmox VM, generate-in-CI) as the recommended path. User overrides are recorded in `SPEC.md` under `## Alignment with agent-cloud conventions` or `## Tracking future deviations`.
-4. **Standard onboarding picks up at Phase 0.** Once `SPEC.md` is signed, the rest of this document applies: Planning → Infrastructure → Repository → Credentials → Automation → Inventory → Testing → Documentation. The signed spec drives the answers to the questions Phase 0 asks (tier classification, dependencies, sizing).
-5. **Recipe is fixed.** Every site lands as a `platform/services/<sitename>/` with the same `deployment/ + context/` shape UhhCraft uses. The second site doesn't get to be bespoke — see the "second-site recipe" in [`WEBSITE-BUILDING-AGENT.md`](WEBSITE-BUILDING-AGENT.md).
-
-### Reference site
-
-[`platform/services/uhhcraft/`](../../platform/services/uhhcraft/) is the first WebSmith-built site. Use its tree as the shape to mirror. Its `context/spec/SPEC.md` shows what a fully-signed spec looks like, including the `## Alignment with agent-cloud conventions` section that captures the platform-level updates.
-
-### Cross-references
-
-- [`WEBSITE-BUILDING-AGENT.md`](WEBSITE-BUILDING-AGENT.md) — architectural contract.
-- [`../development/WEBSMITH-INTEGRATION-PLAN.md`](../development/WEBSMITH-INTEGRATION-PLAN.md) — 11-phase rollout (current sites).
-- [`agents/websmith/context/architecture/integration-with-agent-cloud.md`](../../agents/websmith/context/architecture/integration-with-agent-cloud.md) — second-site recipe (agent-facing).
-
----
-
 ## Known Gaps
 
 1. **No automated volume backup** — persistent compose volumes lack backup automation. Gap flagged by infrastructure review.
-2. **Legacy deploy scripts** — NocoDB and n8n deploy.sh still manage secrets directly. Migration in progress on `feat/nocodb-n8n-composable`.
-3. **NemoClaw wildcard policy** — `nemoclaw-read.hcl` grants `secret/data/services/*` read access. Should be tightened to enumerated paths.
-4. **No ephemeral test environments** — single production cluster. Branch testing workflow mitigates but doesn't replace proper staging.
-5. **Template creation semi-manual** — Proxmox VM template from ISO requires manual serial console steps. Fully automated template provisioning not yet viable.
-6. **Credential rotation not wired** — `manage-approle.yml` hardcodes `secret_id_ttl: 0` despite the lifecycle plan requiring 90-day TTL.
-7. **Sparse checkout not implemented** — All services currently use full git clone. The sparse checkout + runtime directory separation pattern is designed but not yet implemented as reusable tasks.
+2. **No ephemeral test environments** — single production cluster. Branch testing workflow mitigates but doesn't replace proper staging.
+3. **Template creation semi-manual** — Proxmox VM template from ISO requires manual serial console steps. Fully automated template provisioning not yet viable.
+4. **Credential rotation not wired** — `manage-approle.yml` hardcodes `secret_id_ttl: 0` despite the lifecycle plan requiring 90-day TTL.
+5. **Sparse checkout not implemented** — All services currently use full git clone. The sparse checkout + runtime directory separation pattern is designed but not yet implemented as reusable tasks.
 
 - **Provisioning does not consult IPAM for a free address (recorded 2026-09-17).** NetBox
   is the address authority and `netbox-allocate-ip.yml` can report and reserve, but

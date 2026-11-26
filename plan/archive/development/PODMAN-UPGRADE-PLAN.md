@@ -32,8 +32,8 @@ See `plan/architecture/PODMAN-VS-DOCKER-COMPOSE.md` for the full compatibility m
 
 | VM | Role | Podman | podman-compose | Services |
 |----|------|--------|---------------|----------|
-| workflow-1 | Semaphore, NocoDB | 4.9.3 | 1.0.6 | Semaphore, NocoDB |
-| workflow-2 | n8n, OpenBao | 4.9.3 | 1.0.6 | n8n, OpenBao |
+| workflow-1 | Semaphore | 4.9.3 | 1.0.6 | Semaphore |
+| workflow-2 | OpenBao | 4.9.3 | 1.0.6 | OpenBao |
 
 NetBox runs on Docker and is not affected by this upgrade.
 
@@ -147,14 +147,14 @@ Upgrade VMs sequentially, not in parallel. Validate service health after each VM
 
 ```mermaid
 flowchart LR
-    VM1["workflow-1<br/>(Semaphore, NocoDB)"] -->|"Validate health"| VM2["workflow-2<br/>(n8n, OpenBao)"]
+    VM1["workflow-1<br/>(Semaphore)"] -->|"Validate health"| VM2["workflow-2<br/>(OpenBao)"]
     VM2 -->|"Validate health"| DONE["All VMs upgraded"]
 ```
 
 ### Rollout order
 
-1. **workflow-2 first** (n8n, OpenBao) -- lower risk; OpenBao is a single container with no `depends_on` conditions. n8n has health dependencies but is less critical than Semaphore.
-2. **workflow-1 second** (Semaphore, NocoDB) -- Semaphore is the orchestration platform; upgrade it last to ensure the upgrade playbook can still run if workflow-2 has issues.
+1. **workflow-2 first** (OpenBao) -- lower risk; OpenBao is a single container with no `depends_on` conditions.
+2. **workflow-1 second** (Semaphore) -- Semaphore is the orchestration platform; upgrade it last to ensure the upgrade playbook can still run if workflow-2 has issues.
 
 ### Rollback
 
@@ -231,11 +231,11 @@ ansible-playbook validate-all.yml
 
 Once all VMs are confirmed on >= 1.3.0, the following simplifications become possible (but are NOT required immediately):
 
-1. **Deploy scripts can simplify staged startup** -- Services with simple dependency chains (NocoDB, Semaphore) can use `compose up -d` and let compose enforce health ordering. Complex stacks (NetBox on Docker) should keep staged startup for first-boot migration timing.
+1. **Deploy scripts can simplify staged startup** -- Services with simple dependency chains (Semaphore) can use `compose up -d` and let compose enforce health ordering. Complex stacks (NetBox on Docker) should keep staged startup for first-boot migration timing.
 
 2. **Volume `name:` property becomes usable** -- Though the current `--project-name` approach is still preferred for consistency.
 
-3. **YAML merge keys become reliable** -- The n8n compose file's `<<: *n8n-env` pattern can be used confidently.
+3. **YAML merge keys become reliable** -- Merge keys (`<<: *anchor`) in compose files can be used confidently.
 
 4. **Documentation updates** -- Remove "CRITICAL: ignored in podman-compose < 1.3.0" warnings from `PODMAN-VS-DOCKER-COMPOSE.md` once all VMs are upgraded.
 
@@ -264,8 +264,6 @@ Add a `podman_hosts` group to site-config inventory that includes all VMs using 
 ```yaml
 podman_hosts:
   children:
-    nocodb_svc: {}
-    n8n_svc: {}
     semaphore_svc: {}
     openbao_svc: {}
 ```
@@ -278,9 +276,9 @@ podman_hosts:
 |------|--------|----------|------|
 | 1 | Write `upgrade-podman-compose.yml` playbook | 1 hour | None |
 | 2 | Add Semaphore template and inventory group | 15 min | None |
-| 3 | Upgrade workflow-2 (n8n, OpenBao) | 15 min | Low |
+| 3 | Upgrade workflow-2 (OpenBao) | 15 min | Low |
 | 4 | Validate workflow-2 services | 15 min | None |
-| 5 | Upgrade workflow-1 (Semaphore, NocoDB) | 15 min | Medium (Semaphore is orchestrator) |
+| 5 | Upgrade workflow-1 (Semaphore) | 15 min | Medium (Semaphore is orchestrator) |
 | 6 | Validate workflow-1 services | 15 min | None |
 | 7 | Run `validate-all.yml` across all services | 10 min | None |
 | **Total** | | **~2 hours** | |

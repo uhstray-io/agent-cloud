@@ -18,7 +18,7 @@ Semaphore "Deploy honcho"
   └─ platform/playbooks/deploy-honcho.yml
      ├─ tasks/place-monorepo.yml     # clone/copy the monorepo, ensure podman + compose
      ├─ tasks/manage-secrets.yml     # OpenBao → templates/env.j2 → .env (JWT secret + DB
-     │                               #   password; Gemini key shared-read from nemoclaw)
+     │                               #   password; Gemini key from secret/services/honcho)
      ├─ deploy.sh                    # podman compose pull + compose_up_if_changed + wait healthy
      └─ verify                       # GET /health → 200 (inside the api container)
 ```
@@ -32,7 +32,7 @@ Semaphore "Deploy honcho"
 
 ## LLM
 
-The deriver and dialectic require a **tool-calling** model. Interim: Gemini (`honcho_llm_model`, default `gemini-2.5-flash`; key shared-read from nemoclaw) across every text-gen feature. Embeddings are off (`EMBED_MESSAGES=false`) until skynet serves an embedding model. Later swap to skynet is config-only — flip `*_MODEL_CONFIG__TRANSPORT` to `openai` and add `*_MODEL_CONFIG__OVERRIDES__BASE_URL=<skynet /v1>` (see `templates/env.j2`).
+The deriver and dialectic require a **tool-calling** model. Interim: Gemini (`honcho_llm_model`, default `gemini-2.5-flash`; key at `secret/services/honcho:gemini_api_key`, placed with Seed OpenBao Key via `seed-openbao-key.yml`) across every text-gen feature. Embeddings are off (`EMBED_MESSAGES=false`) until skynet serves an embedding model. Later swap to skynet is config-only — flip `*_MODEL_CONFIG__TRANSPORT` to `openai` and add `*_MODEL_CONFIG__OVERRIDES__BASE_URL=<skynet /v1>` (see `templates/env.j2`).
 
 ## Persistence
 
@@ -58,5 +58,5 @@ deployment/
 - Playbooks: [`../../../playbooks/deploy-honcho.yml`](../../../playbooks/deploy-honcho.yml), [`../../../playbooks/clean-deploy-honcho.yml`](../../../playbooks/clean-deploy-honcho.yml)
 - Authentik blueprint: [`../../authentik/deployment/blueprints/honcho-docs-forward-auth.yaml`](../../authentik/deployment/blueprints/honcho-docs-forward-auth.yaml)
 - Image build workflow: [`../../../../.github/workflows/build-honcho.yml`](../../../../.github/workflows/build-honcho.yml)
-- Plan: [`../../../../plan/development/11-tududi-honcho-deployment.md`](../../../../plan/development/11-tududi-honcho-deployment.md) (Service B — honcho)
+- Plan: [`../../../../plan/development/11-honcho-deployment.md`](../../../../plan/development/11-honcho-deployment.md) (Service B — honcho)
 - Root conventions: [`../../../../CLAUDE.md`](../../../../CLAUDE.md)

@@ -4,7 +4,7 @@
 # policy in ITS OWN `ui.policies` as authentication (a Caddy forward_auth gate
 # in front left it warning "UI is exposed without authentication", 2026-09-17).
 # So the gateway runs the OIDC authorization-code flow itself against this
-# provider, and central Caddy is a plain reverse_proxy — the tududi/postiz
+# provider, and central Caddy is a plain reverse_proxy — the postiz
 # pattern. The client_secret is injected from the worker's env
 # (AGENTGATEWAY_OIDC_CLIENT_SECRET, OpenBao via env.j2); the gateway deploy reads
 # the SAME value via manage-secrets _shared_reads. ADMIN tier (app-catalog.yml):

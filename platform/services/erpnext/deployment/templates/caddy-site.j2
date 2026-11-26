@@ -1,6 +1,6 @@
 {# ERPNext central-Caddy fragment — distributed by deploy-erpnext.yml via
    tasks/distribute-caddy-site.yml when a caddy_svc host exists. Same shape as
-   the UhhCraft / other per-site fragments. The domain comes from
+   the other per-site fragments. The domain comes from
    erpnext_public_url (svc_domain) so ONE template serves prod and the local-dev
    *.agent-cloud.test name alike. Caddy handles WebSocket upgrades transparently,
    so the Frappe socket.io path needs no special block. #}

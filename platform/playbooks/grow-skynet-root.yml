@@ -1,0 +1,46 @@
+---
+# grow-skynet-root.yml: grow the skynet host's root filesystem into its virtual disk, online.
+#
+# Why this exists: skynet's VM (vmid 224) is declared with a 40G disk, but it clones from the template
+# built on a 20G disk, so the root logical volume, its partition, the physical volume and the ext4
+# filesystem keep the template's size: after Provision VM (Semaphore task 10297) the root was 9.8G,
+# 72% used, on a 40G disk. skynet pulls its image and runs Postgres on that root. Same cause and same
+# shared steps as grow-console-root.yml (tasks/grow-root-lvm.yml); see that file's header.
+#
+# The general fix, growing the root at provision time inside Provision VM, is a tracked follow-up.
+#
+# Online and bounded: partition -> PV -> root LV and its ext4 filesystem, with no reboot, no unmount and
+# no container restart. Ansible's remote temp lives on tmpfs because the root may be full. Safe under
+# --check (growpart -N); every step is idempotent. Bound to the reviewed commit through
+# require-reviewed-checkout.yml. `--tags verify` changes nothing and fails unless the root is fully grown.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: skynet_svc
+    preflight_group_expected: skynet_svc
+  # Under --tags verify too: a verify run over no hosts would otherwise pass (MISTAKES 2.21).
+  tags: [always]
+
+- name: "Reviewed checkout"
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+
+- name: "Grow the skynet root filesystem"
+  hosts: skynet_svc
+  gather_facts: false
+  become: false
+  environment:
+    TMPDIR: /dev/shm/ansible-tmp
+  vars:
+    ansible_remote_tmp: /dev/shm/ansible-tmp
+    _helper: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/grow-root-lvm.py') }}"
+  tasks:
+    # Shared with the other grow-*-root.yml wrappers.
+    # A static import, so `--tags verify` reaches each task.
+    - name: "Grow the root filesystem"
+      ansible.builtin.import_tasks: tasks/grow-root-lvm.yml

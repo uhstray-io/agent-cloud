@@ -13,7 +13,8 @@
 # OPA Integration Plan: Policy-as-Code for Agent-Cloud
 
 **Date:** 2026-04-07
-**Status:** Phase 1 DEPLOYED (local-dev, 2026-06-14) — OPA running via the composable
+**Status:** Production DEPLOYED 2026-10-29 (own VM, step-ca server TLS, firewall-admitted callers); read-only bundle since 2026-10-31; decisions-and-health-only authorization since 2026-11-01 (task 11154); skynet's call path proven (Deploy skynet task 11156); current with `dev` policy as of 2026-11-03 (task 11933); the workflow's service-validate step passes (task 12048). See "Production deployment" below.
+Phase 1 DEPLOYED (local-dev, 2026-06-14) — OPA running via the composable
 local pattern (`platform/services/opa/deployment/`, `deploy-opa.yml`, `opa_svc`
 inventory group, "Deploy OPA (Local)" Semaphore template). Unauthenticated
 internal decision API on `opa:8181` (local-dev), host diagnostics `127.0.0.1:8281`.
@@ -22,9 +23,9 @@ namespace) + tests pass 7/7; deploy verifies allow+deny + `opa test`; smoke §8 
 **Adaptations from this prod-first plan:** local follows the place-monorepo →
 deploy.sh → verify pattern (not sparse-checkout); image pinned to the multi-arch
 `-static` tag (plain tag is amd64-only, crashes under arm64 emulation); Phase 1
-has no secrets so no manage-secrets/AppRole yet (added in Phase 2/3). Agent
-integration (Phase 2), token auth + Loki decision logs (Phase 3) remain.
-**Context:** The Four-Layer Guardrails Model (CLAUDE.md, Unification Plan) already positions OPA in the Guardrail Layer alongside OpenBao and Kyverno. This plan operationalizes that architecture — defining how OPA deploys, what policies it enforces, how it integrates with the composable automation patterns, and where it fits in the implementation roadmap.
+has no secrets so no manage-secrets/AppRole yet (added in Phase 2/3). Token auth
+and Loki decision logs (Phase 3) remain.
+**Context:** The Four-Layer Guardrails Model (CLAUDE.md) already positions OPA in the Guardrail Layer alongside OpenBao and Kyverno. This plan operationalizes that architecture — defining how OPA deploys, what policies it enforces, how it integrates with the composable automation patterns, and where it fits in the implementation roadmap.
 
 ---
 
@@ -32,15 +33,13 @@ integration (Phase 2), token auth + Loki decision logs (Phase 3) remain.
 
 The current agent-cloud stack has a **policy gap between credential access and action authorization**:
 
-1. **OpenBao governs secrets, not actions** — Once NemoClaw retrieves an API key from `secret/services/nocodb`, nothing constrains which NocoDB endpoints it calls, how often, or under what conditions. OpenBao's HCL policies are path-based and internally scoped — they answer "can this token read this secret path?" not "can this agent perform this action on this service."
+1. **OpenBao governs secrets, not actions** — Once an agent retrieves an API key from `secret/services/netbox`, nothing constrains which NetBox endpoints it calls, how often, or under what conditions. OpenBao's HCL policies are path-based and internally scoped — they answer "can this token read this secret path?" not "can this agent perform this action on this service."
 
-2. **Per-service API keys are binary** — A valid API key either works or doesn't. There's no conditional layer: no time-of-day restrictions, no rate limiting by agent identity, no action-level filtering. NemoClaw with a Semaphore API token can trigger any template, including destructive ones.
+2. **Per-service API keys are binary** — A valid API key either works or doesn't. There's no conditional layer: no time-of-day restrictions, no rate limiting by agent identity, no action-level filtering. An agent with a Semaphore API token can trigger any template, including destructive ones.
 
-3. **No unified audit of agent decisions** — OpenBao's audit log captures secret access. n8n logs workflow executions. NocoDB logs task entries. But there's no single decision log that records "NemoClaw attempted action X on service Y and was {allowed|denied} because of policy Z."
+3. **No unified audit of agent decisions** — OpenBao's audit log captures secret access. But there's no single decision log that records "an agent attempted action X on service Y and was {allowed|denied} because of policy Z."
 
-4. **Cross-agent coordination has no policy layer** — The NocoDB task queue mediating NemoClaw↔NetClaw coordination relies on application-level checks. There's no infrastructure-level policy preventing one agent from exceeding its scope when writing tasks for another.
-
-5. **The Guardrails Model is incomplete without OPA** — The CLAUDE.md Four-Layer architecture lists OPA explicitly. Kyverno handles Kubernetes admission control (Phase 3+ in the Unification Plan). OPA handles everything else: Docker/Podman environments, agent API authorization, cross-service policy decisions. Without OPA, the Guardrail Layer is only enforcing secrets (OpenBao) and future k8s policies (Kyverno).
+4. **The Guardrails Model is incomplete without OPA** — The CLAUDE.md Four-Layer architecture lists OPA explicitly. Kyverno handles Kubernetes admission control. OPA handles everything else: Docker/Podman environments, agent API authorization, cross-service policy decisions. Without OPA, the Guardrail Layer is only enforcing secrets (OpenBao) and future k8s policies (Kyverno).
 
 ---
 
@@ -64,7 +63,7 @@ These align with the existing platform design principles and composable automati
 ```mermaid
 graph TD
     subgraph AI["AI Layer"]
-        AGENTS["NemoClaw, NetClaw, WisBot, Claude Cowork"]
+        AGENTS["skynet agents"]
     end
 
     subgraph GR["Guardrail Layer"]
@@ -95,11 +94,10 @@ The runtime flow for an agent making a service call:
 
 ```mermaid
 sequenceDiagram
-    participant Agent as Agent (NemoClaw/NetClaw)
+    participant Agent as Agent (skynet)
     participant OPA as OPA
     participant BAO as OpenBao
     participant SVC as Target Service
-    participant DB as NocoDB task_log
 
     Agent->>OPA: 1. POST /v1/data/agentcloud/allow<br/>{agent, action, service, endpoint, context}
     OPA-->>Agent: 2. {allow: true/false, reason: "..."}<br/>Decision logged to OPA decision log
@@ -109,7 +107,6 @@ sequenceDiagram
         Agent->>SVC: 4. POST /<endpoint>
         SVC-->>Agent: Result
     end
-    Agent->>DB: 5. Log {agent, action, service, opa_decision, result}
 ```
 
 This is additive to the current flow — agents currently go straight from step 3 to step 4. OPA inserts steps 1-2 as a policy checkpoint without modifying the credential lifecycle.
@@ -153,15 +150,12 @@ platform/services/opa/
         agent_actions_test.rego     # Unit tests for agent rules
         semaphore_governance.rego   # Semaphore template execution policies
         semaphore_governance_test.rego
-        network_operations.rego     # NetClaw-specific network action policies
-        network_operations_test.rego
         data.json                   # Static data (agent definitions, service catalog)
       common/
         helpers.rego                # Shared utility functions (time checks, etc.)
   context/
     architecture.md                 # How AI agents interact with OPA
     skills/                         # Agent skill definitions for OPA queries
-      check-authorization.md        # NemoClaw/NetClaw skill: query OPA before acting
 ```
 
 ---
@@ -309,7 +303,7 @@ fi
 log_success "OPA loaded ${POLICY_COUNT} policy module(s)"
 
 # Smoke test: query a policy
-RESULT=$(curl -s -X POST http://localhost:8181/v1/data/agentcloud/allow \
+RESULT=$(curl -s -X POST http://localhost:8181/v1/data/agentcloud/decision \
   -H "Content-Type: application/json" \
   -d '{"input":{"agent":"smoke-test","action":"test","service":"opa"}}')
 
@@ -325,7 +319,7 @@ fi
 
 ## Credential Lifecycle Integration
 
-OPA itself has a minimal credential footprint compared to services like NetBox or NocoDB. However, it must be fully integrated with the credential lifecycle patterns from CREDENTIAL-LIFECYCLE-PLAN.md.
+OPA itself has a minimal credential footprint compared to services like NetBox. However, it must be fully integrated with the credential lifecycle patterns from CREDENTIAL-LIFECYCLE-PLAN.md.
 
 ### OPA's Credential Surface
 
@@ -383,21 +377,6 @@ Following the credential metadata standard from Credential-Lifecycle-Plan.md, ev
 
 Written by `write-secret-metadata.yml` as part of the deploy playbook.
 
-### Updating Agent AppRole Policies
-
-Existing agent AppRoles (NemoClaw, NetClaw) do **not** need modification to work with OPA. OPA is queried via unauthenticated HTTP (Phase 1) or with a separate OPA-specific bearer token (Phase 2). The OpenBao AppRole policies control secret access; OPA controls action authorization. They are orthogonal.
-
-However, when per-agent OPA tokens are introduced (Phase 2), agent policies need a single additional path:
-
-```hcl
-# Addendum to nemoclaw-read policy
-path "secret/data/{{ vault_secret_prefix }}/opa/agents/nemoclaw" {
-  capabilities = ["read"]
-}
-```
-
-This stores NemoClaw's OPA bearer token at a per-agent path, maintaining the least-privilege principle.
-
 ---
 
 ## Policy Design
@@ -428,20 +407,6 @@ default allow := false
 # and permission mappings
 # --------------------------------------------------
 
-# NemoClaw: API-only workflow automation
-allow if {
-    input.agent == "nemoclaw"
-    input.service in data.agentcloud.nemoclaw.allowed_services
-    input.action in data.agentcloud.nemoclaw.allowed_actions[input.service]
-}
-
-# NetClaw: network infrastructure operations
-allow if {
-    input.agent == "netclaw"
-    input.service in data.agentcloud.netclaw.allowed_services
-    input.action in data.agentcloud.netclaw.allowed_actions[input.service]
-}
-
 # Block all agents from destructive Semaphore templates
 deny if {
     input.service == "semaphore"
@@ -453,7 +418,7 @@ deny if {
 # Override: deny always takes precedence
 allow if {
     not deny
-    # ... (existing allow rules above)
+    # ... (agent allow rules)
 }
 
 # Rate limiting signal (not enforced by OPA, but reported)
@@ -483,39 +448,13 @@ reason := "no matching allow rule" if { not allow; not deny }
 ```json
 {
   "agentcloud": {
-    "nemoclaw": {
-      "allowed_services": ["nocodb", "github", "discord", "n8n", "semaphore", "netbox"],
-      "allowed_actions": {
-        "nocodb": ["read", "create", "update"],
-        "github": ["list_issues", "create_issue", "update_issue", "add_comment"],
-        "discord": ["send_message", "read_messages"],
-        "n8n": ["list_workflows", "trigger_workflow", "list_executions"],
-        "semaphore": ["list_projects", "list_templates", "run_task", "check_task"],
-        "netbox": ["read"]
-      }
-    },
-    "netclaw": {
-      "allowed_services": ["netbox", "nocodb", "pfsense", "snmp", "nmap"],
-      "allowed_actions": {
-        "netbox": ["read", "create", "update"],
-        "nocodb": ["read", "create", "update"],
-        "pfsense": ["read_config", "read_status"],
-        "snmp": ["poll"],
-        "nmap": ["scan_subnet"]
-      }
-    },
     "semaphore": {
       "destructive_templates": [
         "Clean Deploy NetBox",
-        "Clean Deploy NocoDB",
-        "Clean Deploy n8n",
         "Wipe and Rebuild"
       ]
     },
-    "rate_limits": {
-      "nemoclaw": { "discord": 5, "semaphore": 2, "github": 10 },
-      "netclaw": { "nmap": 1, "pfsense": 5 }
-    }
+    "rate_limits": {}
   }
 }
 ```
@@ -530,37 +469,10 @@ package agentcloud_test
 import rego.v1
 import data.agentcloud
 
-# NemoClaw can read NocoDB
-test_nemoclaw_read_nocodb_allowed if {
-    agentcloud.allow with input as {
-        "agent": "nemoclaw",
-        "action": "read",
-        "service": "nocodb"
-    }
-}
-
-# NemoClaw cannot scan subnets
-test_nemoclaw_nmap_denied if {
-    not agentcloud.allow with input as {
-        "agent": "nemoclaw",
-        "action": "scan_subnet",
-        "service": "nmap"
-    }
-}
-
-# NetClaw can poll SNMP
-test_netclaw_snmp_allowed if {
-    agentcloud.allow with input as {
-        "agent": "netclaw",
-        "action": "poll",
-        "service": "snmp"
-    }
-}
-
 # No agent can trigger destructive templates without approval
 test_destructive_template_blocked if {
     not agentcloud.allow with input as {
-        "agent": "nemoclaw",
+        "agent": "skynet",
         "action": "run_task",
         "service": "semaphore",
         "template_name": "Clean Deploy NetBox",
@@ -573,7 +485,7 @@ test_unknown_agent_denied if {
     not agentcloud.allow with input as {
         "agent": "rogue-agent",
         "action": "read",
-        "service": "nocodb"
+        "service": "netbox"
     }
 }
 ```
@@ -582,7 +494,7 @@ Run tests with: `opa test platform/services/opa/deployment/policies/ -v`
 
 ### Semaphore Governance Policy
 
-Separate policy file for Semaphore-specific rules, referenced by the Implementation Plan's Phase 1 "Semaphore Playbook Execution" step:
+Separate policy file for Semaphore-specific rules:
 
 ```rego
 package agentcloud.semaphore
@@ -602,40 +514,6 @@ can_trigger if {
     input.template_name in data.agentcloud.semaphore.destructive_templates
     input.human_approved == true
     input.approver != ""
-}
-```
-
-### Network Operations Policy (NetClaw-Specific)
-
-Enforces the CIDR scoping from the Unification Plan's "AI CAN / AI CANNOT" matrix:
-
-```rego
-package agentcloud.network
-
-import rego.v1
-
-default scan_allowed := false
-
-# Only NetClaw can perform network scans
-scan_allowed if {
-    input.agent == "netclaw"
-    input.action == "scan_subnet"
-    cidr_in_scope(input.target_cidr)
-}
-
-# Scans restricted to defined uhstray.io datacenter CIDRs
-cidr_in_scope(cidr) if {
-    cidr in data.agentcloud.network.allowed_cidrs
-}
-
-# Config push requires ITSM gate
-default config_push_allowed := false
-
-config_push_allowed if {
-    input.agent == "netclaw"
-    input.action == "push_config"
-    input.itsm_ticket != ""
-    input.itsm_status == "approved"
 }
 ```
 
@@ -671,42 +549,6 @@ Added to `platform/semaphore/templates.yml`:
 
 ## Integration with Existing Services
 
-### Agent Integration (NemoClaw / NetClaw)
-
-Agents gain a new OPA query step before executing any service call. This is implemented as a shared library function in the agent's tool executor:
-
-```python
-# agents/nemoclaw/context/skills/opa_check.py (pseudocode)
-import httplib2
-
-OPA_URL = "http://opa-svc:8181/v1/data/agentcloud/decision"
-
-def check_authorization(agent: str, action: str, service: str, **context) -> dict:
-    """Query OPA before executing any service action."""
-    input_data = {
-        "input": {
-            "agent": agent,
-            "action": action,
-            "service": service,
-            **context
-        }
-    }
-    response = httplib2.Http().request(OPA_URL, "POST", json.dumps(input_data))
-    decision = json.loads(response[1])["result"]
-
-    if not decision["allowed"]:
-        raise AuthorizationDenied(
-            f"OPA denied: agent={agent} action={action} "
-            f"service={service} reason={decision['reason']}"
-        )
-
-    return decision
-```
-
-### n8n Integration
-
-n8n workflows that trigger agent actions can include an OPA check node (HTTP Request) before the action node. This adds policy enforcement to scheduled workflows without modifying the agent code.
-
 ### Observability Integration
 
 OPA's decision log streams to stdout by default (configured with `--set=decision_logs.console=true`). In the compose environment, Docker collects these logs. When the observability stack (Loki) is deployed, logs route through the standard pipeline:
@@ -732,13 +574,13 @@ This plan slots into the existing implementation roadmap. OPA is a **Guardrail L
 1. Provision OPA VM via `provision-vm.yml` (1 core / 1GB / 20GB)
 2. Create `platform/services/opa/deployment/` directory structure
 3. Write `compose.yml`, `deploy.sh`, `post-deploy.sh`
-4. Write `agent_actions.rego` + `data.json` with NemoClaw and NetClaw rules
+4. Write `agent_actions.rego` + `data.json` with the agent identity rules
 5. Write `agent_actions_test.rego` — all tests passing via `opa test`
 6. Create `deploy-opa.yml` composable playbook (4-phase pattern)
 7. Add OPA to `platform/semaphore/templates.yml` + run `setup-templates.yml`
 8. Create OPA AppRole via `manage-approle.yml` (minimal — read own config)
 9. Deploy via Semaphore "Deploy OPA" template
-10. Verify: `curl http://opa-svc:8181/v1/data/agentcloud/allow` returns decisions
+10. Verify: `POST /v1/data/agentcloud/decision` returns decisions (the authorization policy admits only that path and `GET /health`; other paths answer 401)
 
 **Acceptance criteria:**
 - OPA container healthy on port 8181
@@ -747,30 +589,7 @@ This plan slots into the existing implementation roadmap. OPA is a **Guardrail L
 - OPA appears in OpenBao as AppRole with metadata
 - Semaphore templates registered
 
-**Does NOT require:** Agent code changes, n8n workflow modifications, or Loki deployment.
-
-### Phase 2: Agent Integration (Week 3-4)
-
-**Goal:** NemoClaw and NetClaw query OPA before executing actions.
-
-**Tasks:**
-1. Add `check_authorization()` function to NemoClaw's tool executor
-2. Add OPA query to NetClaw's network action pipeline
-3. Update NemoClaw sandbox network policy to allow HTTP to OPA (port 8181)
-4. Update NetClaw sandbox network policy to allow HTTP to OPA (port 8181)
-5. Write `semaphore_governance.rego` — enforce template execution policies
-6. Write `network_operations.rego` — CIDR scoping and ITSM gating for NetClaw
-7. Add OPA decision results to NocoDB `task_log` entries (new column: `opa_decision`)
-8. Update `data.json` with Semaphore destructive template list from actual templates.yml
-
-**Acceptance criteria:**
-- NemoClaw queries OPA before every service API call
-- NetClaw queries OPA before network operations
-- Denied actions appear in NocoDB `task_log` with reason
-- Destructive Semaphore templates blocked without human approval
-- NetClaw subnet scans restricted to allowed CIDRs
-
-**Depends on:** Phase 1 complete, NemoClaw Phase 1 integration (Implementation Plan Step 6) in progress or complete.
+**Does NOT require:** Agent code changes or Loki deployment.
 
 ### Phase 3: Hardening + Observability (Week 5-6)
 
@@ -794,15 +613,14 @@ This plan slots into the existing implementation roadmap. OPA is a **Guardrail L
 - Decision logs visible in Grafana (if Loki deployed)
 - OPA credentials appear in weekly audit report
 
-**Depends on:** Phase 2 complete. Loki deployment is optional — decision logs fall back to Docker stdout.
+**Depends on:** Phase 1 complete. Loki deployment is optional — decision logs fall back to Docker stdout.
 
 ### Phase 4: Advanced Policies (Ongoing)
 
 **Goal:** Expand policy coverage based on operational needs.
 
 **Potential additions (implement as needed, not speculatively):**
-- Time-based restrictions (maintenance windows for NetClaw config changes)
-- Cross-agent delegation policies (NemoClaw requesting NetClaw actions via NocoDB queue)
+- Time-based restrictions (maintenance windows for config changes)
 - Rate limiting enforcement (currently advisory — make it blocking)
 - Envoy sidecar in front of OpenBao for enriched vault access policies (replaces missing Sentinel)
 - Policy bundle server (nginx serving bundles, replacing volume mount) for multi-site
@@ -816,15 +634,9 @@ graph TD
     P1["Phase 1: OPA Foundation"]
     P1R1["Requires: Proxmox provisioning (Phase 0), manage-approle.yml"]
     P1R2["Requires: sparse-checkout.yml, setup-runtime-dir.yml (planned)"]
-    P1R3["Parallel with: NemoClaw Phase 1 integration work"]
-
-    P2["Phase 2: Agent Integration"]
-    P2R1["Requires: Phase 1 complete"]
-    P2R2["Requires: NemoClaw deployed and functional"]
-    P2R3["Requires: NetClaw VM provisioned (if integrating)"]
 
     P3["Phase 3: Hardening"]
-    P3R1["Requires: Phase 2 complete"]
+    P3R1["Requires: Phase 1 complete"]
     P3R2["Optional: Loki deployment (for decision log shipping)"]
     P3R3["Integrates with: Credential Lifecycle Plan Phase 2 + Phase 5"]
 
@@ -834,12 +646,7 @@ graph TD
 
     P1R1 --> P1
     P1R2 --> P1
-    P1R3 -. "parallel" .-> P1
-    P1 --> P2
-    P2R1 --> P2
-    P2R2 --> P2
-    P2R3 --> P2
-    P2 --> P3
+    P1 --> P3
     P3R1 --> P3
     P3R2 -. "optional" .-> P3
     P3R3 --> P3
@@ -855,16 +662,15 @@ graph TD
 1. **VM IP allocation** — `.170` is proposed for OPA. Confirm against NetBox that this is available and does not conflict with existing reservations.
 2. **OPA authentication in Phase 1** — Running unauthenticated is pragmatic for internal-only uhstray.io datacenter. Should we skip straight to token auth if deployment is quick? The complexity delta is low.
 3. **Policy change workflow** — Currently policies are volume-mounted from the sparse checkout. A `git pull + container restart` reloads policies. Is this sufficient, or should we implement the OPA bundle API for hot-reload without restart?
-4. **n8n OPA integration depth** — Should n8n workflows query OPA directly (HTTP Request node), or should this be handled at the agent level only? Adding OPA checks in n8n provides defense-in-depth but adds latency to every workflow execution.
-5. **Rate limiting enforcement** — OPA can report rate warnings, but actual rate limiting requires a stateful component (OPA is stateless). Should rate limiting be delegated to an API gateway (Kong/Traefik, Phase 3 of Unification Plan) with OPA providing the policy?
+4. **Rate limiting enforcement** — OPA can report rate warnings, but actual rate limiting requires a stateful component (OPA is stateless). Should rate limiting be delegated to an API gateway (Kong/Traefik) with OPA providing the policy?
 
 ---
 
 ## Anti-Patterns to Avoid
 
 - **Don't duplicate OpenBao's job** — OPA does not store secrets, manage credentials, or handle authentication. If you're writing a Rego rule about "can this agent read this vault path," reconsider — that's OpenBao's HCL policy domain.
-- **Don't write speculative policies** — Start with the agent action rules that match real NemoClaw/NetClaw integrations from the Implementation Plan. Expand based on incidents or new agent capabilities, not theoretical attack vectors.
-- **Don't make OPA a hard dependency on day one** — Agents should gracefully handle OPA being unreachable (log a warning, continue with caution). Make OPA a hard gate only after Phase 2 stability is proven.
+- **Don't write speculative policies** — Start with the agent action rules that match real integrations (skynet's client is the first production caller). Expand based on incidents or new agent capabilities, not theoretical attack vectors.
+- **Don't make OPA a hard dependency on day one** — Agents should gracefully handle OPA being unreachable (log a warning, continue with caution). Make OPA a hard gate only after its callers' integration is proven stable.
 - **Don't bypass OPA with direct API calls** — If an agent has a valid API key, nothing technically prevents skipping the OPA check. The enforcement mechanism is the agent code itself (and eventually, an Envoy proxy that mandates OPA checks). Agent code reviews must verify OPA integration.
 - **Don't put mutable state in OPA** — OPA's `data.json` should be static configuration, not a live database. Dynamic context (current time, action counts) comes from the `input` document, supplied by the caller.
 
@@ -877,9 +683,58 @@ graph TD
 | **CLAUDE.md** | OPA fills the "OPA (policy)" slot in the Four-Layer Guardrails Model |
 | **AUTOMATION-COMPOSABILITY.md** | OPA follows the 4-phase composable playbook pattern; `deploy-opa.yml` uses the standard task library |
 | **CREDENTIAL-LIFECYCLE-PLAN.md** | OPA credentials (bearer tokens) follow Create→Verify→Retire rotation; OPA included in `audit-credentials.yml` scope; metadata written via `write-secret-metadata.yml` |
-| **IMPLEMENTATION_PLAN.md** | OPA enables policy enforcement for Phase 1 integrations (Semaphore template governance, NocoDB CRUD scoping); does not block existing phases |
-| **NETCLAW-INTEGRATION-PLAN.md** | OPA enforces CIDR scoping and ITSM gating for NetClaw network operations; NetClaw queries OPA before any scan or config push |
-| **UNIFICATION-PLAN.md** | OPA is listed as P0 priority alongside Kyverno in the "Recommended Additions" section; Governance Agent (P1) wraps OPA + NeMo Guardrails |
+
+---
+
+## Production deployment (2026-10-29)
+
+OPA ran on local-dev only until this landed on 2026-10-29. Its first production caller is skynet. skynet's deploy refuses an
+`skynet_opa_url` that is not `https://` (`deploy-skynet.yml`). The Dispatch Console's proposal path (plan 17,
+D29) waits on both OPA and skynet.
+
+### Decisions (Joseph, 2026-10-29)
+
+| # | Decision | Rejected | Why |
+|---|---|---|---|
+| P1 | OPA runs on its **own small VM** (`opa_svc`, host `opa`) | Co-hosting on the console VM | The workflow and firewall model assume one service per VM; the console set the precedent (plan 17 D21) |
+| P2 | **LAN bind plus host firewall.** OPA publishes 8281 on the VM's LAN address. `apply-firewall.yml` admits that port only from its callers' groups (`firewall_allow_groups`, port detection off). No Caddy route, no public DNS | A Caddy route; OPA bearer tokens | OPA returns decisions, not secrets. A Caddy route cannot be restricted to the LAN: production Caddy does not see the real peer address (2026-09-15). Tokens would add a credential to every caller for no gain over the firewall |
+| P3 | **Server TLS from a step-ca leaf in the first deploy.** Leaf `opa-server`, SAN `opa.<dns_site>.<dns_zone>`, served by OPA itself (`--tls-cert-file`, `--tls-cert-refresh-period=30s`). No client-certificate authentication | HTTP first, TLS later; mutual TLS | skynet requires `https://`. OPA re-reads the files every 30 s, which picks up the renewal's `current` swap without a restart (measured locally 2026-10-29 with the 1.0.0-static image) |
+| P4 | **Policies come from the placed monorepo** (read-only bind mount). The deployed branch decides which Rego is live; a change is applied by redeploy | OPA bundles | No bundle build or serving infrastructure to run |
+| P5 | Production runs **`Deploy OPA (Dev)` with `service_branch=dev`** until `dev` is promoted | Waiting for promotion | Same as the console rollout |
+| P6 | **OPA loads `./policies` in bundle mode** (`--bundle`, 2026-10-31). OPA then owns every data and policy path and refuses `PUT`/`PATCH`/`DELETE` on `/v1/data` and `/v1/policies` with HTTP 400. This is a local directory loaded as a bundle, not a bundle server, so P4 stands | The plain path load P4 shipped with | The read-only mount protects the files, not the running policy. Under a plain load, any caller the firewall admits could rewrite the catalog or the Rego, or delete `/v1/data/agentcloud` (each measured locally on the 1.0.0-static image: 204 or 200). Bundle mode gave identical decisions on the real tree (13 sample inputs and the whole `/v1/data` document) and `opa test` 101/101. `docs/MISTAKES.md` 10.33 |
+
+### What the code does
+
+- `deploy-opa.yml` refuses a production run without `opa_bind` (not loopback), `opa_tls`, and an `https://` `opa_internal_url`.
+- With `opa_tls` set, it checks the leaf's declaration in `internal_leaves`: server profile, this host, `<deploy>/certs/<leaf>`, reload `none`, the server name in its SANs.
+- It issues the leaf if none is current (`tasks/mint-internal-cert.yml`, key made on the OPA host), places the CA bundle (`tasks/distribute-ca-root.yml`), and starts OPA with `compose.tls.yml`. That overlay adds userns keep-id for the image's uid 1000, the `./certs` directory mount, and the TLS flags.
+- Verify runs on the OPA host with `curl --resolve` against the bundle. It checks `/health`, a sample allow and a sample deny decision, that plain HTTP is not answered, that a policy write (`PUT /v1/data/agentcloud_write_probe`, a path no rule reads), a data read (`GET /v1/data`) and a decision with `?explain=full` are each refused with exactly 401 `unauthorized` (the authorization policy, which answers before the bundle's 400), and `opa test --bundle /policies`.
+- `renew-internal-certs.yml` admits the leaf as class `opa-server` and proves it by a TLS connection verified by name, comparing the served serial with `current`.
+
+### Production checklist
+
+Each step runs through Semaphore, check mode first.
+
+1. [x] Capacity: `Validate Proxmox Cluster (Dev)`, task 10225. crabnebula has the most free memory. VMIDs 200–222 are taken, so the VM gets 223.
+2. [x] Address: `Allocate NetBox IP (Dev)`, reserve the declared address (task 10229; the address is in site-config). The reservation passed the live pfSense DHCP boundary check.
+3. [x] site-config #126 declares host `opa`, group `opa_svc` (VM, bind, TLS variables, firewall) and the `vm-specs.yml` entry, without the leaf.
+4. [x] agent-cloud #778 merged to `dev`. `Deploy OPA (Dev)` and `Clean Deploy OPA (Dev)` published with the survey publisher's scoped create (tasks 10327, 10329). Inventory synced with `platform/semaphore/sync-inventory.yml`.
+5. [x] (Steps 5 and 6 ran before step 4's merge: they need only the synced inventory.) Lookup Service Inventory and Validate Address Free passed (tasks 10257, 10258). The address was not in ARP; NetBox VM record 52 was created as planned.
+6. [x] Provision VM (task 10261) ran from the `main`-bound template: the `(Dev)` Provision VM failed its o11y restore-target preflight (task 10259), because the production environment supplies `bao_role_id`, `bao_secret_id` and `openbao_addr` as extra vars and the preflight refuses them. Then Generate Service SSH Key (10270), Distribute SSH Keys (10273), Back Up Service SSH Key (10276, site-config #128), Verify Host Access (10279) plus an operator-side key-only login, and Harden SSH (10285). The disk is declared at the template's 20G, so the root needed no grow.
+7. [x] site-config #129 declares the `opa-server` leaf, merged after #778. Inventory synced, then `Deploy step-ca (Dev)` put the SAN in the CA's name policy (task 10331; root fingerprint unchanged).
+8. [x] Apply Firewall before the first deploy (task 10337): default-deny inbound; 8281 only from `console_svc` and `skynet_svc`. The first attempt (10336) hit the shared-inventory parse race and was rerun in a quiet window.
+9. [x] `Deploy OPA (Dev)` with `service_branch=dev` (task 10380): leaf issued on the host, HTTPS health verified against the step-ca bundle, sample allow and deny decisions correct, plain HTTP refused, `opa test` 101/101. The first attempt (10339) created no container: production podman refuses short image names. The fix is #780, and MISTAKES 2.31 records it. Re-run converges (10381): leaf kept, healthy. Ensure Service Persistence (10383), Verify Service Persistence (10385) and Snapshot Access (10386) passed.
+10. [x] `Probe Reachability (Dev)`: from `console_svc`, 8281 open (10387); from `dns_svc`, 8281 closed (10388).
+11. [ ] `Renew Internal Certs (Dev)`: a check-mode run (10389) admits the leaf as class `opa-server`, with 29 of 30 days left. The served-serial proof runs at its first renewal. The template offers no `--tags verify`, and a rotation drill would reissue every leaf on every host. The daily run reads the leaf (task 11758, 2026-11-03), and `Issue Internal Leaf (Dev)` with `leaf_action=inspect` (task 11934, 2026-11-03) reports it current, key matching and 0600, server-only, not after 2026-11-29 00:08:55 GMT. At the default threshold (a third of its lifetime left) the first real renewal falls to a daily run near 2026-11-19; that run's served-serial proof closes this step.
+12. [x] skynet: its group is already admitted (site-config #127; applied by task 10337). skynet points at `https://opa.<dns_site>.<dns_zone>:8281`, mapping the name to the OPA host's address until internal DNS is authoritative. "Live" means a decision made by skynet itself through that path (`docs/MISTAKES.md` 1.21), not this LAN probe: `Deploy skynet (Dev)` task 10711 (2026-10-31) got OPA's default deny through skynet's own client, and task 11156 (2026-11-01, after the authorization policy) repeated it and also had skynet's write to OPA refused with 401.
+
+13. [x] Redeploy with bundle mode (P6, #805): `Deploy OPA (Dev)` check mode (task 11117), then real (task 11119). The TLS write probe passed: production OPA refused `PUT /v1/data` with 400 `invalid_parameter`. Allow and deny decisions were verified over TLS, and `opa test --bundle` passed 101/101.
+14. [x] Authorization policy (#810): `Deploy OPA (Dev)` check mode (task 11153), then real (task 11154, 2026-11-01), at `7f671690`. Over TLS, allow and deny decisions verified; a policy write, a data read and a decision with `?explain=full` each refused with 401; `opa test --bundle` 117/117.
+15. [x] Launch-input bounds (#829): `Deploy OPA (Dev)` check mode (task 11931), then real (task 11933), at `03ea6c6f`, so production runs the current `dev` policy. The same TLS checks passed as in step 14; `opa test --bundle` 160/160. The new deny rules apply only to a `semaphore` `run_task` request carrying `settings` (`agent_actions.rego`, the three `deny_reasons` rules after the bare-name comment); skynet's client has no `settings` field in its input contract (skynet `src/skynet/policy/opa.py`, `main` at `9168d6c`), so its decisions are unchanged.
+16. [x] Service-validate (agent-cloud #847, site-config #144): `Verify Service Health (Dev)` check mode (task 12047), then real (task 12048), both `pass` with health status 200. The probe runs on the OPA host with curl, verifying the leaf against the step-ca bundle the deploy places, with the certificate's name pinned to the bind address (`health_ca_path`, `health_resolve_address`).
+
+**Known gaps:**
+- A first check-mode deploy on a fresh VM fails at the health probe: `deploy.sh` is skipped in check mode, so no container is running yet. The first dry run proves only the guards and the placement.
 
 <!-- ======================= source: MAIN-BRANCH-PROTECTION-PLAN.md ======================= -->
 
@@ -912,7 +767,7 @@ GitHub's `delete_branch_on_merge` repository setting deleted the long-lived `dev
 
 The branch workflow in `CLAUDE.md` ("never push directly to main, never merge before checks pass") is currently **convention, not enforcement**. Nothing on the GitHub side prevents:
 
-- A direct push to `main` (human, NemoClaw, Claude Code, or a misconfigured playbook)
+- A direct push to `main` (human, Claude Code, or a misconfigured playbook)
 - A force push that rewrites `main` history that production VMs pull from
 - Deleting `main` or merging a PR before CodeRabbit/CI complete
 - Merging with unresolved CodeRabbit findings
@@ -956,7 +811,7 @@ Plan-tier constraints originally assumed (uhstray-io was assumed to be on **GitH
 
 **CodeRabbit is a reviewer, not a status check, by default.** GitHub App reviews don't count toward required-approval counts, so CodeRabbit can't satisfy an approval rule. The enforceable hook is different: enable CodeRabbit's *request-changes workflow* (`reviews.request_changes_workflow: true` in `.coderabbit.yaml`) so it opens review threads that must be resolved, and turn on the ruleset's **required conversation resolution** rule. Result: unresolved CodeRabbit findings mechanically block the merge button. (Verify in CodeRabbit's current docs whether it also offers a commit-status/check-run mode — if so, that check can additionally be added to required status checks in Phase 2.)
 
-**Agents must have no bypass path.** NemoClaw / Claude Code / any GitHub App or PAT used by automation stays **off** the bypass list. The only bypass actor is the Repository admin role (you), reserved for break-glass. Even then, prefer flipping the ruleset to `disabled` over routinely using bypass, so bypass events stay rare and meaningful in the audit log.
+**Agents must have no bypass path.** Claude Code / any GitHub App or PAT used by automation stays **off** the bypass list. The only bypass actor is the Repository admin role (you), reserved for break-glass. Even then, prefer flipping the ruleset to `disabled` over routinely using bypass, so bypass events stay rare and meaningful in the audit log.
 
 **Deploy keys are unaffected.** The OpenBao-stored deploy key (`secret/services/github:deploy_key`) is read-only clone access; rulesets only constrain writes, so no playbook changes are needed.
 
@@ -985,7 +840,7 @@ Bypass actors: `Repository admin` role, mode `always` — break-glass only, neve
 
 ### Ruleset 2: `protect-release-tags` (Phase 4, optional)
 
-Target: tags matching `v*`. Rules: restrict creation/update/deletion to admins. Becomes relevant once the Harbor image-promotion pipeline from `IMPLEMENTATION_PLAN.md` pins prod deploys to version tags — at that point a moved tag is equivalent to a force-pushed main.
+Target: tags matching `v*`. Rules: restrict creation/update/deletion to admins. Becomes relevant once the Harbor image-promotion pipeline pins prod deploys to version tags — at that point a moved tag is equivalent to a force-pushed main.
 
 ---
 
@@ -1121,7 +976,7 @@ Option 1 is recommended initially for simplicity; the gitleaks/IP-audit job shou
 | Open PR, resolve threads, checks green, merge | Succeeds |
 | Semaphore deploy from `main` post-merge | Unaffected (read-only clone) |
 
-Also confirm the agents' happy path end-to-end once: NemoClaw/Claude Code pushes a feature branch, opens a PR, and can do everything *except* merge early.
+Also confirm the agents' happy path end-to-end once: Claude Code pushes a feature branch, opens a PR, and can do everything *except* merge early.
 
 ---
 
@@ -1340,7 +1195,7 @@ Two chicken-and-eggs are named, not hidden: (1) **OpenBao↔step-ca TLS** — Op
 
 | Layer | Agent action | SoT touched | Direction |
 |-------|--------------|-------------|-----------|
-| AI | NemoClaw/NetClaw/WisBot/Cowork form an intent | (reads only) | — |
+| AI | skynet agents form an intent | (reads only) | — |
 | AI → Guardrail | Read DESIRED from **Git**; LIVE from **k8s API + o11y** (k8s tier) or **podman + o11y** (compose tier, §7); NETWORK/names/identity from **NetBox / hickory / step-ca**; images from **Harbor**; policy from **OPA** | all SoTs | READ |
 | Guardrail | OPA authorizes the agent ACTION (e.g. `run_task`); Kyverno gates k8s admission | OPA / Kyverno | VALIDATE |
 | Automation | The proposal becomes a Git PR (DESIRED), a NetBox journal/discovery entry (NETWORK enrichment), or an OpenBao write via `tasks/manage-secrets.yml` (secrets) — executed by Semaphore/Ansible/ArgoCD | the owning SoT | PROPOSE → human/gate → WRITE |
@@ -1388,7 +1243,7 @@ Phased, grounded in the verified repo state: NetBox + Diode + OpenBao + OPA + hi
 - placeholder (documented) for the future Harbor digest-pin check (INV-6).
 - *Touchpoints:* `.github/workflows/lint-and-test.yml`, `pyproject.toml`, `scripts/` rules.
 
-**1.2 Pin all floating image tags** — eliminate `:latest` defaults (verified live on `openbao`, `nocodb`, `semaphore`, `postiz`, and `ghcr.io/uhstray-io/*` for `uhhcraft`/`inference-*`) to explicit tags in the compose bases, keeping `${SVC_IMAGE:-pinned}` so a future Harbor digest repoint is a one-line default change. *(Interim: Git-pinned tag is the version SoT until Harbor lands; authority transfers to Harbor at Phase 3.)* — *Touchpoints:* `platform/services/{openbao,nocodb,semaphore,postiz,uhhcraft,inference-comfyui,inference-hunyuan3d}/deployment/compose.yml`.
+**1.2 Pin all floating image tags** — eliminate `:latest` defaults (verified live on `openbao`, `semaphore`, `postiz`) to explicit tags in the compose bases, keeping `${SVC_IMAGE:-pinned}` so a future Harbor digest repoint is a one-line default change. *(Interim: Git-pinned tag is the version SoT until Harbor lands; authority transfers to Harbor at Phase 3.)* — *Touchpoints:* `platform/services/{openbao,semaphore,postiz}/deployment/compose.yml`.
 
 **1.3 Retire `local-netbox-discover.sh` → tagged read-only reflection (D5)** — replace the ORM-shell writer with either (a) a small podman-ps **Diode worker** writing `container`-role Devices under `source=podman-reflect` with `last-seen`, or (b) nothing-to-NetBox + the §7 podman read path for local-dev. Add a prune-on-absence sweep scoped strictly by tag with a refuse-to-touch-untagged guard + test. Document it as a reflection sink in the netbox CLAUDE.md. *Then flip the 1.1 NetBox-writer guard to FAIL.* — *Touchpoints:* `scripts/local-netbox-discover.sh` (retire), `platform/services/netbox/deployment/workers/` (new worker or removal), `platform/services/netbox/deployment/CLAUDE.md`.
 
@@ -1414,13 +1269,13 @@ Phased, grounded in the verified repo state: NetBox + Diode + OpenBao + OPA + hi
 
 **2.1 `deploy-harbor.yml` + compose** under `platform/services/harbor/deployment/` with projects `upstream/`, `dev/`, `qa/`, `prod/`; `container_engine: docker` for the Harbor host. — *Touchpoints:* `platform/services/harbor/deployment/`, `platform/playbooks/deploy-harbor.yml`.
 
-**2.2 `build-and-push-image.yml` + `promote-image.yml`** — build → Trivy gate → **Cosign sign** → push `qa/`; promote retags `qa/`→`prod/` **and resolves to `@sha256` digest** committed into the overlay/compose default (INV-6, amends `IMPLEMENTATION_PLAN.md` §3B which currently pins by mutable tag). First artifact: `netbox:plugins` from `build_netbox_image()`. Cosign signing key in OpenBao `secret/services/harbor`; the **public** verify key cached as a long-lived k8s ConfigMap so Kyverno has no runtime OpenBao dependency. — *Touchpoints:* `platform/playbooks/build-and-push-image.yml`, `promote-image.yml`, `platform/services/netbox/deployment/deploy.sh`, OpenBao `secret/services/harbor`.
+**2.2 `build-and-push-image.yml` + `promote-image.yml`** — build → Trivy gate → **Cosign sign** → push `qa/`; promote retags `qa/`→`prod/` **and resolves to `@sha256` digest** committed into the overlay/compose default (INV-6). First artifact: `netbox:plugins` from `build_netbox_image()`. Cosign signing key in OpenBao `secret/services/harbor`; the **public** verify key cached as a long-lived k8s ConfigMap so Kyverno has no runtime OpenBao dependency. — *Touchpoints:* `platform/playbooks/build-and-push-image.yml`, `promote-image.yml`, `platform/services/netbox/deployment/deploy.sh`, OpenBao `secret/services/harbor`.
 
 **2.3 Repoint compose `${SVC_IMAGE}` defaults to Harbor digests** once Harbor is live; **authority for image version transfers from Git-pinned-tag to Harbor here** (state the transition explicitly so the same image is never pinned in two places during overlap). — *Touchpoints:* `platform/services/*/deployment/compose.yml`.
 
 ## Phase 3 — k8s/GitOps foundation (depends on Phase 2; decide CNI/LB stack first)
 
-**3.0 Decide the k0s CNI + LB stack** (`lb_controller: metallb|cilium|kube-vip`) and the datastore topology (single-controller kine/SQLite vs multi-controller etcd) **before** writing any pool or backup manifest (D3/D9). — *Touchpoint:* this document's revision log + `IMPLEMENTATION_PLAN.md`.
+**3.0 Decide the k0s CNI + LB stack** (`lb_controller: metallb|cilium|kube-vip`) and the datastore topology (single-controller kine/SQLite vs multi-controller etcd) **before** writing any pool or backup manifest (D3/D9). — *Touchpoint:* this document's revision log.
 
 **3.1 First Kustomize base from kompose (D1)** — `kompose convert compose.yml → platform/k8s/base/<svc>` as a **CI step** for a stateless pilot (`opa` or an o11y component); CI fails if a committed base diverges from regeneration. Overlays carry only k8s deltas + digest pins. Document the compose↔kustomize field mapping. — *Touchpoints:* `platform/k8s/base/<svc>`, `platform/k8s/overlays/{dev,staging,prod}/<svc>`, `.github/workflows/`.
 
@@ -1447,7 +1302,6 @@ Phased, grounded in the verified repo state: NetBox + Diode + OpenBao + OPA + hi
 - **Hand-authoring `platform/k8s/base`** (INV-5/D1) — generated only.
 - **Auto-sync to prod / agent write-access to ArgoCD or etcd** (D2/INV-7) — manual prod gate; PRs only.
 - **Bidirectional NetBox↔k8s sync** — read-only reflection only; any write-back is forbidden.
-- **Migrating live NocoDB/n8n to the composable pattern** — separately HELD (`nocodb-n8n-composable-migration.md`); not gated by this document.
 - **Multi-site DNS zone-delegation / split-horizon design** — flagged below as an open question, not designed here.
 
 ---

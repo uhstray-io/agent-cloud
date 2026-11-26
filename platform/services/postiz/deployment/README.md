@@ -11,8 +11,8 @@
 > before operations; this is a dated result, not continuous monitoring.
 
 Self-hosted [Postiz](https://postiz.com). Composes and schedules social posts through
-an Authentik-authenticated web interface, and exposes an API-key endpoint that n8n
-drives to automate post creation, media upload, and scheduling.
+an Authentik-authenticated web interface, and exposes an API-key endpoint that
+automation drives to create posts, upload media, and schedule them.
 
 - **Public URL (prod):** `https://postiz.uhstray.io`
 - **Local:** `https://postiz.agent-cloud.test:8443`
@@ -38,9 +38,11 @@ UI, and admin tooling. The UI and admin tooling stay out. Elasticsearch was orig
 trimmed too, but the gate scoped for that decision fired: as of v2.23.0 the backend
 registers more than 3 `Text` search attributes at startup, SQL visibility refuses that,
 and the backend never binds (measured 2026-08-30). The search node is therefore added
-back as `compose.search.yml`, applied when the inventory sets `postiz_temporal_search:
-true` — which every working deployment now needs. The base compose stays five containers
-with `ENABLE_ES=false` so the trim remains inspectable and the gate stays in inventory.
+back as `compose.search.yml`. Every working deployment needs it, so it is applied
+unless the inventory sets `postiz_temporal_search: false` (`COMPOSE_OVERLAYS` in
+`platform/playbooks/deploy-postiz.yml`, `default(true)`). The base compose stays five
+containers with `ENABLE_ES=false` so the trim remains inspectable and the gate stays in
+inventory.
 
 ## Configuration — two files, two jobs
 
@@ -135,7 +137,7 @@ values as shell code. Adding shell quotes would change the credentials.
 ## Auth
 
 Authentik OIDC **in the app**, not a Caddy `forward_auth` gate. That choice is what
-keeps the automation endpoint usable — an edge gate would redirect n8n's API-key calls
+keeps the automation endpoint usable — an edge gate would redirect API-key calls
 into a browser sign-in flow.
 
 Three upstream behaviours worth knowing before you debug a sign-in failure:
@@ -159,11 +161,12 @@ Three upstream behaviours worth knowing before you debug a sign-in failure:
 - Update each social platform's OAuth redirect URI to the public host. **Connecting an
   account fails until this is done** — the developer consoles are not reachable from here.
 
-## n8n integration
+## Automation integration
 
-Base `https://postiz.uhstray.io/api/public/v1`, API key from the app's settings, with
-`API_LIMIT` (default 90/hr on post creation) as the budget workflows must respect. The
-contract lives in [`../context/use-cases.md`](../context/use-cases.md).
+Base `https://postiz.uhstray.io/api/public/v1`, API key from the app's settings (stored in
+OpenBao at `secret/services/postiz:postiz_api_key`), with `API_LIMIT` (default 90/hr on
+post creation) as the budget clients must respect. The contract lives in
+[`../context/use-cases.md`](../context/use-cases.md).
 
 Automation goes over the public host rather than the LAN on purpose — Caddy is already
 the only source the firewall permits, so there is no second access path to maintain.

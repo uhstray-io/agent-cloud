@@ -7,8 +7,8 @@
 #   - name: "Distribute Caddy fragment"
 #     ansible.builtin.include_tasks: tasks/distribute-caddy-site.yml
 #     vars:
-#       _fragment_src: "/tmp/uhhcraft-caddy-site.caddy"   # path on the service host
-#       _fragment_name: "uhhcraft.caddy"                  # filename under sites/
+#       _fragment_src: "/tmp/plane-caddy-site.caddy"      # path on the service host
+#       _fragment_name: "plane.caddy"                     # filename under sites/
 #
 # Expected variables:
 #   _fragment_src        Path to the rendered fragment ON THE SERVICE VM (typically /tmp/...)

@@ -1,0 +1,53 @@
+{#- gateway.json: the agentgateway clients, budgets and models the console's gateway page reads (plan 17, task 8.3a).
+    Rendered by deploy-console.yml to config/gateway.json, ALWAYS: empty lists when the inventory has no
+    agentgateway_svc host. NAMES AND FIGURES ONLY. This template reads no key, no client_<name> field, no address
+    and no port. deploy-console.yml passes it only the agentgateway host vars named _console_gw_*.
+
+    It mirrors the gateway's own expressions in platform/services/agentgateway/deployment/templates/config.yaml.j2,
+    so the page shows what the gateway enforces:
+    - Internal identities are left out: mcp-self, legacy-shared and every agw_models[].pool_identity (the same set
+      as config.yaml.j2 `_internal_ids` and vars/secret-declarations/agentgateway.yml `_agw_internal_identities`).
+    - An admin-derived identity (a platform_admins entry, only when agw_admin_identities_enabled is on; its name is
+      agw_identity, else username) is tier `admin`. It is listed only when it is also an agw_clients entry.
+      Admin-only identities are NOT listed: the console does not present them as clients (out of scope for 8.3a).
+    - tier: `admin` for an admin-derived identity, else agw_client_policies.<name>.tier, else null.
+    - tokens_per_hour: the client's own figure when set (budget_source `client`), else its tier's figure in
+      agw_tier_tokens_per_hour (`tier`), else agw_rate_tokens_per_hour, default 2000000 (`default`). Only a tier
+      named in the map counts, so an unknown tier falls through to `default`, as the gateway does.
+    - allowed_models: agw_client_policies.<name>.allowed_models when declared, else every declared model. An absent
+      key means every model, not []. Then OpenRouter models are removed unless the client is an OpenRouter identity
+      (agw_openrouter_identities, or admin-derived with agw_openrouter_admins), and pool/ names are removed.
+    - models: every declared agw_models name (public names only, never pool/ names).
+    Do NOT edit by hand: re-run deploy-console.yml. -#}
+{%- set _models = _console_gw_models | default([]) -%}
+{%- set _all_names = _models | map(attribute='name') | unique | list -%}
+{%- set _pooled = _models | selectattr('pool_identity', 'defined') | list -%}
+{%- set _pool_ids = _pooled | map(attribute='pool_identity') | unique | list -%}
+{%- set _pool_names = _pooled | map(attribute='name') | map('regex_replace', '^', 'pool/') | list -%}
+{%- set _or_names = _models | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter') | map(attribute='name') | list -%}
+{%- set _internal = ['mcp-self', 'legacy-shared'] + _pool_ids -%}
+{%- set _admin_ids = [] -%}
+{%- if (_console_gw_admin_gate | default(false) | bool) -%}
+{%- for a in _console_gw_platform_admins | default([]) -%}
+{%- set _ = _admin_ids.append((a['agw_identity'] | default(a['username'] | default('', true), true)) | string) -%}
+{%- endfor -%}
+{%- endif -%}
+{%- set _or_ids = ((_console_gw_openrouter_identities | default([]))
+     + (_admin_ids if (_console_gw_openrouter_admins | default(false) | bool) else []))
+     | reject('in', ['mcp-self', 'legacy-shared']) | list -%}
+{%- set _tiers = _console_gw_tiers | default({}) -%}
+{%- set _policies = _console_gw_policies | default({}) -%}
+{%- set _clients = [] -%}
+{%- for c in _console_gw_clients | default([]) | unique | reject('in', _internal) | sort -%}
+{%- set _pol = _policies[c] | default({}) -%}
+{%- set _tier = 'admin' if c in _admin_ids else (_pol.tier | default('')) -%}
+{%- set _am = _pol.allowed_models if _pol.allowed_models is defined else _all_names -%}
+{%- if _or_names and c not in _or_ids -%}
+{%- set _am = _am | reject('in', _or_names) | list -%}
+{%- endif -%}
+{%- set _am = _am | reject('in', _pool_names) | sort -%}
+{%- set _tokens = _pol.tokens_per_hour | default(_tiers[_tier] if _tier in _tiers else _console_gw_default_tokens) -%}
+{%- set _source = 'client' if _pol.tokens_per_hour is defined else ('tier' if _tier in _tiers else 'default') -%}
+{%- set _ = _clients.append({'name': c, 'tier': _tier or none, 'tokens_per_hour': _tokens | int, 'budget_source': _source, 'allowed_models': _am}) -%}
+{%- endfor -%}
+{{ {'clients': _clients, 'models': _all_names | sort} | to_nice_json }}

@@ -5,7 +5,7 @@
 # The first task names an unparsed inventory before anything judges the OpenBao address.
 # Without it, a task whose inventory file Semaphore lost (concurrent tasks share
 # /tmp/semaphore/project_<n>/inventory_<id>; one finishing removes it before another parses
-# it) has no local_mode, so a correct local single-label OpenBao URL is refused with
+# it) leaves no `<name>-local` host in groups['all'], which is not local-dev, so a correct local single-label OpenBao URL is refused with
 # "Refusing to send secret material ... invalid endpoint" — true, and not the cause.
 #
 # The check applies whenever the run was GIVEN an inventory (-i), and Semaphore always gives
@@ -17,16 +17,7 @@
 # publisher template imports setup-templates.yml). ANSIBLE_INVENTORY set in the environment
 # moves the configured default with it, so that route is treated as "not given".
 - name: "Require the inventory to have parsed"
-  ansible.builtin.include_tasks: ../../playbooks/tasks/require-parsed-inventory.yml
-  when: (ansible_inventory_sources | default([]) | list) != (lookup('ansible.builtin.config', 'DEFAULT_HOST_LIST') | list)
-
-- name: "Require a non-cleartext transport to Semaphore"
-  ansible.builtin.assert:
-    that:
-      - _semaphore_url is match('^(https://|http://(localhost|127(\.[0-9]{1,3}){3})([:/]|$))')
-      - (_semaphore_url | urlsplit('username')) is none
-      - (_semaphore_url | urlsplit('password')) is none
-    fail_msg: "Set semaphore_url or SEMAPHORE_URL to HTTPS or loopback HTTP without URL credentials."
+  ansible.builtin.include_tasks: runtime-preflight.yml
 
 - name: "Take an already injected Semaphore runtime token"
   ansible.builtin.set_fact:

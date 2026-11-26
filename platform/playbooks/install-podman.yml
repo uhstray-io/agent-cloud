@@ -34,7 +34,7 @@
 # The two Docker options both provide /usr/bin/docker and their packages conflict
 # (podman-docker declares `Conflicts: docker-ce-cli`), so at most one may be on.
 #
-# Usage: ansible-playbook install-podman.yml -e "target_service=uhhcraft_svc"
+# Usage: ansible-playbook install-podman.yml -e "target_service=opa_svc"
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
@@ -68,7 +68,7 @@
       # Both put a `docker` at /usr/bin/docker and their packages conflict; apt would
       # remove whichever was installed first, and the result would depend on task order.
       # After the escalation and fact-gathering pair, which must open every play here
-      # (test_become_password_resolution.bats), and before anything is installed.
+      # (platform/tests/suite/become_password_resolution.rs), and before anything is installed.
       ansible.builtin.assert:
         that: not (_docker_cli and _docker_api_client)
         fail_msg: >-
@@ -89,11 +89,16 @@
       # start fails with "command required for rootless mode with multiple IDs:
       # exec: "newuidmap": executable file not found in $PATH". Measured on both
       # GitHub runners (2026-10-10): every job that declared a container failed so.
+      #
+      # catatonit is the init podman runs for a container with init: true (--init), bind-mounted from
+      # the host; podman only RECOMMENDS it too. The launch gate's compose file uses init: true, and its
+      # deploy refuses a host without catatonit.
       ansible.builtin.apt:
         name:
           - podman
           - podman-compose
           - uidmap
+          - catatonit
         state: present
         update_cache: true
 

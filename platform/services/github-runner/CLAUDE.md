@@ -3,6 +3,11 @@
 Organisation-scoped CI execution on platform hardware, for workflows that must originate
 inside the network perimeter or from its stable address.
 
+**Upstream source paths:** references to `packages/` and `src/` in the runner-hook and
+runner lifecycle sections below are paths in the cited upstream GitHub Actions projects,
+not paths in this repository. The `pkg/` paths are from upstream Podman sources, and
+`debian/binfmt-install` is from Ubuntu's upstream QEMU packaging.
+
 **Two hosts, one interchangeable pool.** Verified serving work: a four-shard matrix landed
 shards 1 and 3 on `gh-runner-01`, shards 2 and 4 on `gh-runner-02`.
 
@@ -320,7 +325,8 @@ Listener or any Worker, and a `run.sh` that honours the trap variable. A restart
    not (the ones `KillMode=process` left behind), and wait up to 300 s for them. The
    account exists only for this runner, so any Listener of it uses this registration.
 4. SIGKILL to whatever is still in the cgroup and to any Listener that survived; the deploy
-   fails unless both are gone. If no cgroup is found, only the Listeners are handled.
+   waits up to `RUNNER_KILL_WAIT_SECONDS` (default 30) and fails unless both are gone. If no
+   cgroup is found, only the Listeners are handled.
 
 After the start, the deploy reads `deploy.sh procs` again and fails unless every line holds.
 A dry run reads the processes and reports the restart decision; it stops and starts nothing,

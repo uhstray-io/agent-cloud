@@ -4,7 +4,7 @@
 # background worker, no port), honcho-db (pgvector Postgres, internal only),
 # honcho-redis (queue/cache, internal only). honcho brings its OWN Postgres —
 # not the platform Postgres. Ansible's deploy-honcho.yml templates .env from
-# OpenBao (JWT secret + DB password; Gemini key shared-read from nemoclaw)
+# OpenBao (JWT secret + DB password; Gemini key from secret/services/honcho)
 # BEFORE this stack starts. deploy.sh is container lifecycle only — no secret
 # generation.
 #
@@ -12,7 +12,7 @@
 # TLS; /docs is Authentik forward_auth-gated at Caddy, /v3 is JWT). Ports are
 # env-parameterized (compose overlays merge ports append-only, so the local
 # loopback shift lives in .env, not compose.local.yml).
-# Plan: plan/development/11-tududi-honcho-deployment.md (Service B — honcho).
+# Plan: plan/development/11-honcho-deployment.md (Service B — honcho).
 
 name: honcho
 

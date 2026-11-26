@@ -7,7 +7,8 @@ from urllib.parse import urlsplit
 
 import pytest
 import yaml
-from seed_harness import ROLE, ROOT, FakeBao, serve
+from fake_http import serve
+from seed_harness import ROLE, ROOT, FakeBao
 
 PLAYBOOK = "platform/playbooks/provision-o11y-mcp-grafana-token.yml"
 TEMPLATES = ROOT / "platform/semaphore/templates.yml"

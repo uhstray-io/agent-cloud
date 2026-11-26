@@ -5,17 +5,17 @@ the Semaphore log, so it must never print a credential, on success or on failure
 run the real script against a stub HTTP server that records every PATCH.
 """
 
-import http.server
 import json
 import pathlib
 import subprocess
 import sys
-import threading
 
 import pytest
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
-SCRIPT = pathlib.Path(__file__).resolve().parents[2] / "platform/services/plane/deployment/configure_instance.py"
+DEPLOY = pathlib.Path(__file__).resolve().parents[2] / "platform/services/plane/deployment"
+# The playbook runs plane_session.py and the script joined, exactly as here.
+SOURCE = (DEPLOY / "plane_session.py").read_text() + "\n" + (DEPLOY / "configure_instance.py").read_text()
 SECRET = "client-secret-value-that-must-never-print"
 
 
@@ -70,10 +70,8 @@ def plane():
         "config": {"ENABLE_SIGNUP": "1", "IS_OIDC_ENABLED": "0", "OIDC_CLIENT_SECRET": ""},
         "patches": [],
     }
-    server = http.server.HTTPServer(("127.0.0.1", 0), StubPlane)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield StubPlane.state, f"http://127.0.0.1:{server.server_address[1]}"
-    server.shutdown()
+    with serve(StubPlane) as base:
+        yield StubPlane.state, base
 
 
 def run(base, settings):
@@ -81,7 +79,7 @@ def run(base, settings):
            "email": "a@example.test", "password": "pw-never-printed", "first_name": "P",
            "last_name": "A", "company": "c", "workspace_slug": "ws", "workspace_name": "ws",
            "settings": settings}
-    return subprocess.run([sys.executable, "-I", str(SCRIPT)], input=json.dumps(cfg) + "\n",
+    return subprocess.run([sys.executable, "-I", "-c", SOURCE], input=json.dumps(cfg) + "\n",
                           capture_output=True, text=True, timeout=30)
 
 

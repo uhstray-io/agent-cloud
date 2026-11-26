@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import harness_sandbox
 import pytest
 import yaml
 
@@ -490,11 +491,12 @@ def test_verify_yaml_capture_argv_hands_canonical_inventory_to_real_helper(tmp_p
     captured = subprocess.run(
         capture_argv, capture_output=True, text=True,
         env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
-        check=False,
+        check=False, timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert captured.returncode == 0, captured.stderr
     selected = subprocess.run(
         helper_argv, input=captured.stdout, capture_output=True, text=True, check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert selected.returncode == 0, selected.stderr
     assert json.loads(selected.stdout) == {"device": "/dev/vdb", "state": "existing"}

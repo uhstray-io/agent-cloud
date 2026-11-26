@@ -3,7 +3,7 @@
 #
 # A Clean Deploy wipes a service's containers, volumes and clone, so a launch must say WHICH
 # host it means to wipe: -e confirm_reset=<host>. A template that only says "Clean Deploy X" is
-# one mis-click from production data (a main-bound Clean Deploy n8n carried no gate at all).
+# one mis-click from production data.
 # Included first by tasks/clean-service.yml, so every Clean Deploy refuses before any teardown
 # task; clean-deploy-o11y.yml and clean-deploy-step-ca.yml include it earlier still, so their
 # own pre-destroy gates (reviewed commit, first-boot settings) are not reached by an

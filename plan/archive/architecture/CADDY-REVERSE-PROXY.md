@@ -23,7 +23,7 @@ Caddy is the sole HTTPS ingress point for the uhstray-io platform. Every externa
 Caddy operates at the **Platform Layer** -- it is infrastructure, not automation or AI. It has no business logic; its sole responsibility is accepting inbound HTTPS connections, terminating TLS, and forwarding requests to internal service VMs over HTTP.
 
 ```text
-AI Layer         NemoClaw, NetClaw, WisBot, Claude Cowork
+AI Layer         skynet agents
                  (consumers of services behind Caddy)
 
 Guardrail Layer  OpenBao, Kyverno, OPA
@@ -141,20 +141,16 @@ The central `Caddyfile` enables this with one line:
 import sites/*.caddy
 ```
 
-Each fragment is a standalone Caddy site block. Example shape (from `platform/services/uhhcraft/deployment/templates/caddy-site.j2`):
+Each fragment is a standalone Caddy site block. Example shape (modelled on `platform/services/erpnext/deployment/templates/caddy-site.j2`):
 
 ```caddyfile
-{{ uhhcraft_domain }} {
+{{ erpnext_domain }} {
     encode brotli gzip
     header { ... HSTS, CSP, ... }
 
-    # Routed asset paths — cross-MinIO proxies
-    handle_path /generated/img/* { reverse_proxy {{ comfyui_minio_upstream }} ... }
-    handle_path /generated/3d/*  { reverse_proxy {{ hunyuan_minio_upstream }} ... }
-
     # Static + app
-    handle /static/*  { reverse_proxy {{ uhhcraft_upstream }} ... }
-    reverse_proxy {{ uhhcraft_upstream }} { ... }
+    handle /static/*  { reverse_proxy {{ erpnext_upstream }} ... }
+    reverse_proxy {{ erpnext_upstream }} { ... }
 }
 ```
 
@@ -244,7 +240,7 @@ In CloudFlare (or via Terraform/API), create an A record pointing the service's 
 
 #### Step 2: Write `templates/caddy-site.j2` in your service
 
-Inside `platform/services/<svc>/deployment/templates/`, create `caddy-site.j2`. It's a full Caddy site block with Jinja2 variables for everything dynamic (domain, upstream IP, ports). UhhCraft's is the reference shape — read `platform/services/uhhcraft/deployment/templates/caddy-site.j2`.
+Inside `platform/services/<svc>/deployment/templates/`, create `caddy-site.j2`. It's a full Caddy site block with Jinja2 variables for everything dynamic (domain, upstream IP, ports). ERPNext's is the reference shape — read `platform/services/erpnext/deployment/templates/caddy-site.j2`.
 
 Minimum useful skeleton:
 
@@ -384,7 +380,7 @@ Per SERVICE-INTEGRATION-PLAN.md, Caddy is an **auxiliary-to-infrastructure** tie
 
 ### Priority
 
-Caddy automation should be implemented as part of the next service onboarding wave (alongside NocoDB and n8n migration). The CloudFlare API key must be stored in OpenBao before Caddy can use the composable credential flow.
+Caddy automation should be implemented as part of the next service onboarding wave. The CloudFlare API key must be stored in OpenBao before Caddy can use the composable credential flow.
 
 ---
 

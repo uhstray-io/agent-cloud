@@ -9,7 +9,8 @@ groups:
     interval: 60s
     rules:
 {% set _availability_projection = _o11y_availability | default({}) %}
-{% set _availability_targets = _availability_projection.get('targets', []) %}
+{# An absent drill moves its target to alert_only_targets: it has no probe or Alloy component, but its rules stay. #}
+{% set _availability_targets = _availability_projection.get('targets', []) + _availability_projection.get('alert_only_targets', []) %}
 {% set _availability_uids = ['o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing'] %}
 {% set _availability_on = _availability_projection.get('enabled', false) | bool
    and _availability_targets | length > 0
@@ -49,7 +50,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: OK
-        execErrState: Alerting
+        execErrState: KeepLast
         for: 2m
         annotations:
           summary: A declared service telemetry scrape has failed.
@@ -102,7 +103,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: OK
-        execErrState: Alerting
+        execErrState: KeepLast
         for: 2m
         annotations:
           summary: {{ summary | to_json }}
@@ -169,7 +170,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: Alerting
-        execErrState: Alerting
+        execErrState: KeepLast
         for: 15m
         annotations:
           summary: The o11y receiver host root filesystem has less than 10% free space.
@@ -232,7 +233,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: OK
-        execErrState: Alerting
+        execErrState: KeepLast
         for: 2m
         annotations:
           summary: {{ ('Expected metrics have disappeared for ' ~ target.service ~ ' at ' ~ target.instance ~ '.') | to_json }}
@@ -288,7 +289,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: OK
-        execErrState: Alerting
+        execErrState: KeepLast
         for: 2m
         annotations:
           summary: {{ 'Expected metrics have disappeared for {{ $labels.service }} at {{ $labels.instance }}.' | to_json }}
@@ -414,7 +415,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: OK
-        execErrState: Alerting
+        execErrState: KeepLast
         for: {{ loss_rule.get('for', '2m') }}
         annotations:
           summary: {{ loss_rule.summary | to_json }}
@@ -479,7 +480,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: OK
-        execErrState: Alerting
+        execErrState: KeepLast
         for: 2m
         annotations:
           summary: {{ drop_rule.summary | to_json }}
@@ -517,6 +518,124 @@ groups:
      and _trace_silence_gateway_hosts | length == 1
      and _trace_silence_gateway.agw_otlp_traces | default(false) | bool
      and o11y_tempo_gateway_exclusive_sender_reviewed | default(false) | bool %}
+{# Meta rule on the alert pipeline itself. Every other rule holds its last state on a
+   query error (execErrState KeepLast), so a transient Prometheus timeout no longer
+   pages. A sustained failure would otherwise go unseen, so this rule is the one that
+   keeps Alerting: it fires once when rule evaluations keep failing for fifteen
+   minutes. It stays out of service-telemetry (groups[0]), whose uids are pinned by
+   the tests. Gated like the other paging rules: alerts enabled, not local, no canary.
+   Its second rule, o11y_grafana_db_check_failing, reports Grafana's own database check
+   failing repeatedly, which the liveness watcher's retries no longer page on. #}
+{% set _alerting_health_active = o11y_alerts_enabled | default(false) | bool and not (local_mode | default(false) | bool) and o11y_alert_canary_service is not defined %}
+  - orgId: 1
+    name: alerting-health
+    folder: agent-cloud
+    interval: 60s
+    rules:
+      - uid: o11y_alert_evaluations_failing
+        title: Alert rule evaluations failing
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: 'sum(increase(grafana_alerting_rule_evaluation_failures_total{job="grafana"}[5m]))'
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: gt, params: [5] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: Alerting
+        for: 15m
+        annotations:
+          summary: Grafana alert rules have kept failing to evaluate for fifteen minutes; other alerts are holding their last state.
+          dashboard_url: /d/o11y-self-monitoring
+          description: >-
+            Rule evaluations are timing out or erroring, usually because Prometheus queries are slow (receiver storage contention) or unreachable. While this fires, rules whose own queries are failing hold their last state; rules whose queries succeed keep evaluating. Check receiver host I/O wait and Prometheus health; the external liveness watcher covers Grafana or Prometheus being fully down.
+        labels:
+          severity: warning
+          service: 'o11y/grafana'
+          owner: platform-operations
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+        isPaused: {{ 'false' if _alerting_health_active else 'true' }}
+{% if _alerting_health_active %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
+      - uid: o11y_grafana_db_check_failing
+        title: Grafana database check failing
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 3600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: 'sum(increase(grafana_http_request_duration_seconds_count{job="grafana",handler="/api/health",status_code=~"5.."}[1h]))'
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: gt, params: [4] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: KeepLast
+        for: 15m
+        annotations:
+          summary: Grafana's own database check has failed more than four times in an hour, for fifteen minutes.
+          dashboard_url: /d/o11y-self-monitoring
+          description: >-
+            Grafana answers /api/health with 503 when its database check fails. The external liveness watcher retries before it pages, so short failures reach no one except through this rule. Look for "Database locked, sleeping then retrying" lines in Grafana's logs in Loki (service o11y/grafana); if the failures persist, the escalation is an external Postgres for Grafana (o11y README, "Grafana's store is SQLite").
+        labels:
+          severity: warning
+          service: 'o11y/grafana'
+          owner: platform-operations
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+        isPaused: {{ 'false' if _alerting_health_active else 'true' }}
+{% if _alerting_health_active %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
   - orgId: 1
     name: agentgateway-traces
     folder: agent-cloud
@@ -538,7 +657,7 @@ groups:
               maxDataPoints: 43200
               refId: A
         noDataState: OK
-        execErrState: Alerting
+        execErrState: KeepLast
         for: 5m
         annotations:
           summary: Agentgateway has received at least 100 requests in 30 minutes without Tempo receiving spans.
@@ -591,7 +710,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: OK
-        execErrState: Alerting
+        execErrState: KeepLast
         for: {{ for_ }}
         annotations:
           summary: {{ summary | to_json }}
@@ -673,7 +792,7 @@ groups:
 {# The synthetic probe rules read the probe's textfile samples, scraped by the
    receiver-host job, so they follow o11y_inference_probe_enabled instead of the
    DGX scrape; turning the probe off deletes them the same way. #}
-{% set _inference_uids = ['inference_queue_stalled', 'inference_queue_depth_high', 'inference_target_down', 'inference_vllm_metrics_absent', 'inference_node_memavailable_low', 'inference_node_memfree_low', 'inference_benchmark_gate_placeholder'] %}
+{% set _inference_uids = ['inference_queue_stalled', 'inference_queue_depth_high', 'inference_target_down', 'inference_vllm_metrics_absent', 'inference_node_memavailable_low', 'inference_node_memfree_low', 'inference_benchmark_gate_placeholder', 'inference_kv_pool_trial_stop_line'] %}
 {% set _probe_uids = ['inference_probe_failing', 'inference_probe_stale'] %}
 {% set _dgx_on = dgx_spark_scrape_enabled | default(false) | bool %}
 {% set _probe_on = o11y_inference_probe_enabled | default(false) | bool %}
@@ -710,7 +829,7 @@ groups:
               maxDataPoints: 43200
               refId: B
         noDataState: {{ no_data }}
-        execErrState: Alerting
+        execErrState: KeepLast
         for: {{ for_ }}
         annotations:
           summary: {{ summary | to_json }}
@@ -828,6 +947,23 @@ groups:
      'Placeholder for the benchmark gate; disabled.',
      'Replace this rule when the dgx-spark benchmark manifest writer publishes a metric.',
      '/d/inference-placement-comparison', paused=true) }}
+{# Temporary, for the dgx-spark 8 GiB KV pool trial (dgx-spark PR 57). count()
+   makes the rule fire whenever any branch returns a series; the raw expression
+   would not pass gt 0 for a zero prefix-cache hit ratio. Removal is a PR that
+   deletes this group AND lists the uid under deleteRules unconditionally (here it
+   is listed only while the DGX scrape is off), because Grafana 11.4 provisioning
+   keeps a rule whose group leaves the file. #}
+  - orgId: 1
+    name: kv-pool-trial
+    folder: agent-cloud
+    interval: 5m
+    rules:
+{{ inference_rule('inference_kv_pool_trial_stop_line', 'vLLM KV pool trial stop line reached',
+     'count((sum(increase(vllm:num_preemptions_total{job="dgx-spark-vllm"}[1d])) > 0) or (max(max_over_time(vllm:kv_cache_usage_perc{job="dgx-spark-vllm"}[1d])) >= 0.90) or ((sum(increase(vllm:prefix_cache_hits_total{job="dgx-spark-vllm"}[1d])) / sum(increase(vllm:prefix_cache_queries_total{job="dgx-spark-vllm"}[1d])) < 0.75) and (sum(increase(vllm:prompt_tokens_total{job="dgx-spark-vllm"}[1d])) >= 1e6)))',
+     'gt', 0, '15m', 'warning', 'vllm',
+     '8 GiB KV pool trial stop line reached: a preemption, a pool peak of 0.90 or more, or a prefix-cache hit ratio under 0.75 on a day with at least 1 million prompt tokens.',
+     'Trial of dgx-spark PR 57. Do not restart serving. Tell the operator the same day; the revert is prepared on branch trial/kv-pool-8g-revert.',
+     '/d/inference-latency-capacity') }}
 {% endif %}
 {# Expected-target retirement stays as a generic inert tombstone; it is never
    deleted because Grafana may preserve omitted provisioned rules. #}

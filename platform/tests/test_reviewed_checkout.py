@@ -9,8 +9,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import harness_sandbox
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "platform/playbooks/files/reviewed-checkout.py"
@@ -19,7 +19,7 @@ CHECKOUT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CHECKOUT)
 
 
-def _git(checkout, *arguments, **kwargs):
+def _git(checkout, *arguments, timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS, **kwargs):
     environment = {
         **os.environ,
         "GIT_AUTHOR_NAME": "test",
@@ -30,7 +30,7 @@ def _git(checkout, *arguments, **kwargs):
         "GIT_CONFIG_NOSYSTEM": "1",
     }
     return subprocess.run(
-        [CHECKOUT.GIT, "-C", str(checkout), *arguments], env=environment, **kwargs,
+        [CHECKOUT.GIT, "-C", str(checkout), *arguments], env=environment, timeout=timeout, **kwargs,
     )
 
 
@@ -340,9 +340,3 @@ def test_payload_limit_accepts_sixteen_and_refuses_seventeen(clean_checkout):
     assert set(result["payloads"]) == set(paths)
     with pytest.raises(CHECKOUT.Refusal, match="payload_paths_invalid"):
         _verify(checkout, revision, paths + ["payload/over-limit.txt"])
-
-
-def test_reviewed_checkout_playbook_uses_same_sixteen_path_cap():
-    plays = yaml.safe_load((ROOT / "platform/playbooks/require-reviewed-checkout.yml").read_text())
-    assertions = plays[0]["tasks"][0]["ansible.builtin.assert"]["that"]
-    assert "_reviewed_checkout_requested_payloads | length <= 16" in assertions

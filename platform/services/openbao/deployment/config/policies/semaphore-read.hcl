@@ -2,7 +2,7 @@
 # Used by Semaphore playbooks to:
 #   - Fetch credentials for SSH, Proxmox API, service tokens (read)
 #   - Store deploy-generated secrets back to OpenBao (write)
-#   - Provision AppRoles for services (orb-agent, netclaw, etc.)
+#   - Provision AppRoles for services (orb-agent, console, etc.)
 # Semaphore is the deployment orchestrator — it manages the full lifecycle.
 
 # Service secrets (read + write for all services)

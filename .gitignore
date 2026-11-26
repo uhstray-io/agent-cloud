@@ -95,3 +95,6 @@ requirements.yml_*.md5
 # A live repo-root MCP config would connect every automated session here to the gateway;
 # client templates live under platform/services/agentgateway/context/clients/
 /.mcp.json
+
+# Rust test suite build output (plan 24)
+platform/tests/target/

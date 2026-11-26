@@ -1,10 +1,9 @@
 """The read-only inspector reports stopped containers and refuses empty results."""
 
-import os
 import shutil
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
@@ -46,13 +45,9 @@ def _run(tmp_path, names, target_service="demo_svc"):
         "local_monorepo_dir=/tmp/demo\n"
         "monorepo_deploy_path=platform/services/demo/deployment\n"
     )
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_LOCAL_TEMP"] = str(tmp_path)
-    env["ANSIBLE_NOCOLOR"] = "1"
-    return subprocess.run(
-        ["ansible-playbook", "--check", "-i", str(inventory), str(PLAYBOOK),
-         "-e", f"target_service={target_service}"],
-        cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
+    return harness_sandbox.run_playbook(
+        PLAYBOOK, tmp_path, "--check", "-e", f"target_service={target_service}", inventory=inventory,
+        env={"ANSIBLE_LOCAL_TEMP": str(tmp_path)},
     )
 
 

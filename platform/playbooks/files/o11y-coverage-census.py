@@ -324,12 +324,49 @@ def validate(targets, receipt_bindings=None):
     return ids, {key: values for key, values in identities.items() if len(values) > 1}
 
 
+def _validate_availability_drill(drill):
+    """Return the one internal drill, or None when the caller names none.
+
+    Two shapes, each with exactly its own keys. {"target_id", "status_code"} makes one
+    selected target's probe fail on purpose. {"target_id", "mode": "absent"} removes one
+    selected target from the probe projection and carries it as alert-only, so only its
+    missing-data rule can fire.
+    """
+    if drill is None:
+        return None
+    if not isinstance(drill, dict) or set(drill) not in ({"target_id", "status_code"}, {"target_id", "mode"}):
+        fail("availability drill must name exactly one target_id and one status_code, or one target_id and mode absent")
+    target_id = drill["target_id"]
+    if not isinstance(target_id, str) or not target_id:
+        fail("availability drill target_id must name one selected availability target")
+    if "mode" in drill:
+        if drill["mode"] != "absent":
+            fail('availability drill mode must be the literal "absent"')
+        return {"target_id": target_id, "mode": "absent"}
+    status_code = drill["status_code"]
+    if not isinstance(status_code, int) or isinstance(status_code, bool) or not 100 <= status_code <= 599:
+        fail("availability drill status_code must be an HTTP status integer between 100 and 599")
+    return {"target_id": target_id, "status_code": status_code}
+
+
 def prepare_availability_targets(targets, *, enabled, reviewed, limits,
                                  receiver_environment, cluster, shared_sample_limit,
-                                 inventory_revision=None):
-    """Return the private, bounded native-probe projection for one receiver."""
+                                 inventory_revision=None, drill=None):
+    """Return the private, bounded native-probe projection for one receiver.
+
+    `drill` is the internal drill, in one of two shapes. A status-code drill makes one
+    selected target's probe fail on purpose: its module expects only a status code its
+    service never returns. An absent drill removes that one target from `targets` and
+    names it under `alert_only_targets`, so no probe or Alloy component exists for it and
+    only its missing-data rule can fire. Every other target, the declaration and the
+    inventory revision are unchanged. Without a drill, or with a status-code drill, the
+    output has no `alert_only_targets` key.
+    """
     if not isinstance(enabled, bool) or not isinstance(reviewed, bool):
         fail("availability enabled and reviewed switches must be explicit YAML booleans")
+    drill = _validate_availability_drill(drill)
+    if drill is not None and not (enabled and reviewed):
+        fail("availability drill requires enabled and reviewed availability")
     if not enabled:
         return {"enabled": False, "targets": [], "limits": {}}
     if not isinstance(targets, list):
@@ -392,6 +429,38 @@ def prepare_availability_targets(targets, *, enabled, reviewed, limits,
             })
     if not selected:
         fail("enabled availability probes require at least one deployed applicable reviewed target")
+    alert_only = None
+    if drill is not None:
+        drilled = [target for target in selected if target["target_id"] == drill["target_id"]]
+        if len(drilled) != 1:
+            fail("availability drill target_id must name one selected availability target")
+        if drill.get("mode") == "absent":
+            # Refused when the drill would leave no other probe to prove the path, or would
+            # drop the only internal-CA target, which decides whether compose mounts the CA bundle.
+            # The window caps the drill's wait: its missing-data rule fires only after the window
+            # and its for-window have passed, and the drill's fire budget is sized from the window.
+            if drilled[0]["freshness_seconds"] > 1800:
+                fail("absent availability drill needs a freshness window of at most 1800 seconds")
+            if len(selected) < 2:
+                fail("absent availability drill needs another probed target")
+            if drilled[0]["trust"] == "internal-ca" and not any(
+                target["trust"] == "internal-ca" for target in selected if target is not drilled[0]
+            ):
+                fail("absent availability drill would change the internal-CA overlay")
+            selected = [target for target in selected if target is not drilled[0]]
+            # Only the identity the alert rules select on leaves through this key. No endpoint,
+            # module or budget, so the removed target gets no Alloy component.
+            alert_only = [{
+                "target_id": drilled[0]["target_id"],
+                "service_identity": drilled[0]["service_identity"],
+                "environment": drilled[0]["environment"],
+                "cluster": drilled[0]["cluster"],
+                "freshness_seconds": drilled[0]["freshness_seconds"],
+            }]
+        else:
+            if drill["status_code"] in drilled[0]["expected_status_codes"]:
+                fail("availability drill status_code must be one the drilled target never declares")
+            drilled[0]["expected_status_codes"] = [drill["status_code"]]
     if len(selected) > limits["max_targets"]:
         fail("availability target count exceeds the reviewed maximum")
     timeout_sum = sum(target["probe_timeout_seconds"] for target in selected)
@@ -412,6 +481,10 @@ def prepare_availability_targets(targets, *, enabled, reviewed, limits,
             if target["trust"] == "internal-ca":
                 tls["ca_file"] = "/certs/step-ca-bundle.crt"
             http["tls_config"] = tls
+            # The endpoint is a literal address, so without this the request carries the IP as
+            # its Host and a name-routed proxy (Caddy) matches no site. blackbox_exporter at the
+            # commit Alloy v1.9.2 bundles sets request.Host from this header (prober/http.go).
+            http["headers"] = {"Host": target["tls_server_name"]}
         module = {
             "prober": "http",
             "timeout": f'{target["probe_timeout_seconds"]}s',
@@ -422,7 +495,12 @@ def prepare_availability_targets(targets, *, enabled, reviewed, limits,
             sort_keys=True,
             separators=(",", ":"),
         )
-    return {"enabled": True, "targets": selected, "limits": limits.copy()}
+    result = {"enabled": True, "targets": selected, "limits": limits.copy()}
+    if alert_only is not None:
+        result["alert_only_targets"] = alert_only
+    if drill is not None:
+        result["drill"] = drill
+    return result
 
 
 def receipt_status(target, signal, inventory_revision, repository_sha, now,
@@ -1022,10 +1100,13 @@ def main():
             payload = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
             fail("availability input must be JSON with unique object keys")
-        if not isinstance(payload, dict) or set(payload) != {
+        availability_fields = {
             "targets", "inventory_revision", "enabled", "reviewed", "limits",
             "receiver_environment", "cluster", "shared_sample_limit",
-        }:
+        }
+        if not isinstance(payload, dict) or set(payload) not in (
+            availability_fields, availability_fields | {"drill"},
+        ):
             fail("availability input must contain the fixed private declaration and reviewed gate fields")
         print(json.dumps(prepare_availability_targets(
             payload["targets"],
@@ -1036,6 +1117,7 @@ def main():
             cluster=payload["cluster"],
             shared_sample_limit=payload["shared_sample_limit"],
             inventory_revision=payload["inventory_revision"],
+            drill=payload.get("drill"),
         ), sort_keys=True))
         return
     try:

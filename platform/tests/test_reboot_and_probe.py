@@ -8,6 +8,7 @@ through its refusals: no test reboots anything.
 
 import contextlib
 import json
+import re
 import socket
 import subprocess
 import sys
@@ -18,6 +19,7 @@ import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
+from fake_http import refused_port
 
 REPO = playbook_yaml.REPO
 PROBE = REPO / "platform/playbooks/probe-reachability.yml"
@@ -66,11 +68,7 @@ def _listen(family, addr):
 def ports():
     """(an open port with a listener, a port with none)."""
     with _listen(socket.AF_INET, "127.0.0.1") as opened:
-        free = socket.socket()
-        free.bind(("127.0.0.1", 0))
-        closed = free.getsockname()[1]
-        free.close()
-        yield opened, closed
+        yield opened, refused_port()
 
 
 @pytest.fixture
@@ -103,7 +101,9 @@ def test_a_port_that_answers_when_declared_closed_fails_naming_it(tmp_path, port
     opened, closed = ports
     r = _probe(tmp_path, [{"port": opened, "expect": "closed"}, {"port": closed, "expect": "closed"}])
     assert r.returncode != 0 and f"{opened} was open, expected closed" in r.stdout, r.stdout
-    assert f"{closed} was" not in r.stdout
+    # A whole port number: the refused port is 1, and a plain substring also matched the open port's own
+    # line whenever its number ended in 1 ("59171 was open").
+    assert not re.search(rf"(?<!\d){closed} was", r.stdout), r.stdout
 
 
 def test_a_closed_port_declared_open_fails(tmp_path, ports):

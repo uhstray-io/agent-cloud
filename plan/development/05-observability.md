@@ -6,6 +6,8 @@
 > Part of the dependency-ordered `plan/development/` set (00–10). The source
 > plans are merged verbatim below under provenance dividers to preserve all
 > detail; read in numbered order to execute.
+>
+> **Status:** ACTIVE (2026-11-04) — o11y is deployed in production (`platform/services/o11y/deployment/CLAUDE.md`; `AGENTS.md` Deployment Status records its boot persistence and health checks, 2026-09-26). The embedded O11Y-DEPLOYMENT plan keeps its original PROPOSED status below; treat this line as current.
 
 ## Signal identity, service visibility, and profiling contract
 
@@ -641,7 +643,7 @@ promotion and retention capacity remain separate gates.
 > running. Its empty shell output also exposed a `changed_when` expression
 > that masked the Docker error. Neither the token nor an IP address was
 > provisioned. All-host validation tasks 1142 and 1143 stopped on an
-> unrelated unreachable NocoDB host before reaching NetBox; the accepted
+> unrelated unreachable host before reaching NetBox; the accepted
 > Semaphore `params.limit` setting did not constrain the actual play.
 > PR #202 passed a completed CodeRabbit review and final-head checks, then
 > merged to `dev` as `3af6bf58d06cd9e8b44cd3e469cceca5d9200f3c`. A
@@ -1552,8 +1554,10 @@ Proxmox's [disk inventory API](https://github.com/proxmox/pve-storage/blob/maste
 returns paths and optional model/health data; its [device scan](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Diskmanage.pm)
 includes several block-device classes while excluding iSCSI. An exact PV path
 join alone cannot distinguish directly attached media from every virtual or
-remote-backed block device. Require separate physical-origin evidence and a
-reviewed private store declaration before allocating a PBS VM disk.
+remote-backed block device. The operator decision dated 2026-10-29 removes
+physical-origin/BMC/chassis attestation as a prerequisite. The reviewed private
+store declaration, API identity pin, exact lineage, health, and capacity gates
+remain required; no host physical disk operation is authorized.
 
 The GET-only task 2011 run succeeded at reviewed SHA
 `4c1806652ed15cab8d1a4b50fd241bab52724646` and returned
@@ -1610,7 +1614,7 @@ successful SCSI health-status response ([ATA output](https://www.smartmontools.o
 > **Location:** `plan/development/05-observability.md`
 > **Date:** 2026-06-14 · **Status:** PROPOSED · **Owner:** uhstray-io
 >
-> **Context:** `platform/services/o11y/` is an empty stub. LOCAL-DEV-DEPLOYMENT.md reserved ports `3002` (Grafana) / `9090` (Prometheus) / `3100` (Loki) and gated the service on "define the stack in its own plan/PR first" — this is that plan. It defines a **minimal-but-real** local observability stack that follows the composable pattern (DNS/Caddy/step-ca/Authentik), then names the prod extension. The platform already depends on it: AUTOMATION-COMPOSABILITY.md §"Audit logging" requires OpenBao's file audit backend piped to **Loki** with alerting; IMPLEMENTATION_PLAN.md routes orb-agent OpenTelemetry metrics here and lists Grafana/Prometheus for the Reliability + NetClaw agents.
+> **Context:** `platform/services/o11y/` is an empty stub. LOCAL-DEV-DEPLOYMENT.md reserved ports `3002` (Grafana) / `9090` (Prometheus) / `3100` (Loki) and gated the service on "define the stack in its own plan/PR first" — this is that plan. It defines a **minimal-but-real** local observability stack that follows the composable pattern (DNS/Caddy/step-ca/Authentik), then names the prod extension. The platform already depends on it: AUTOMATION-COMPOSABILITY.md §"Audit logging" requires OpenBao's file audit backend piped to **Loki** with alerting.
 >
 > **For agentic workers:** Execute phase-by-phase; every phase ends at a validation gate. Configs are committed config-as-code (non-secret); only the Grafana admin password is a secret (OpenBao). Real domains/secrets stay in site-config; the public repo uses placeholders + `LOCAL_FAKE_`.
 
@@ -1626,9 +1630,9 @@ successful SCSI health-status response ([ATA output](https://www.smartmontools.o
 
 | Decision | Chosen | Rejected / deferred | Why |
 |---|---|---|---|
-| **Stack family** | **Grafana LGTM-lite** (Loki + Grafana + Prometheus + Alloy) | Elastic/ELK; Datadog/SaaS | IMPLEMENTATION_PLAN already names Grafana/Prometheus/Loki/Mimir/Tempo/OTel [IMPL:208,265-267]; OSS, self-hostable (privacy-first), composes cleanly. |
-| **Local component subset** | Grafana + Prometheus + Loki + Alloy | + Mimir (long-term metrics), + Tempo (traces), + MinIO backends, + Alertmanager | Local-dev needs *visibility*, not retention/HA. Mimir/Tempo/MinIO/Alertmanager are prod concerns (retention 1yr/3mo per IMPL:265-267); adding them locally is RAM + config cost with no local payoff. |
-| **Collector** | **Grafana Alloy** (one agent: logs→Loki + OTLP receiver) | Promtail (logs only) + OTel Collector (metrics/traces) as two services | Alloy is the supported successor to both; one container does container-log shipping AND an OTLP endpoint for the orb-agent telemetry IMPL:828 wants — fewer moving parts, and it IS the OpenTelemetry path IMPL:208 calls for. |
+| **Stack family** | **Grafana LGTM-lite** (Loki + Grafana + Prometheus + Alloy) | Elastic/ELK; Datadog/SaaS | OSS, self-hostable (privacy-first), composes cleanly. |
+| **Local component subset** | Grafana + Prometheus + Loki + Alloy | + Mimir (long-term metrics), + Tempo (traces), + MinIO backends, + Alertmanager | Local-dev needs *visibility*, not retention/HA. Mimir/Tempo/MinIO/Alertmanager are prod concerns; adding them locally is RAM + config cost with no local payoff. |
+| **Collector** | **Grafana Alloy** (one agent: logs→Loki + OTLP receiver) | Promtail (logs only) + OTel Collector (metrics/traces) as two services | Alloy is the supported successor to both; one container does container-log shipping AND an OTLP endpoint for the orb-agent telemetry — fewer moving parts, and it IS the OpenTelemetry path. |
 | **Local metrics targets** | Prometheus self + **Caddy** (`/metrics` on the admin API) | cAdvisor (per-container) + node-exporter (host) | Caddy already exposes Prometheus metrics on its admin port; cAdvisor/node-exporter on the podman-machine VM are flaky and low-value locally. Per-container/host metrics are a **follow-on** (Phase 2), noted not skipped. |
 | **Local log sources** | container stdout/stderr (podman) + **OpenBao audit log** | full journald, app-specific parsers | The audit→Loki pipe is a *documented platform requirement* (AUTOMATION-COMPOSABILITY §audit logging); container logs are the cheap universal signal. |
 | **Traces (Tempo)** | **Deferred** (prod) | local Tempo | No local service emits traces yet; Alloy's OTLP receiver is wired so traces drop in later without re-architecting. |
@@ -1641,7 +1645,6 @@ successful SCSI health-status response ([ATA output](https://www.smartmontools.o
 - `platform/services/o11y/` — empty stub (`deployment/.gitkeep`, `context/.gitkeep`); no compose, no plan. This plan fills it.
 - `plan/development/00-foundation-local-dev.md:227,294` — o11y "stub-blocked; own plan/PR defines grafana/prometheus/loki shape; local profile follows"; ports `3002/9090/3100` reserved.
 - `plan/architecture/01-automation-model.md:577` — "OpenBao's file audit backend must be enabled and piped to the observability stack (Loki). Alerting rules fire on: same secret read >10x/min, unknown AppRoles, failed auth." — a hard consumer of this stack.
-- `plan/archive/development/IMPLEMENTATION_PLAN.md:208,265-267,828,1545` — telemetry = OpenTelemetry → Grafana; o11y backends Mimir/Tempo/Loki (prod retention); orb-agent OTel export; Reliability Agent uses Prometheus/Alertmanager.
 - Composable exemplars this mirrors: `platform/services/step-ca/deployment/` + `platform/playbooks/deploy-step-ca.yml` (service shape), `tasks/manage-secrets.yml` (Grafana admin pw), `tasks/mint-internal-cert.yml`/Caddy (TLS front door).
 
 The stack and its flows:
@@ -1711,12 +1714,12 @@ flowchart LR
 - **OpenBao audit → Loki:** enable OpenBao's file audit device into a path Alloy tails; add the alerting rules from AUTOMATION-COMPOSABILITY §audit (same-secret-read spike, unknown AppRole, failed auth).
 - **Caddy metrics:** add a dedicated routable metrics listener to `Caddyfile.local.j2` (e.g. `:2021 { metrics }`) — the admin API stays loopback-only — and add the `caddy:2021` Prometheus scrape target. Wire a Prometheus reload (`--web.enable-lifecycle` / POST `/-/reload`) into `deploy-o11y.yml` so scrape-config changes apply without a full recreate.
 - **Container/host metrics:** add cAdvisor + node-exporter scrape targets (validated against the podman-machine VM).
-- **orb-agent OTel:** point its OpenTelemetry exporter at Alloy's OTLP receiver (IMPL:828).
+- **orb-agent OTel:** point its OpenTelemetry exporter at Alloy's OTLP receiver.
 - **SSO:** gate Grafana via Authentik OIDC / Caddy `forward_auth` (AUTH-SSO Phase 1+).
 
 ## Phase 3 — Prod extension (separate PR)
 
-Mimir (long-term metrics, MinIO-backed), Tempo (traces, MinIO-backed), Alertmanager + notification routes, retention per IMPL (metrics 1yr / traces 3mo / logs 1yr), and the k8s/Helm path (IMPL:379). Same compose base; prod overlay + `manage-secrets` for MinIO/datasource creds.
+Mimir (long-term metrics, MinIO-backed), Tempo (traces, MinIO-backed), Alertmanager + notification routes, retention (metrics 1yr / traces 3mo / logs 1yr), and the k8s/Helm path. Same compose base; prod overlay + `manage-secrets` for MinIO/datasource creds.
 
 ---
 
@@ -1977,8 +1980,9 @@ top-level disk-path join with `used=LVM`, SMART category `passed`, and at least
 30% reported VG capacity remaining after the proposed 512-GiB disk. It reports
 only fixed status and booleans and leaves allocation, device safety, PBS and
 filesystem readiness, and write authorization false. A match against the
-private pin is API drift detection only: the operator's local hardware
-attestation is not independently compared with a chassis or BMC identity.
+private pin is API drift detection only; it does not
+independently prove physical origin. Physical-origin/BMC/chassis attestation
+is not a prerequisite per the operator decision dated 2026-10-29.
 This preflight does not create a VM, disk, filesystem, or PBS instance and does
 not change retention. It cannot pass until the private site-config inventory
 contains a reviewed pin; this repository contains no such private value.
@@ -2003,8 +2007,24 @@ selected API disk, the direct LVM disk-path lineage matched, SMART reported
 `passed`, and a proposed 512-GiB data disk left at least 30% reported VG
 headroom. Allocation, device safety, filesystem and PBS readiness, and write
 authorization remain **false**. The identity pin detects API-observed drift;
-it does not independently establish the disk's physical chassis origin. No
+it does not independently establish the disk's physical chassis origin. Per
+the operator decision dated 2026-10-29, that physical-origin comparison is
+not a prerequisite; the API and storage-lineage gates remain unchanged. No
 VM, disk, filesystem, or PBS instance was created and no retention changed.
+
+#### Later GET-only allocation preflight (2026-10-29)
+
+Existing Dev catalog template 341 was independently read back with its expected
+bindings. GET-only Semaphore task 10372 ran at exact reviewed Dev commit
+`ac2b5b6f7076e73bd4a41a12644fb2fb9f10e872`; it completed successfully, and its
+fixed public message parsed and validated. The sanitized result reported
+`backing_identity_matches=true`, `direct_lvm_disk_lineage=true`,
+`smart_health=passed`, and `reported_vg_headroom_passes_512_gib=true`.
+`allocation_authorized`, `device_safety_verified`,
+`filesystem_readiness_verified`, `pbs_readiness_verified`, and
+`write_authorized` were all `false`. This task created no VM, disk, filesystem,
+or PBS object and changed no retention or deployment. It does not authorize an
+allocation or establish guest, PBS, backup, restore, or retention acceptance.
 
 ### 2026-10-18 PBS VM census and static IP reservation
 
@@ -2076,9 +2096,11 @@ which may be block-backed. The Dev-bound `Enable PBS Import Storage Content`
 workflow checks the exact node and active file-store status, preserves the
 existing content list, applies the `import` union with Proxmox's observed digest,
 and reads the config back. Its check mode is read-only. Task 7081 made no
-Proxmox config change. The physical-disk origin remains operator-attested; the
-serial-to-chassis match is not independently verified. No template VM, PBS VM,
-or data disk has been created.
+Proxmox config change. At the time of this receipt, physical-disk origin
+remained operator-attested and the serial-to-chassis match was not
+independently verified. The operator decision dated 2026-10-29 later removed
+that comparison as a prerequisite; this historical receipt remains unchanged.
+No template VM, PBS VM, or data disk has been created.
 
 Production Semaphore task 7106 refused before issuing any Proxmox request: the
 workflow's initial inventory URL assertion required HTTPS, while the shared
@@ -2473,3 +2495,51 @@ or production activation. Alloy v1.9.2 for the journal remains uncached and
 unverified. The evidence is recorded in
 `/private/tmp/o11y-alloy-pinned-validation-20261028/result.md`; it does not mark
 an OpenSpec live-acceptance criterion complete.
+
+> **Expected-target survey Linux argv transport source fix (2026-10-29, plan before implementation):** The
+> reviewed helper is 218,419 bytes. An isolated cached Linux container reproduced `E2BIG` (`OSError`, errno 7,
+> `Argument list too long`) when the helper was passed as the `python3 -c` argument. This proves the transport
+> fails at the current source size on Linux; it makes that a strong explanation for the later sanitized
+> Semaphore survey's empty output/from-JSON failure, but does not prove task 10278's historical root cause.
+> Change only `survey-o11y-expected-metrics-targets.yml` and its focused regression: stage the helper bytes
+> retained by the existing exact-reviewed-checkout gate into a private receiver temp directory, invoke Python
+> with the short helper path and reviewed declaration on protected stdin, and remove the exact temp directory
+> from an unconditional `always` path with a creation-failure guard. Keep the source/revision gate, declaration
+> privacy, public receipt schema, survey behavior, and all distinct source-versus-live acceptance gates intact.
+> Verify with a test-first regression, focused pytest, syntax/lint and strict OpenSpec checks. This is source-only;
+> it does not rerun the historical task or close any live acceptance gate.
+
+### 2026-10-31 bounded Dev capacity and capability receipts
+
+Verified receipts at merged Dev `d41482be4944d5916030fbbbde147e5a686238f8`
+follow PR 797 source `b518f165dd22ff24528e4dcd0da5571d6e3be090`, independent
+Sol Medium and CodeRabbit approvals, passing final CI `41159999148`, and the
+exact-head read-only merge guard. Tasks 10752, 10762, 10763, 10765, and 10769
+accepted all five declared isolated-environment bindings, with empty
+plaintext/extra-var configuration, encrypted AppRole metadata, sole-template
+ownership, and shared/unrelated settings, surveys, repository, and inventory
+preserved. Task 10761 verified source policy and effective fixed-record
+data/metadata capabilities. Tasks 10767 and 10770 recorded scoped publication
+of the one missing declared controller catalog row and a converged rerun
+without duplicate environments or encrypted inputs. Capability verification
+did not read or write the coordination record and no VM, disk, filesystem,
+backup, restore, or cleanup operation occurred. These facts prove no
+coordination-record read/write or allocation/restore authorization. The
+[PBS task ledger](openspec/changes/pbs-vm-and-restore-gate/tasks.md) and
+[Dev runbook](openspec/changes/pbs-vm-and-restore-gate/implementation/dev-bootstrap-publication-runbook.md)
+record the child acceptance and its remaining parent gates.
+
+Task 10753 reports healthy/running Alloy, zero restarts, no OOM, and receiver
+checkout `67b9cffcdda8b3b10e840c50357c1b23f8410cbb`; this is not loaded-config
+or image proof. Task 10755 correctly returned `native_debug_invalid`; protected
+producer output was not read. A local Go-template reproduction through the
+production row/parser boundary confirmed the default `time.Time` rendering is
+rejected by the strict RFC3339 consumer. The source now formats `StartedAt` as
+RFC3339Nano and retains the zero-time refusal sentinel. Task 10756 passed the
+seven-day readiness assertion after the nine-day lookback but produced no
+structured success receipt; the source now emits only the helper's closed JSON
+receipt after the assertion passes. The owned test suites and direct contracts
+passed 652 tests. These source changes and bounded receipts do not complete a
+fresh live producer receipt, representative baseline, forecast, calibration,
+backup/restore, retention, or growth gate. This entry changes no PBS task or
+gate.

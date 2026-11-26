@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import harness_sandbox
 import playbook_yaml
@@ -165,7 +166,7 @@ def test_the_real_render_caps_the_pool_on_the_pinned_image(tmp_path):
     # pool's 429 relayed to the caller, and the hidden name is refused to the caller's own key.
     up = Upstream()
     try:
-        url = f"http://host.containers.internal:{up.server.server_port}/v1"
+        url = f"http://host.containers.internal:{urlsplit(up.url).port}/v1"
         cfg, _ = _render(tmp_path, agw_upstream_base_url=url, agw_models=[{"name": "m", "pool_identity": "kimi-pool"}],
                          agw_client_policies={"kimi-pool": {"tokens_per_hour": 10}}, _legacy_shared_active=False)
         cfg["config"]["database"]["url"] = "sqlite:///tmp/budget.db"

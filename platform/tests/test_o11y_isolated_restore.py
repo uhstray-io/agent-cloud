@@ -24,6 +24,7 @@ import o11y_isolated_restore as restore  # noqa: E402
 import o11y_pbs_receipts as pbs_receipts  # noqa: E402
 import playbook_yaml  # noqa: E402
 import seed_harness  # noqa: E402
+from fake_http import serve  # noqa: E402
 
 PUBLIC_SHA = "a" * 40
 PRIVATE_SHA = "b" * 40
@@ -732,7 +733,7 @@ def test_restore_playbook_adapters_match_closed_helpers_and_pve_qga_shape():
                  "connection": "local", "vars": variables, "tasks": selected_tasks}]
         play_path = tmp_path / "adapter.yml"
         SyntheticPve.observed.clear()
-        with seed_harness.serve(SyntheticPve) as address:
+        with serve(SyntheticPve) as address:
             variables["_restore_pve_host"] = address
             play_path.write_text(yaml.safe_dump(play, sort_keys=False))
             result = harness_sandbox.run(
@@ -1143,3 +1144,19 @@ def test_restore_and_cleanup_api_writes_follow_intent_handle_and_effect_order():
     fake_proxmox_calls.append(("DELETE", cleanup_sequence[1]))
     assert fake_proxmox_calls[-1] == ("DELETE", "Delete only the authenticated disconnected target")
     assert "expected_receipt_sha" not in (playbooks / "cleanup-o11y-isolated-restore.yml").read_text()
+
+
+def test_restore_hands_the_stored_semaphore_url_to_the_reader_without_its_own_check():
+    # The reader trims the stored url and checks it. A restore-side https check would refuse the trailing
+    # slash the reader accepts, so the restore reads no Semaphore secret and checks no Semaphore url itself.
+    path = Path(__file__).parents[1] / "playbooks" / "restore-o11y-isolated.yml"
+    text = path.read_text()
+    assert "tasks/read-o11y-pbs-prior-task.yml" in text
+    assert "_restore_semaphore_secret" not in text
+    assert "secret/data/services/semaphore" not in text
+    # Scoped to the Semaphore context: other hosts in this play may hold their own host-only checks.
+    for task in playbook_yaml.tasks(playbook_yaml.load(path)):
+        # A play or block holds its children's text, so only leaf tasks are judged.
+        if any(key in task for key in playbook_yaml.TASK_LISTS) or "semaphore" not in repr(task).lower():
+            continue
+        assert "[^/]+$" not in repr(task), task.get("name")

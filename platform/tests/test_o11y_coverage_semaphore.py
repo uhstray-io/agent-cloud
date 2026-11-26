@@ -12,6 +12,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+import harness_sandbox
+
 SCRIPT = Path(__file__).parents[1] / "playbooks/files/o11y-coverage-semaphore.py"
 SPEC = importlib.util.spec_from_file_location("o11y_coverage_semaphore", SCRIPT)
 SEMAPHORE = importlib.util.module_from_spec(SPEC)
@@ -639,6 +641,7 @@ class SemaphoreReceiptTests(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(SCRIPT), "--controller"],
             input=json.dumps(payload), text=True, capture_output=True, check=False,
+            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         )
         self.assertEqual(result.returncode, 2)
         self.assertEqual(result.stdout, '{"reason": "invalid_controller_input", "status": "refused"}\n')

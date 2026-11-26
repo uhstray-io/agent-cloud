@@ -19,15 +19,9 @@ Privacy-focused, open-source AI platform for startups and small business. Custom
 
 agent-cloud is an AI infrastructure platform that runs on the uhstray.io datacenter Proxmox cluster. It deploys and manages a set of interconnected services that enable AI agents to automate infrastructure operations, monitor networks, and interact with users -- all behind policy-enforced guardrails.
 
-```
-AI Layer         NemoClaw (headless), NetClaw (network), WisBot (Discord), Claude Cowork (interactive)
-                 Backed by: skynet -- OpenAI-compatible /v1 gateway (placement scheduling + policy gates)
-Guardrail Layer  OpenBao (secrets), Kyverno (k8s), OPA (policy), AppRole scoping
-                 AI proposes -> guardrails validate -> automation runs
-Automation Layer Ansible playbooks, Bash deploy scripts, Semaphore orchestration
-                 Deterministic, idempotent, auditable
-Platform Layer   Docker/Podman on Proxmox VMs; Kubernetes/k0s is the planned multi-site path
-```
+The four-layer architecture keeps AI proposals upstream of guardrails and
+automation. See the [four-layer architecture](ARCHITECTURE.md#four-layer-architecture)
+for the full model.
 
 ## Getting Started
 
@@ -57,7 +51,7 @@ make local-creds
 #   https://semaphore.agent-cloud.test:8443
 
 # deploy a single service through local Semaphore, exactly like prod:
-make local-deploy-<name>             # e.g. make local-deploy-uhhcraft
+make local-deploy-<name>             # e.g. make local-deploy-erpnext
 make local-validate                  # health-check everything deployed
 ```
 
@@ -80,7 +74,7 @@ make local-validate                  # health-check everything deployed
 **Every service deploys the same way — through Semaphore:**
 
 1. Push changes to this repo
-2. Run the corresponding task template in Semaphore (e.g., "Deploy tududi")
+2. Run the corresponding task template in Semaphore (e.g., "Deploy Authentik")
 3. Semaphore injects OpenBao credentials, SSHes to the target VM, and runs the composable playbook (`manage-secrets` → `deploy.sh` → verify)
 
 Production deploys always go through Semaphore so OpenBao credentials are injected and the run is auditable — never SSH into a VM and run `deploy.sh` directly.
@@ -99,69 +93,38 @@ deploy.sh does NOT generate secrets or interact with OpenBao. All credential man
 
 ## AI Agents
 
-| Agent | Type | Role |
-|-------|------|------|
-| **NemoClaw** | Headless engineer | Background automation, API integrations, CI/CD, health monitoring |
-| **NetClaw** | Network engineer | Network monitoring, topology discovery, config backup, security auditing |
-| **Claude Cowork** | Interactive architect | Research, architecture decisions, document generation |
-| **WebSmith** | Website builder | Prompt-only agent — walks users through a 5-phase workflow to produce a signed `SPEC.md` for a new website service |
-| **WisBot** | Community interface | Discord voice/chat bot with LLM-powered interactions |
+The AI layer is skynet, the orchestration API ([`platform/services/skynet/deployment/CLAUDE.md`](platform/services/skynet/deployment/CLAUDE.md)). Its agent roles are `infra-agent`, `security-agent`, `o11y-agent`, `service-agent`, `network-agent` and `skynet-eval`. Models are reached through the agentgateway inference edge.
 
 ## Platform Services
 
-This catalog describes integrations and recorded milestones, not current live
-health. Verify the selected environment before relying on a service.
-
-| Service | Purpose |
-|---------|---------|
-| **OpenBao** | Secrets management -- KV v2, AppRole auth, database engine |
-| **NocoDB** | Retired integration retained for decommissioning; tududi replaces its task-management role |
-| **n8n** | Workflow automation -- event-driven scheduling, webhooks, LLM nodes |
-| **Semaphore** | Deployment orchestration -- Ansible playbook execution |
-| **NetBox** | Infrastructure modeling -- IPAM/DCIM with Diode auto-discovery |
-| **Caddy** | Reverse proxy -- automatic TLS, CloudFlare DNS integration |
-| **DNS** | Internal name resolution -- hickory-dns, zones-as-code, authoritative + forward (local-dev live; prod planned) |
-| **step-ca** | Internal CA -- stable root, issues the `*.agent-cloud.test` wildcard Caddy serves (local-dev live; prod via ACME) |
-| **Authentik** | Central identity / SSO -- one login for every app: OIDC (Semaphore/Grafana/ERPNext) + Caddy forward_auth (NetBox/OpenBao/n8n), with `platform-admins`/`developers`/`user` RBAC tiers (local-dev live; production deployed at `auth.uhstray.io`) |
-| **skynet** | Local-first, policy-gated LLM inference backbone -- OpenAI-compatible `/v1` gateway with multi-backend placement scheduling + policy gates (supersedes WisAI's Ollama + Open WebUI LLM plane) |
-| **UhhCraft** | First WebSmith-built site -- AI-designed sticker + 3D-print storefront (Go + templ + HTMX) |
-| **inference-comfyui** | Image-generation sidecar -- Flux.1 Schnell behind a FastAPI wrapper, for UhhCraft and future generative sites |
-| **inference-hunyuan3d** | 3D mesh-generation sidecar -- Hunyuan3D-2-mini behind a FastAPI wrapper |
-| **tududi** | Self-hosted to-do app -- single rootless container (SQLite), native Authentik OIDC, `todo.uhstray.io`; the migration sink for NocoDB work data via weft (local-dev live; production deployed) |
-| **honcho** | Memory API for agents (Plastic Labs) -- api + deriver + pgvector + redis, JWT `/v3`, Authentik-gated `/docs`, `memory.uhstray.io`; evolve's team-memory backend (local-dev live; production deployed) |
-| **agentgateway** | Inference edge gateway (Linux Foundation agentgateway v1.5.0) -- OpenAI-compatible `/v1` with per-client API keys and per-key hourly token budgets (own Postgres) in front of the model API; local-dev fronts LM Studio, prod will front vLLM on the DGX Spark head behind `inference.uhstray.io` (local-dev proving) |
-| **Postiz** | Social-media scheduling and publishing -- app + its Postgres/Redis + a Temporal workflow engine that executes scheduled posts, native Authentik OIDC, `postiz.uhstray.io`; driven by n8n over an API-key endpoint deliberately left ungated at the edge (local bring-up recorded; production application rollout and publishing verification remain pending) |
-| **github-runner** | Self-hosted GitHub Actions runners -- two hosts forming one interchangeable pool, org-scoped to the PRIVATE repos declared in `manage-github-runner-group.yml` (seven as of 2026-10-19; `agent-cloud` excluded: it is public, and a fork can propose workflow code onto hosts inside the perimeter). For workflows that must originate from inside the network or its stable address (both live, serving jobs) |
-
+For current service purposes, status, and owning records, see the
+[service architecture catalog](plan/architecture/service-architecture.md#2-service-catalog).
+It is the single catalog; verify the selected environment before relying on live
+health.
 ## Repository Structure
+
+The tree below shows representative paths; it is not an exhaustive inventory.
 
 ```
 agent-cloud/
   platform/
     services/             Per-service: deployment/ + context/ + templates/
       openbao/            Secrets backbone (AppRole, KV v2, policies)
-      nocodb/             Retired (replaced by tududi); kept until its decommission
-      n8n/                Workflow automation
       semaphore/          Deployment orchestration
       netbox/             Infrastructure modeling + Diode discovery + Orb Agent
-      dns/                hickory-dns internal resolution (zones-as-code)
-      step-ca/            Internal CA (Smallstep; stable root, *.agent-cloud.test)
+      dns/                hickory-dns internal resolution (zones-as-code; production VM provisioned, deploy pending)
+      step-ca/            Internal CA (Smallstep; production has no ACME provisioner)
       caddy/              Reverse proxy
       authentik/          Central IdP / SSO (server+worker+Postgres+Redis)
-      inference/          Placeholder only (.gitkeep); the LLM plane is skynet's /v1
-      inference-comfyui/  UhhCraft image-gen sidecar (Flux.1, GPU)
-      inference-hunyuan3d/ UhhCraft 3D-gen sidecar (Hunyuan3D, GPU)
-      uhhcraft/           First WebSmith-built site (Go + templ + HTMX)
-      tududi/             To-do app (rootless podman, SQLite, Authentik OIDC)
+      inference/          README only, no deployment
       honcho/             Memory API (api + deriver + pgvector + redis)
-      o11y/               Grafana + Prometheus + Loki + Alloy
+      o11y/               Live production observability: Grafana + Prometheus + Loki + Alloy
       postiz/             Social publishing (app + Temporal workflow engine)
       agentgateway/       Inference edge gateway (per-client keys, token budgets)
       github-runner/      Self-hosted GitHub Actions runners
       opa/                Policy engine (Rego policy-as-code)
-      openhands/          Agent Canvas
       erpnext/            ERP (composable slim local tier)
-      wikijs/ nextcloud/ a2a-registry/   Further service directories (see each one's docs)
+      a2a-registry/       Placeholder, no deployment
     playbooks/            Ansible playbooks (see playbooks/README.md)
       tasks/              Composable tasks (manage-secrets, deploy-orb-agent, etc.)
     semaphore/            Semaphore template definitions + setup playbook
@@ -173,10 +136,7 @@ agent-cloud/
     hypervisor/proxmox/   VM provisioning and cloud-init
     k8s/                  Kubernetes manifests (Kustomize overlays)
   agents/
-    nemoclaw/             Headless workflow agent
-    netclaw/              Network engineering agent
-    cowork/               Interactive architect agent
-    websmith/             Website-building agent (prompt-only; produces SPEC.md)
+    workflows/            Cross-agent workflows (reserved)
   plan/
     architecture/         Architecture plans (automation, testing, service integration)
     development/          Development plans (discovery, deployment, migration)
@@ -238,7 +198,7 @@ See `platform/playbooks/README.md` and `plan/architecture/01-automation-model.md
 
 Detailed architecture and planning documents live in `plan/`:
 
-Start with [`ARCHITECTURE.md`](ARCHITECTURE.md) (the 5-minute map) and [`PRINCIPLES.md`](PRINCIPLES.md) (the durable constitution). The per-area depth lives under `plan/architecture/` (the numbered `00–07` HOW) and `plan/development/` (the service-by-service roadmap):
+Start with [`ARCHITECTURE.md`](ARCHITECTURE.md) (the 5-minute map) and [`PRINCIPLES.md`](PRINCIPLES.md) (the durable constitution). The per-area depth lives under `plan/architecture/` (the numbered `00–06` and `08–09` HOW) and `plan/development/` (the service-by-service roadmap):
 
 | Document | Purpose |
 |----------|---------|
@@ -250,28 +210,30 @@ Start with [`ARCHITECTURE.md`](ARCHITECTURE.md) (the 5-minute map) and [`PRINCIP
 | `plan/architecture/05-platform-infra.md` | Caddy reverse proxy (TLS/DNS-01, routing), container runtime, platform infra |
 | `plan/architecture/06-observability-instrumentation.md` | Observability-by-declaration model (metrics/logs/traces) |
 | `plan/architecture/skills-recommendation.md` | Claude Code skills for development workflows |
-| `plan/development/` | Numbered roadmap: local-dev, secrets, SSO, guardrails, NetBox discovery, observability, skynet, websmith, ERPNext, migrations, resilience, tududi/honcho, RBAC, Cloudflare IaC, Postiz |
-| `plan/archive/development/IMPLEMENTATION_PLAN.md` | Original full implementation plan (archived; phases, architecture, decisions) |
+| `plan/development/` | Numbered roadmap: local-dev, secrets, SSO, guardrails, NetBox discovery, observability, skynet, ERPNext, migrations, resilience, honcho, RBAC, Cloudflare IaC, Postiz |
 
 For new services, start with `plan/architecture/02-service-onboarding.md`. For new features, create an implementation plan in `plan/development/` before coding begins.
 
 ## CI/CD and Testing
 
 Every pull request runs these automated checks. The three below are the gates; a PR also
-runs change detection, conditional Go jobs for uhhcraft, a
+runs change detection, a
 CodeRabbit review, and — on a `dev` → `main` PR — a promotion-source check:
 
 | Job | Tools | What it catches |
 |-----|-------|-----------------|
 | **Static Analysis** | Ruff, ShellCheck, ansible-lint, yamllint, hadolint, terraform fmt | Code style, bugs, Ansible best practices, YAML formatting, Dockerfile issues, HCL policy formatting |
 | **Security Scan** | TruffleHog, Bandit, IP/credential grep | Leaked secrets, Python security issues, hardcoded IPs and credentials |
-| **Unit Tests** | pytest (100 tests), BATS (500+ tests; `bats -c platform/tests/*.bats` for the exact count) | Discovery worker logic, bash helpers, per-service deployment structure |
+| **Unit Tests** | pytest (`pytest --collect-only` for the current count), BATS (`bats -c platform/tests/*.bats` for the current count) | Discovery worker logic, bash helpers, per-service deployment structure |
 
 `.githooks/pre-push` **attempts** the same suites before a push, with the same test paths,
 working directory and `PYTHONPATH` as CI. Live via the repo's `core.hooksPath` after
-`make git-setup`, no install step. `bats platform/tests/` is byte-identical to CI's; the
-pytest run is not — CI pins Python 3.12 and installs the test dependencies, while the hook
-uses whatever `python3` is on your `PATH`.
+`make git-setup`, no install step. `bats platform/tests/` runs the same files as CI, serially;
+CI runs them with `--jobs 4 --no-parallelize-within-files`. Both
+suites run on the locked environment when `uv` is installed: the hook runs `uv sync --locked`
+and puts `.venv/bin` first on `PATH`, as CI does. Without uv, when the sync fails, or when
+`UV_PROJECT_ENVIRONMENT` points outside the checkout's `.venv`, it falls back, with a
+warning, to whatever `python3` and tools are on your `PATH`.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite
 runs and fails; CI blocks *the merge*. A green push means the suites passed on your machine
@@ -284,6 +246,21 @@ Branch testing via Semaphore allows deploying feature branches to production VMs
 
 `main` is protected by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the three checks above must pass before the merge button unlocks. Merges into `main` allow **merge commits (the default) or squash** — linear history is NOT required, so `dev` → `main` promotions land as merge commits (squash only to scrub accidental sensitive content). (The checked-in ruleset declares `active`; this documentation review did not query remote enforcement.) See `plan/development/03-guardrails-governance.md`.
 
+### Versioning
+
+agent-cloud follows [Semantic Versioning](https://semver.org/) and is in its 0.x line. The pull
+request title sets the bump, in Conventional Commits form (`type(scope)!: description`): `feat`
+is a minor bump; `fix`, `perf`, `security` and `revert` are a patch; `docs`, `chore`, `test`,
+`ci`, `refactor`, `build`, `style`, `plan` and `promote` add none. A `!` marks a breaking change,
+which bumps the minor while on 0.x. The `Version` job on every pull request fails a title not in
+that form and shows the version the merge would produce. A merge into `dev` is tagged
+`vX.Y.Z-dev.N`; a promotion into `main` is tagged `vX.Y.Z` with a GitHub Release. Semaphore's
+`Release Version (Dev)` template runs the tagging every 15 minutes, so a merge is tagged within
+15 minutes rather than at once. 1.0.0, and every later major version, is cut only when the
+operator launches `Release Major Version (Dev)` with the exact major version expected. History before
+this was backfilled from the promotions: `main` was `v0.13.0` when versioning began. See
+`plan/development/20-semantic-versioning.md`.
+
 For local setup and the full pre-PR checklist, see `plan/architecture/03-testing-ci-quality.md`.
 
 ## Technology Stack
@@ -293,8 +270,8 @@ INFRASTRUCTURE        Docker, Podman, Proxmox; Kubernetes (k0s) planned
 SECRETS & IDENTITY    OpenBao, AppRole auth, per-service SSH keys
 DEPLOYMENT & GITOPS   Semaphore, Ansible, OpenTofu (Cloudflare edge as code), ArgoCD (planned)
 DATA                  PostgreSQL, SQLite, MinIO, DuckDB
-AI AGENTS             NemoClaw, NetClaw, Claude Cowork, WisBot
-INFERENCE             skynet (OpenAI-compatible /v1; placement + policy gates)
+AI AGENTS             skynet agent roles (infra-agent, security-agent, o11y-agent, service-agent, network-agent, skynet-eval)
+INFERENCE             agentgateway inference edge (/v1); skynet orchestration API calls through it (deployed in production; Semaphore launch rights are guest-only since 2026-10-31)
 AGENT PROTOCOLS       A2A (agent-to-agent), MCP (agent-to-tool)
 OBSERVABILITY         Grafana, Prometheus, Loki, Tempo (planned)
 ```
@@ -308,9 +285,7 @@ Production DGX Spark scrape targets are rendered from private inventory by
 | Repo | Visibility | Purpose |
 |------|-----------|---------|
 | [uhstray-io/agent-cloud](https://github.com/uhstray-io/agent-cloud) | Public | This repo -- platform monorepo |
-| [uhstray-io/WisBot](https://github.com/uhstray-io/WisBot) | Public | Discord bot (C#/.NET) |
-| [uhstray-io/skynet](https://github.com/uhstray-io/skynet) | Private | Inference backbone + agent framework — OpenAI-compatible `/v1` gateway (placement + policy gates); supersedes WisAI's LLM plane and the NemoClaw/OpenClaw framework |
-| [uhstray-io/WisAI](https://github.com/uhstray-io/WisAI) | Public | **Legacy** — Ollama + Open WebUI LLM plane (its compose stack is in that repo's `infrastructure/`), superseded by skynet `/v1`; non-LLM inference sidecars (ComfyUI, Hunyuan3D) are unaffected |
+| [uhstray-io/skynet](https://github.com/uhstray-io/skynet) | Private | Orchestration API (deployed in production 2026-10-30), which asks OPA for each decision and calls models through the agentgateway inference edge; its Semaphore launch rights are guest-only since 2026-10-31 |
 
 ## Contributing
 

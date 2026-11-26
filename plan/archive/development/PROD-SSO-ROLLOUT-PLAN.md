@@ -46,7 +46,7 @@ one-line, composable change.
 ## The composable mechanism (manifest-driven blueprint selection)
 
 Problem today: all 14 committed Authentik blueprints apply unconditionally in
-BOTH local and prod, so prod shows apps for services not in prod (erpnext, n8n,
+BOTH local and prod, so prod shows apps for services not in prod (erpnext,
 grafana, openbao…) + local test users. No environment gating exists.
 
 Design:

@@ -90,7 +90,7 @@ compose_staged_up() {
     $CONTAINER_ENGINE rm -f plane-proxy >/dev/null 2>&1
     error "plane-proxy started as a dependency of another service; removed it and stopped the deploy."
   fi
-  wait_for_healthy plane-api 600
+  wait_for_healthy plane-api "$API_HEALTH_TIMEOUT"
   if instance_closed; then
     compose up -d --force-recreate --no-deps proxy || return 1
   else
@@ -111,9 +111,15 @@ step_start() {
   fi
 }
 
+# A first run on a fresh database migrates before the API is healthy: about 36 minutes on the
+# 4-vCPU production VM (Semaphore task 11696, which failed at the old 600s). The wait returns
+# as soon as the API is healthy, so a later deploy is not slowed. The playbooks pass the
+# inventory's plane_api_health_timeout as PLANE_API_HEALTH_TIMEOUT; empty means this default.
+API_HEALTH_TIMEOUT="${PLANE_API_HEALTH_TIMEOUT:-3600}"
+
 step_wait_healthy() {
   info "Step 4: Waiting for the Plane API to become healthy (first boot runs migrations)..."
-  wait_for_healthy plane-api 600
+  wait_for_healthy plane-api "$API_HEALTH_TIMEOUT"
 }
 
 main() {

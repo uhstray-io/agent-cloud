@@ -74,6 +74,116 @@ def test_projects_only_fixed_allowlist_from_inspect_data():
         assert planted not in rendered
 
 
+def test_checkout_head_reports_only_the_exact_receiver_commit(tmp_path, capsys):
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Fixture"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "fixture@example.invalid"], check=True)
+    (tmp_path / "tracked.txt").write_text("synthetic checkout\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "tracked.txt"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-m", "fixture"], check=True, capture_output=True)
+    expected = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "--verify", "HEAD^{commit}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (tmp_path / "tracked.txt").write_text("working tree differs from HEAD\n")
+    (tmp_path / "untracked.txt").write_text("not part of the checkout HEAD\n")
+
+    report = SURVEY.checkout_head(str(tmp_path))
+
+    assert report == {"meaning": "checkout_head", "sha": expected, "status": "observed"}
+    assert set(report) == {"meaning", "sha", "status"}
+    assert SURVEY.main(["--checkout-head", str(tmp_path)]) == 0
+    assert json.loads(capsys.readouterr().out) == report
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr"),
+    [
+        (0, b"a" * 39 + b"\n", b""),
+        (0, b"a" * 40 + b"\nextra\n", b""),
+        (0, b"a" * 40 + b"\n /private/path\n", b""),
+        (1, b"", b"fatal: /private/path RAW_SENTINEL\n"),
+        (0, b"a" * 40 + b"\n", b"warning: /private/path RAW_SENTINEL\n"),
+    ],
+    ids=["short-sha", "extra-line", "private-path-extra-output", "git-failed", "stderr-on-success"],
+)
+def test_checkout_head_malformed_or_failed_git_result_is_fixed_unavailable(
+    tmp_path, monkeypatch, returncode, stdout, stderr
+):
+    def run(argv, **kwargs):
+        assert argv == ["git", "rev-parse", "--verify", "HEAD^{commit}"]
+        assert kwargs["cwd"] == str(tmp_path)
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        assert kwargs["timeout"] == 8
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(SURVEY.subprocess, "run", run)
+
+    report = SURVEY.checkout_head(str(tmp_path))
+
+    assert report == {"meaning": "checkout_head", "status": "unavailable"}
+    assert "RAW_SENTINEL" not in json.dumps(report)
+    assert str(tmp_path) not in json.dumps(report)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError("git unavailable at /private/path RAW_SENTINEL"),
+        ValueError("invalid /private/path RAW_SENTINEL"),
+        subprocess.TimeoutExpired("git", 8),
+    ],
+    ids=["execution-failed", "invalid-path", "timed-out"],
+)
+def test_checkout_head_execution_errors_are_fixed_unavailable(tmp_path, monkeypatch, error):
+    def run(_argv, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(SURVEY.subprocess, "run", run)
+
+    report = SURVEY.checkout_head(str(tmp_path))
+
+    assert report == {"meaning": "checkout_head", "status": "unavailable"}
+    assert "RAW_SENTINEL" not in json.dumps(report)
+    assert str(tmp_path) not in json.dumps(report)
+
+
+def test_checkout_head_receipt_is_separate_and_protected_in_playbook():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    receiver_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    tasks = receiver_play["tasks"]
+    health_report_task = next(
+        task for task in tasks if task.get("name") == "Report the bounded Alloy health receipt"
+    )
+    revision_command = next(
+        task for task in tasks if task.get("name") == "Read the receiver checkout HEAD privately"
+    )
+    revision_report = next(
+        task for task in tasks if task.get("name") == "Report the bounded receiver checkout HEAD receipt"
+    )
+
+    assert receiver_play["vars"]["_alloy_health_observed_fields"] == sorted(
+        [
+            "container_present",
+            "health_status",
+            "last_health_exit_code",
+            "oom_killed",
+            "restart_count",
+            "run_status",
+            "started_age_bucket",
+            "status",
+        ]
+    )
+    assert revision_command["no_log"] is True
+    assert revision_command["changed_when"] is False
+    assert revision_command["failed_when"] is False
+    assert revision_command["check_mode"] is False
+    assert revision_report["ansible.builtin.debug"]["msg"] == "{{ _receiver_revision_receipt | to_json }}"
+    assert health_report_task["ansible.builtin.debug"]["msg"] == "{{ _alloy_health_receipt | to_json }}"
+
+
 def test_started_age_is_coarse_and_refuses_future_timestamp():
     now = datetime(2026, 10, 13, 12, tzinfo=UTC)
     assert SURVEY._age_bucket("2026-10-13T11:30:00Z", now) == "under_1h"
@@ -405,7 +515,9 @@ def _receipt_playbook(harness_path: Path, stdout: str, rc: int) -> None:
         play for play in yaml.safe_load(PLAYBOOK.read_text()) if play.get("hosts") == "o11y_svc"
     )
     tasks = receiver_play["tasks"]
-    protected_receipt = next(task for task in tasks if task.get("block") is not None)
+    protected_receipt = next(
+        task for task in tasks if task.get("name") == "Parse and verify the sanitized Alloy health receipt"
+    )
     public_reports = [
         task
         for task in tasks
@@ -435,9 +547,130 @@ def _receipt_playbook(harness_path: Path, stdout: str, rc: int) -> None:
     harness_path.write_text(yaml.safe_dump(harness))
 
 
+def _revision_receipt_playbook(harness_path: Path, stdout: str, rc: int) -> None:
+    receiver_play = next(
+        play for play in yaml.safe_load(PLAYBOOK.read_text()) if play.get("hosts") == "o11y_svc"
+    )
+    tasks = receiver_play["tasks"]
+    protected_receipt = next(
+        task for task in tasks if task.get("name") == "Parse and verify the receiver checkout HEAD receipt"
+    )
+    public_report = next(
+        task for task in tasks if task.get("name") == "Report the bounded receiver checkout HEAD receipt"
+    )
+    harness = [
+        {
+            "name": "Exercise the production checkout HEAD receipt parser offline",
+            "hosts": "localhost",
+            "connection": "local",
+            "gather_facts": False,
+            "vars": {"_receiver_revision_raw": {"stdout": stdout, "rc": rc}},
+            "tasks": [protected_receipt, public_report],
+        }
+    ]
+    harness_path.write_text(yaml.safe_dump(harness))
+
+
+@pytest.mark.skipif(ANSIBLE_PLAYBOOK is None, reason="needs ansible-playbook")
+def test_ansible_checkout_head_receipt_is_skipped_in_check_mode(tmp_path):
+    receiver_play = next(
+        play for play in yaml.safe_load(PLAYBOOK.read_text()) if play.get("hosts") == "o11y_svc"
+    )
+    tasks = receiver_play["tasks"]
+    selected_tasks = [
+        next(task for task in tasks if task.get("name") == name)
+        for name in (
+            "Read the receiver checkout HEAD privately",
+            "Parse and verify the receiver checkout HEAD receipt",
+            "Report the bounded receiver checkout HEAD receipt",
+        )
+    ]
+    harness_path = tmp_path / "checkout-head-check-mode.yml"
+    inventory_path = tmp_path / "inventory.ini"
+    harness_path.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "name": "Exercise checkout HEAD receipt check-mode behavior",
+                    "hosts": "localhost",
+                    "connection": "local",
+                    "gather_facts": False,
+                    "vars": {
+                        "_receiver_monorepo_dir": str(tmp_path),
+                        "_alloy_health_helper": "print('must not run')",
+                    },
+                    "tasks": selected_tasks,
+                }
+            ]
+        )
+    )
+    inventory_path.write_text("localhost ansible_connection=local\n")
+
+    proc = subprocess.run(
+        [ANSIBLE_PLAYBOOK, "--check", "-i", str(inventory_path), str(harness_path)],
+        cwd=ROOT,
+        env=_ansible_env(tmp_path / "local-tmp"),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=45,
+    )
+
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output
+    assert "skipping" in output.lower()
+    assert "Reduce a failed receiver checkout HEAD read to unavailable" not in output
+    assert "rescued=0" in output
+
+
 def _ansible_env(local_temp: Path) -> dict[str, str]:
     local_temp.mkdir(parents=True, exist_ok=True)
     return {**os.environ, "ANSIBLE_LOCAL_TEMP": str(local_temp)}
+
+
+@pytest.mark.skipif(ANSIBLE_PLAYBOOK is None, reason="needs ansible-playbook")
+@pytest.mark.parametrize(
+    ("stdout", "rc", "expected", "private_marker"),
+    [
+        (
+            json.dumps({"meaning": "checkout_head", "sha": "a" * 40, "status": "observed"}),
+            0,
+            {"meaning": "checkout_head", "sha": "a" * 40, "status": "observed"},
+            None,
+        ),
+        (
+            '{"sha":"/private/path RAW_SENTINEL"',
+            1,
+            {"meaning": "checkout_head", "status": "unavailable"},
+            "RAW_SENTINEL",
+        ),
+    ],
+    ids=["observed", "malformed-private-result"],
+)
+def test_ansible_checkout_head_receipt_reports_only_closed_safe_state(
+    tmp_path, stdout, rc, expected, private_marker
+):
+    harness_path = tmp_path / "checkout-head-receipt.yml"
+    inventory_path = tmp_path / "inventory.ini"
+    _revision_receipt_playbook(harness_path, stdout, rc)
+    inventory_path.write_text("localhost ansible_connection=local\n")
+    proc = subprocess.run(
+        [ANSIBLE_PLAYBOOK, "-i", str(inventory_path), str(harness_path)],
+        cwd=ROOT,
+        env=_ansible_env(tmp_path / "local-tmp"),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=45,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    message_line = next(line for line in proc.stdout.splitlines() if '"msg":' in line)
+    message = json.loads(message_line.split('"msg": ', 1)[1])
+    assert json.loads(message) == expected
+    if private_marker:
+        assert private_marker not in proc.stdout + proc.stderr
+    assert "/private/path" not in proc.stdout + proc.stderr
 
 
 @pytest.mark.skipif(ANSIBLE_PLAYBOOK is None, reason="needs ansible-playbook")

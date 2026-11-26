@@ -13,6 +13,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 
@@ -85,6 +86,7 @@ def _run(name: str, tmp_path: Path, *extra: str, hosts: str = "", check: bool = 
          "-e", "target_service=demo_svc", "-e", "service_name=demo",
          "-e", "credential_service=demo", "-e", "openbao_addr=https://127.0.0.1:9", *extra],
         cwd=REPO, env=env, text=True, capture_output=True, check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
 

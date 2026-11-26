@@ -1,0 +1,91 @@
+"""A template whose playbook runs the o11y restore-target preflight declares its own environment.
+
+The preflight (tasks/preflight-o11y-restore-target.yml) refuses the shared Semaphore environment's
+plaintext credential extra vars, and the guard authenticates only with BAO_ROLE_ID / BAO_SECRET_ID
+from the process environment, which the shared environment does not provide. A template bound to
+the shared environment therefore fails on every production launch. PR #728 put the guard in front
+of the five general VM writers without moving them, and every production run of Provision, Resize,
+Destroy, Snapshot and Create VM Template (Dev) failed from 2026-10-24 (Semaphore tasks 9493, 10259,
+10295). The fix gives each template an isolated environment holding an encrypted AppRole, through
+Provision Seed Environment (Dev).
+"""
+
+import re
+from pathlib import Path
+
+import yaml
+
+REPO = Path(__file__).resolve().parents[2]
+PLAYBOOKS = REPO / "platform" / "playbooks"
+TEMPLATES = REPO / "platform" / "semaphore" / "templates.yml"
+GUARDED = re.compile(r"(guard|preflight)-o11y-restore-target(-inputs)?\.yml")
+# import_playbook, include_tasks and import_tasks, in the short form or under `file:`.
+IMPORT = re.compile(r"(?:import_playbook|include_tasks|import_tasks):\s*(?:\n\s*file:\s*)?['\"]?([\w./-]+\.yml)")
+
+
+def _resolve(name, including):
+    """Ansible looks beside the including file, then in the playbook directory."""
+    for base in (including.parent, PLAYBOOKS, PLAYBOOKS / "tasks"):
+        if (base / name).is_file():
+            return base / name
+    return None
+
+
+def runs_restore_preflight(path, seen=None):
+    """True when the playbook, or anything it imports or includes, reaches the preflight or guard."""
+    seen = seen if seen is not None else set()
+    if path is None or path in seen or not path.is_file():
+        return False
+    seen.add(path)
+    # A playbook named for the preflight is the protected workflow itself.
+    if GUARDED.fullmatch(path.name):
+        return True
+    # Only executed imports and includes count: a filename in a comment or a data value (a
+    # reviewed-payload list, say) runs nothing. Comment lines are dropped before matching.
+    text = "\n".join(line for line in path.read_text().splitlines() if not line.lstrip().startswith("#"))
+    targets = IMPORT.findall(text)
+    if any(GUARDED.fullmatch(Path(name).name) for name in targets):
+        return True
+    return any(runs_restore_preflight(_resolve(name, path), seen) for name in targets)
+
+
+def guarded_templates():
+    declared = yaml.safe_load(TEMPLATES.read_text())["templates"]
+    return [t for t in declared if runs_restore_preflight(REPO / t["playbook"])]
+
+
+def test_the_five_vm_writers_are_found():
+    names = {t["name"] for t in guarded_templates()}
+    assert {"Provision VM", "Resize VM", "Destroy VM", "Create VM Template", "Snapshot VM"} <= names
+
+
+def test_every_template_running_the_restore_preflight_declares_an_isolated_environment():
+    missing = [t["name"] for t in guarded_templates() if not t.get("isolated_environment")]
+    assert not missing, (
+        "These templates run the o11y restore-target preflight, which refuses the shared "
+        "environment's credential extra vars; declare isolated_environment and run Provision "
+        "Seed Environment (Dev) for each:\n" + "\n".join(missing))
+
+
+def test_the_detector_follows_imports_and_includes_and_ignores_unguarded_playbooks(tmp_path):
+    (tmp_path / "inner.yml").write_text("- ansible.builtin.import_playbook: preflight-o11y-restore-target-inputs.yml\n")
+    (tmp_path / "outer.yml").write_text("- ansible.builtin.import_playbook: inner.yml\n")
+    (tmp_path / "plain.yml").write_text("- ansible.builtin.import_playbook: refuse-internal-extra-vars.yml\n")
+    (tmp_path / "tasks").mkdir()
+    (tmp_path / "tasks" / "wrapped.yml").write_text("- ansible.builtin.include_tasks: guard-o11y-restore-target.yml\n")
+    (tmp_path / "via_tasks.yml").write_text(
+        "- hosts: localhost\n  tasks:\n    - ansible.builtin.include_tasks:\n        file: tasks/wrapped.yml\n")
+    assert runs_restore_preflight(tmp_path / "outer.yml")
+    assert runs_restore_preflight(tmp_path / "via_tasks.yml")
+    assert not runs_restore_preflight(tmp_path / "plain.yml")
+
+
+def test_a_guard_filename_that_is_only_mentioned_is_not_an_include(tmp_path):
+    (tmp_path / "mentions.yml").write_text(
+        "# include_tasks: tasks/guard-o11y-restore-target.yml\n"
+        "- hosts: localhost\n"
+        "  vars:\n"
+        "    reviewed_payload:\n"
+        "      - platform/playbooks/tasks/guard-o11y-restore-target.yml\n"
+        "      - platform/playbooks/preflight-o11y-restore-target-inputs.yml\n")
+    assert not runs_restore_preflight(tmp_path / "mentions.yml")

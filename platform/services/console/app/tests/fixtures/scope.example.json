@@ -1,0 +1,43 @@
+{
+    "example": true,
+    "tenants": [
+        {
+            "groups": [
+                "platform-admins",
+                "platform-developers"
+            ],
+            "id": "uhstray",
+            "name": "Uhstray (example)",
+            "orgs": [
+                {
+                    "id": "uhstray-io",
+                    "name": "uhstray-io",
+                    "sites": [
+                        {
+                            "envs": [
+                                "prod",
+                                "dev"
+                            ],
+                            "id": "site-hq",
+                            "name": "HQ"
+                        },
+                        {
+                            "envs": [
+                                "prod"
+                            ],
+                            "id": "do-nyc1",
+                            "name": "DigitalOcean NYC1"
+                        },
+                        {
+                            "envs": [
+                                "prod"
+                            ],
+                            "id": "cloudflare",
+                            "name": "Cloudflare"
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

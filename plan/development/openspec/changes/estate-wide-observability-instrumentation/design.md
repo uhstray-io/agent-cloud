@@ -203,8 +203,8 @@ Signal selection per cohort:
 | Cohort | Default collection | Trace decision |
 |---|---|---|
 | o11y, Caddy, DNS, step-ca, OpenBao, OPA, Authentik, Semaphore, NetBox | host/container logs; native or vetted exporter metrics; readiness | request-serving components only after runtime compatibility/security pilot |
-| App and data services: n8n, Postiz, tududi, honcho, UhhCraft, ERPNext, OpenHands, Nextcloud/NocoDB/WikiJS if deployed | stdout plus DB/queue/app metrics; request/worker identity | runtime agent where supported, manual span for an important workflow gap |
-| Agent and inference workloads: agentgateway, DGX, NemoClaw, NetClaw, WisBot, WebSmith, ComfyUI, Hunyuan3D | retain proven gateway/DGX paths; add worker/job and GPU/model metrics where supported | keep existing gateway trace path; pilot agent/runtime tracing with prompt redaction |
+| App and data services: Postiz, honcho, ERPNext | stdout plus DB/queue/app metrics; request/worker identity | runtime agent where supported, manual span for an important workflow gap |
+| Agent and inference workloads: agentgateway, DGX | retain proven gateway/DGX paths; add worker/job and GPU/model metrics where supported | keep existing gateway trace path; pilot agent/runtime tracing with prompt redaction |
 | Proxmox, guest OS, container engine, pfSense and other managed devices | node/hypervisor/device exporter or read-only API metrics, system logs, health | not applicable unless a request-serving software component has safe support |
 | GitHub runner hosts | host health and bounded metrics first; job logs only after an entitlement and redaction decision | job tracing is not assumed |
 
@@ -252,7 +252,7 @@ Complete the remaining o11y/agentgateway user-visible and owning-task receipts f
 
 PR #682 head `8e32c3dbe0da05e58e303a2aab7c5647fa7780fa` passed independent review/fixes and green final-head CI, then merged to `dev` as `dbd06dd74b73f61e9cf464123729eb653fdb3af7`. Dev-bound stage 6182 and separate read-only cursor survey 6183 succeeded at that exact merge SHA. Survey 6183 reported a valid cursor, collector absent, no volume users, sufficient space, zero failed live checks, `NeedsChown=false`, and `NeedsCopyUp=true`. Non-destructive apply 6184 succeeded at 07:22:52–07:25:04 UTC: preflight, collector health, exact mount fields, UID-map equality, namespace write/rename probe, unchanged seven-container receiver set, and no-failed-task checks passed. The exact `{service="o11y/alloy",signal="container"}` Loki receipt succeeded after one retry. Independent read-only Grafana MCP readback found six exact-label samples in 07:23:56–07:25:56 UTC. Post-apply read-only survey 6185 reported the collector present, one volume user, valid cursor, no failed or unverified live checks, and `NeedsCopyUp=true`. This closes only the bounded 1.2f.2 collector gate. Parent 1.2 remains open for private ingress and the complete seven-day baseline. The baseline starts at 2026-10-16 07:25:04 UTC; its earliest full seven-day window ends at 2026-10-23 07:25:04 UTC, subject to completeness and representative coverage.
 
-The separate controlled gateway verification task 6186 completed 100 anonymous `401` requests to `/v1/models`, then failed the exact `signal=access-log` Loki check; its trace check did not run. Independent read-only Loki inspection found approximately 100 unlabelled `service=agentgateway` INFO records in 07:20–07:40 UTC (99 matched 401 `/v1/models`) and 14 `signal=span` records. Tempo search found 14 agentgateway traces started 07:28:31–07:30:28 UTC. The current gateway template's OTLP access fields include service and identity/path but no `signal`, while Alloy's label hints are `service,signal`. This remains a gateway-owned dependency; these observations do not prove every canary request correlated to a trace, and do not complete parent task 1.4.
+The separate controlled gateway verification task 6186 completed 100 anonymous `401` requests to `/v1/models`, then failed the exact `signal=access-log` Loki check; its trace check did not run. Independent read-only Loki inspection found approximately 100 unlabelled `service=agentgateway` INFO records in 07:20–07:40 UTC (99 matched 401 `/v1/models`) and 14 `signal=span` records. Tempo search found 14 agentgateway traces started 07:28:31–07:30:28 UTC. That historical receipt does not describe current source: `platform/services/agentgateway/deployment/templates/config.yaml.j2:315` already adds `signal=access-log` (blame commit `2922e1a8c`, 2026-10-20), while Alloy's label hints are `service,signal`. A fresh gated request cohort and runtime access-log/trace receipt remain unverified; these observations do not prove every canary request correlated to a trace, and do not complete parent task 1.4.
 
 Read-only expected-target survey task 6189 succeeded at the same exact merge SHA with `status=observed`, `reason=exact_match`, expected=11, active=11, matched=11, missing=0, unexpected=0, unhealthy=0. This point-in-time result does not prove seven-day coverage, loaded budget acceptance, alert delivery, or recovery. Retention, VM growth, and PBS allocation remain unauthorized.
 
@@ -898,13 +898,18 @@ and `tempo_discarded_spans_total`. Query each raw family without the alert
 expressions' `or vector(0)` so absence remains visible.
 
 Set `lookback_delta=5m` explicitly on every raw selector query and do not add
-`or vector(0)`. An empty vector is reported as `missing_or_stale`; do not compare
+`or vector(0)`. An empty vector is reported as `missing_or_stale`, except for the two lazily created drop counters
+`otelcol_exporter_enqueue_failed_spans_total` and `loki_discarded_samples_total`. Their pinned upstream sources create a
+series only on the first drop, so an empty vector for them reports `absent_lazy_counter` with reason
+`liveness_series_present` when a liveness series is present for every expected target of the same job
+(`otelcol_exporter_queue_size{data_type="traces"}`, `loki_distributor_lines_received_total`). That status means no
+drop since the process last started and never counts as `observed_zero`. Do not compare
 the response `value[0]` (the query evaluation timestamp) with a local clock or
 claim it is the original sample timestamp. Validate the vector response shape,
 then join each returned `job`/`instance` privately against the exact active-target
 set. Accept multiple distinct reason series; require well-formed unique label
 sets and finite nonnegative counter values. Report one fixed public family/status/reason row per
-family: `observed_zero`, `observed_nonzero`, `missing_or_stale`, or `unavailable`.
+family: `observed_zero`, `observed_nonzero`, `missing_or_stale`, `absent_lazy_counter`, or `unavailable`.
 No labels, sample values/timestamps, selectors, URLs, response bodies, or
 exceptions enter the receipt. A per-family query or validation failure does not
 fail or replace the required active-load baseline, source-only candidate
@@ -1371,6 +1376,24 @@ Same-source reruns must prove that source is already current. The existing
 Grafana expected-target helper remains rule-ownership preparation only, with
 UID, five-label identity, query, tombstone and recovery formats unchanged.
 
+The early prepare-phase source helper is invoked with `require_health_targets`
+false and may therefore report a valid native self-only readback. Its main
+returns rc 0 for observed output and rc 2 for a fixed unavailable refusal
+envelope. Runtime task 10682 at Dev `338799e5e66a3a2260856258319200b3bbba25d3`
+still reduced to `source_readback_unavailable`; its underlying cause remains
+unverified. Refine only this diagnostic boundary: distinguish unexpected process
+results, private stderr presence, invalid output, and invalid evidence with closed
+categories. A complete rc-2 refusal envelope may expose only a committed,
+allowlisted source/readback refusal reason, including when private transport
+stderr is present; negative diagnostic reporting is not producer acceptance.
+Observed producer diagnostics still require empty stderr and the authoritative
+source-coverage validator. Preserve the 64-KiB bound, duplicate/nonfinite JSON
+refusal, strict numeric and nested evidence checks, and rc/payload consistency.
+Never print raw stdout, stderr, an unknown reason, or an exception. The raw
+registered result remains protected and the original strict producer assertion
+stays authoritative. Source tests and diagnostic categories complete none of the
+baseline, loaded-limit, or runtime acceptance gates.
+
 The existing eight-field Prometheus coverage receipt remains byte-compatible
 when all expected targets are legacy/Prometheus. It counts only Prometheus
 rows. With native rows present, provide a separate source-labelled native
@@ -1420,6 +1443,77 @@ timestamps later than both that bound and the new Alloy process start. Query
 evaluation time and historical maxima are not sample timestamps. For a
 survey-only rerun without an apply bound, bind evidence to the actual current
 process start and the declared freshness window.
+
+### Ordinary-deploy source review with availability disabled (task 1.4a, 2026-10-31)
+
+**Source-only diagnosis.** At `a99eaec7ba4557d625e0f44e99f43371d2ff18a6`,
+`deploy-o11y.yml` requires source review for the reviewed legacy Alloy
+self-scrape even when availability is disabled. The supplied local reproduction
+executes the unmodified `step_start` function bodies with synthetic helper
+receipts and mocked Compose: valid disabled-mode source evidence reaches the
+unconditional staged namespace invocation and refuses before mocked Compose;
+invalid source evidence refuses first. The actual effective-Compose helper
+also rejects synthetic normalized Alloy OTLP `4317`/`4318` mappings because it
+rejects any Alloy `ports` key. Committed base Compose declares those OTLP
+publications and the availability overlay retains them. This diagnoses source
+compatibility only; it proves no installed provider result or real deployment.
+
+**Bounded correction.** In `platform/services/o11y/deployment/deploy.sh`,
+condition only the namespace invocation inside `compose_staged_up` on literal
+`O11Y_AVAILABILITY_ENABLED=true`. Keep the staged Compose path active whenever
+a source-review declaration is supplied, including disabled availability. Keep
+unique current-source verification, strict receipt parsing, pre-apply source
+and container hash plus epoch output, and the existing fresh post-apply
+producer assertion. Invalid, missing, duplicate, stale or ambiguous producer
+evidence must not acquire an off-mode bypass. Enabled availability retains
+initial, final pre-start and post-apply namespace checks; a final-check failure
+must refuse before Compose runs.
+
+In `platform/playbooks/files/summarize-o11y-scrape-baseline.py`, replace the
+blanket Alloy `ports` rejection with the minimal compatible port contract:
+permit the existing required OTLP publications to container ports `4317` and
+`4318`, including the reviewed configured host mapping, while refusing any
+publication of the `12345` admin listener (including remapped publication) or
+use of host port `12345`. Validate supported normalized mapping fields/types
+and port values; malformed or ambiguous data remains refused. The existing
+short-syntax branch also falls through to refusal for non-`12345` entries;
+correct only its narrow unambiguous supported representations, retaining
+refusal of unsupported/ambiguous shapes rather than adding a broad parser.
+Retain project-wide admin-publication checks and every other candidate,
+provider, namespace/network, command, image, mount, parser, current-producer,
+identity, freshness and work-budget gate. Do not change Compose, network
+policy, enabled listener isolation, activation inputs or shared lifecycle code.
+
+**Executable regression plan.** Extend the existing
+`platform/tests/test_o11y_scrape_budgets.py` shell coverage to execute the
+actual `step_start` and staged hook with synthetic source/namespace responses
+and mocked Compose, rather than only searching script text. Disabled mode with
+valid source must reach staged Compose without namespace calls; invalid source
+must refuse first. Enabled mode must prove ordered initial/final/post checks,
+and final-check refusal before Compose. Assert retained source/container-hash/
+epoch output and post-apply producer-boundary wiring. Extend the actual helper
+coverage in existing `platform/tests/test_o11y_scrape_baseline.py` for normalized
+OTLP mappings in both modes, supported short representations, admin-publication
+refusal and malformed/ambiguous shapes, retaining the existing namespace,
+network, parser and current-producer refusals. Demonstrate meaningful RED on
+the unmodified source and GREEN after the bounded correction.
+
+The initial planning step changed only these three existing planning artifacts.
+The bounded implementation described above is recorded by the checked child
+tasks; runtime acceptance remains separate. Run focused budget/baseline tests,
+repository-required checks, local strict OpenSpec and whitespace validation,
+then fresh complete independent review of all nine combined files/fixes, normal
+full push hooks, green combined-final-head CI, resolved feedback and the
+read-only exact-head Dev merge guard before a merge commit. The final combined
+head requires current-Dev reconciliation and all these gates. Canary gating in
+the same PR #803 is tracked separately under 1.1a; lifecycle child 1.4a retains
+its bounded scope and task accounting. Later pinned, non-destructive ordinary deploy
+and producer readback through Semaphore remain separate runtime validation;
+source tests do not establish installed-provider compatibility, production or
+profile delivery. Keep 1.4a, parent 1.4 and all owning baseline, availability,
+coverage, alert, calibration, backup/restore, capacity, forecast, retention and
+growth gates open until their own evidence passes. No runtime action is part
+of this planning update.
 
 ### Typed native component and sample evidence
 
@@ -1579,3 +1673,479 @@ failed endpoint, scrape failure, both missing signals, missing probe with
 healthy scrape, unrelated identity, and freshness inside/outside `F`. This
 supports expression semantics only; rendered Grafana state, target-specific
 private policy, firing/recovery, and notification delivery remain live gates.
+
+## 2026-10-30 receiver checkout revision receipt discovery
+
+The Dev-bound seven-day capacity survey reads `git rev-parse HEAD` on the
+receiver and compares it with required `expected_receiver_sha`; the production
+budget survey has the same explicit receiver pin. The value is the receiver's
+monorepo checkout `HEAD`, not an installed image or running-configuration
+identity. The existing Dev-bound receiver-capabilities survey requires only
+`expected_repository_sha` and proves the receiver checkout matches that
+controller SHA, but its public receipt omits the revision. Alloy health
+reports bounded container metadata and also omits the checkout revision. The
+capacity survey therefore has no existing source for a justified receiver pin
+when controller and receiver revisions have not separately been proven equal.
+
+Source-only follow-up: extend Alloy health with a separate closed metadata
+receipt for the `HEAD` of the receiver's declared monorepo checkout. Run a
+fixed read-only Git command under `no_log`; reduce its output privately to an
+exact lowercase 40-character commit or a fixed unavailable result before
+printing. Do not alter the existing container-health schema, require a
+receiver-SHA survey input, or claim checkout cleanliness, tracked-byte
+integrity, remote-ref equality, or installed/running configuration from this
+read. This source work does not establish a seven-day live baseline or close
+any capacity, backup, restore, retention, or rollout gate.
+
+### History query window repair (2026-10-30)
+
+Health task 10677 at Dev `338799e5e66a3a2260856258319200b3bbba25d3`
+observed the receiver checkout HEAD separately from healthy Alloy metadata.
+History task 10683 then refused with `source_history_too_short`: one source
+series, eight canonical events, and 604653 seconds of source-event span against
+the unchanged 604800-second minimum. A separate read-only, whole-second
+nine-day Prometheus query returned nine canonical events spanning 691129
+seconds. This diagnoses the fixed eight-day lookback's cadence boundary; it is
+not a successful Semaphore capacity receipt or full baseline acceptance.
+
+Increase only the bounded history query lookback to nine days. Preserve the
+seven-day minimum, source-event canonicalization and initial carried-event
+rule, raw-source versus evaluation timestamp distinction, freshness and gap
+checks, metric coverage, response-size and timeout bounds, backend/host
+requirements, and refusal behavior. Add a daily-cadence regression in which
+the eight-day slice is genuinely short while the nine-day slice contains
+enough real source history; no tolerance, timestamp rounding, synthetic event,
+retention change, or VM mutation may make the short slice pass. Require focused
+tests, independent review, final-head CI, guarded Dev merge, and a fresh pinned
+Semaphore history receipt. Parent 1.3 and all forecast/calibration gates remain
+open until their separate evidence is accepted.
+
+### Native Alloy start-time serialization and successful history receipt (2026-10-31)
+
+The producer diagnostic obtains `State.StartedAt` through Go
+`text/template`. Native reproduction with the exact `AVAILABILITY_INSPECT_FORMAT`
+and Go `time.Time` values showed that the default template formatting emits
+Go's debugging representation (`2006-01-02 15:04:05.999999999 -0700 MST`),
+which the existing strict RFC3339 parser refuses as `native_debug_invalid`.
+The reproduction covered UTC and a nonzero offset with nanoseconds, and passed
+each rendered ten-field row through the actual `_availability_inspect` and
+`_parse_native_time` consumers. The source fix formats `StartedAt` with Go's explicit RFC3339Nano layout at
+the template boundary. The consumer parser stays strict; nanosecond comparisons
+and all existing
+freshness, process, network, loaded-configuration, identity, and privacy checks.
+Test the actual Go template rendering through the production row parser for UTC,
+nonzero offset, subsecond precision, and malformed/zero values; do not make the
+parser accept Go's debugging string.
+
+The seven-day helper emits one closed, bounded JSON receipt on success, with
+source diagnostics, history span/freshness/gap fields, receiver-host
+observations, and summaries for the five fixed backends. Its refusal receipt is
+also closed and contains only fixed status/reason and source diagnostics. Before this source fix, the successful helper output was available to the
+readiness assertion but was displayed only when the assertion failed. The
+playbook now emits that validated bounded receipt in a visible task result
+after the existing seven-day readiness assertion passes, so the owning
+Semaphore task retains successful history evidence. Do not display arbitrary command results, raw samples or labels,
+stderr, exception details, or helper output before the success predicate. Keep
+all nine-day lookback, seven-day minimum, time-span, uniqueness, freshness,
+coverage, cardinality, read-only, and failure gates unchanged. Exercise the
+actual Ansible task flow for success and refusal, including receipt visibility
+only after the successful assertion.
+
+Verified Dev receipts at merged SHA `d41482be4944d5916030fbbbde147e5a686238f8`
+follow PR 797 source `b518f165dd22ff24528e4dcd0da5571d6e3be090`, independent
+Sol Medium and CodeRabbit approvals, passing final CI `41159999148`, and the
+exact-head read-only merge guard. Tasks 10752, 10762, 10763, 10765, and 10769
+accepted all five declared isolated-environment bindings, including the
+empty-plaintext/extra-var boundary, encrypted AppRole metadata, sole-template
+ownership, and preservation of shared/unrelated settings, surveys, repository,
+and inventory. Task 10761 verified source policy and effective fixed-record
+data/metadata capabilities. Tasks 10767 and 10770 recorded the scoped missing
+catalog-row publication and a converged rerun without duplicate environments
+or encrypted inputs. These permissions do not authorize coordination-record
+reads/writes, VM/storage operations, or restore. The detailed PBS child receipt
+and its remaining parent gates are recorded in the [PBS task ledger](../pbs-vm-and-restore-gate/tasks.md)
+and [Dev runbook](../pbs-vm-and-restore-gate/implementation/dev-bootstrap-publication-runbook.md).
+
+The separate o11y receipts remain bounded: task 10753 reports healthy/running
+Alloy, zero restarts, no OOM, and receiver checkout
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`, not loaded configuration or image
+identity. Task 10755 correctly refused with `native_debug_invalid`; the
+protected producer body was not read. Task 10756 passed the seven-day readiness
+assertion after the nine-day lookback but retained no structured success
+receipt. The source formatter and successful receipt fixes in this change do
+not establish a fresh live producer receipt or representative baseline. Keep
+parent 1.3 and baseline, forecast, calibration, backup/restore, retention, and
+growth acceptance open.
+
+### Bounded native timestamp-query repair (2026-10-31; source complete, runtime open)
+
+**Decision and scope.** Repair only the timestamp branch of
+`_availability_query_path` in
+`platform/playbooks/files/summarize-o11y-scrape-baseline.py`. Build one
+exact-name selector for each requested fixed family, retaining every existing
+identity matcher. Apply `timestamp()` directly to that selector, restore its
+fixed `__name__` with `label_replace`, and join the branches with explicit
+`or on(__name__)`. Do not insert an intermediate expression before
+`timestamp()`: its value must be the raw source sample time, distinct from the
+later query evaluation time. Leave value-query PromQL expressions unchanged;
+the following snapshot repair adds HTTP evaluation-time binding only.
+
+The sanitized read-only query proof for task 10809 records
+`duplicate_output_labelset` for the original grouped timestamp query. The
+corrected expression returned `up` and `scrape_samples_scraped`; plain `or`
+retained only `up`. This supports the bounded query repair, not a native
+producer transition. The required `scrape_body_size_bytes` family was absent
+at that selector. Keep the exact parser, complete-label identity, uniqueness,
+freshness/process/pre-apply bounds, required-family and positive body-evidence
+checks unchanged. There is no optional native body metric or native equivalent
+of the legacy unavailable-body exception. Loaded native `extra_metrics=true`
+remains required; the current-producer assertion stays authoritative.
+
+Retain the existing maximum of six API calls, 4,096-character API path limit,
+aggregate response-byte budget and deadlines. Exercise supported maximum
+caller contexts for the three-family self and six-family health queries;
+oversized encoded paths must refuse rather than expand any budget or split
+the collection into extra calls.
+
+**Mandatory native semantic coverage.** Add one BATS entry point,
+`platform/tests/test_o11y_native_promql.bats`, invoking
+`platform/tests/o11y_native_promql_runner.py`. The runner stays outside pytest
+discovery, imports the production helper, and URL-decodes expressions returned
+by the actual `_availability_query_path`; no second query generator is allowed.
+The existing `Bash Tests` job already runs `bats platform/tests/` and installs
+the Python test/controller requirements. Route the check through that job;
+leave `.github/workflows/lint-and-test.yml`, the merge guard and its fixtures
+byte-identical. Do not change Compose or dependency declarations.
+
+Read the literal fallback Prometheus image from the committed
+`platform/services/o11y/deployment/compose.yml` declaration; malformed or
+missing declarations fail. Do not resolve deployment environment overrides or
+run Compose. Use that image's `/bin/promtool` evaluator with synthetic
+expression-test input on stdin and an empty `rule_files` list:
+
+```text
+<engine> run --rm -i --network none --pull=never
+  --entrypoint /bin/promtool <image-from-compose> test rules /dev/stdin
+```
+
+Include unique invocation-owned container names and ownership labels. The
+original read-only CI-routing review established source support only. The
+subsequent PR #801 source closure below records successful execution of the
+exact bounded invocation; it does not establish production acceptance.
+Use supported Docker in CI and prefer usable existing Podman locally. Verify
+engine readiness and fail rather than skip when the engine, image or evaluator
+is unusable; do not fall back after an evaluator failure. Document in
+`CONTRIBUTING.md` that the full BATS suite requires a usable existing container
+engine and the repository's BATS/Python prerequisites. No standalone promtool
+installation or new engine package is required by this design.
+
+Bound discovery, at most one image acquisition if missing, all three evaluator
+runs, and cleanup to 300 seconds total, reserving time for cleanup and capping
+captured output. Evaluation always uses `--pull=never`. Use no bind mounts,
+named/shared volumes, host networking, ports or privileged mode. Do not start
+a VM/daemon, change an engine connection, elevate privileges, or delete/prune
+images. Account for image-declared anonymous storage with owned-container
+cleanup. Failure/timeout cleanup may remove only exact containers whose unique
+name and ownership labels prove they belong to this invocation; no broad
+container or volume cleanup is allowed.
+
+Generate synthetic cases for all three self families and all six health
+families across multiple identities. Assert every output label, including
+preservation of an unexpected extra label, and separately prove the unchanged
+consumer rejects that label. Missing families must remain absent. Source
+sample timestamps must differ from and precede evaluation time. Include
+supported maximum-context paths and oversize refusal. Require one positive
+evaluation to pass, then run the original grouped-timestamp and plain-`or`
+mutants against the same complete expectations. A mutant counts only when it
+reaches actual PromQL evaluation and fails from duplicate output or an
+expected-label/result mismatch; engine/image, syntax and fixture-setup errors
+do not count as defect detection. Preserve the existing StartedAt Go-template
+regression and all parser, identity, required-metric, freshness and API-budget
+regressions in `platform/tests/test_o11y_scrape_baseline.py`.
+
+**Historical PR #801 source ownership and validation.** That implementation owned exactly
+eight files: this design, `tasks.md`,
+`specs/platform/estate-instrumentation/spec.md`, the existing helper and
+baseline Python test file, the BATS entry point and Python runner, and
+`CONTRIBUTING.md`. No generated fixture was committed. The six-file ownership
+for the next snapshot repair is defined below; it does not reopen this old
+eight-file scope. Source/test/point-query evidence cannot close parent runtime
+acceptance.
+
+**Source-distinct private receipt accounting.** The supplied runtime record
+reports PR #800 merged as `8f39db502e91bc22eeed4189402e6d9d78949924`
+at 2026-10-31 05:01:04 UTC after actual independent Sol Medium review, final-head
+CI `41168820482` (13 executed jobs passed; three path skips), and the exact-head
+read-only guard followed by a merge commit. Task 10808 reports healthy Alloy,
+zero restarts and no OOM, plus receiver checkout
+`67b9cffcdda8b3b10e840c50357c1b23f8410cbb`; checkout identity does not prove
+loaded configuration or image identity. Task 10809 reports baseline ERROR,
+now `native_samples_unavailable` after the prior StartedAt defect was fixed.
+The sanitized query probe above does not establish complete producer evidence.
+
+The supplied private structured receipt for task 10810 at that controller SHA
+reports history SUCCESS with `ready_for_separate_forecast_review`: nine
+canonical source events spanning 691287 seconds, latest sample age 9881
+seconds at the receipt, maximum source gap 86634 seconds, and 2593 evaluation
+points. Accept this as retained history observations only, with receiver-host
+and five fixed backend summaries. Evaluation points are not independent source
+events; these ages are historical observations, not present freshness. This
+receipt does not establish the complete representative baseline, isolated
+persisted-byte calibration, forecast or parent acceptance. Keep EW 1.3, 4.1
+and 4.4, backup, isolated restore, retention and disk-growth gates open.
+Preserve the historical receipt facts above. PBS physical attestation remains
+waived and package-source choice remains pending; this repair adds no physical
+gate and changes no PBS artifact scope. Publish only sanitized task IDs, SHAs
+and outcomes, never private environment/template/input IDs, addresses,
+selectors, topology or protected producer output.
+
+### Native query evaluation snapshot and live DETAIL clocks (2026-10-31; source complete, runtime acceptance bounded)
+
+**PR #801 source closure, separate from runtime refusal.** The supplied verified
+source record closes child 1.3a.4 only: feature
+`a0d2e245ee5bf0041efd832b664bffe74a853fe0` merged to Dev as
+`c2e280a727ad40965e1c32ab20f7b7cff80e3ca4` after independent exact-head
+Sol Medium approval, addressed CodeRabbit nitpicks, and passing read-only and
+merge guard modes. Normal full prepush passed 9,448 Python tests and 376
+subtests with zero local Python skips, plus 1,185 BATS tests with one unrelated
+skip. Final CI `41181649042` attempt 2 passed all 13 executed jobs with three
+path-proven Go skips. Attempt 1 reached the 30-minute Python core limit and
+was cancelled before a pytest summary; unchanged full attempt 2 passed, with
+core reporting 6,883 passed, six existing environment skips and 337 subtests
+in a 17m23s job. Tests, timeouts, workflow and merge policy were not relaxed.
+The native evaluator positive and both semantic mutant kills are source
+evidence; they do not establish a current producer or baseline acceptance.
+
+The supplied fresh read-only task 10853 at that controller merge reports
+healthy/running Alloy metadata, zero restarts and no OOM. Its receiver checkout
+HEAD receipt is checkout identity only, not loaded-config or image proof.
+Task 10855 was operational SUCCESS but its native source projection was
+`source=unknown`, `status=unavailable`, `reason=native_samples_stale`.
+The controlled read-only timing proof reproduces a fresh sample becoming
+future-to-an-earlier-bound when evaluation moves; it does not establish task
+10855's exact conditional cause, all required families, body availability or
+producer acceptance. Earlier body-family EMPTY observations are historical. The post-PR #802
+receipt below proves the current producer is legacy Prometheus, so the Alloy
+ExtraMetrics constructor/reload hypothesis is rejected as the current diagnosis.
+No native-body workaround or relaxed native acceptance follows. Publish only sanitized task IDs, SHAs and fixed
+outcomes, never raw metrics, private paths, addresses, topology, prompt bodies
+or protected output. No representative baseline, alert, backup/restore,
+capacity, calibration, forecast, retention or growth acceptance follows.
+
+**T: one receiver-owned Prometheus evaluation snapshot.** Resolve and validate
+one positive non-boolean integer receiver UTC epoch T per current-source
+invocation, before its related sample reads. Reuse T in EVERY native and legacy
+value/raw-timestamp HTTP query, including the composed native self-only and
+health stages. Each production-built URL carries exactly one canonical `time`
+parameter encoded from T. No builder or per-request default may recapture time;
+no extra clock API call or public launch clock override is introduced. Preserve
+the PromQL expressions, including the per-family direct `timestamp(selector)`,
+fixed-name restoration and `or on(__name__)`. Response evaluation timestamps
+never substitute for raw timestamp values. Native raw sample acceptance stays
+`max(process_start, preapply_bound, T - freshness) < raw_sample_time <= T`;
+legacy retains its existing applicable lower bounds and strict future bound.
+Full identities, uniqueness, all required families, loaded `extra_metrics=true`
+and positive body evidence remain authoritative; no optional body or native
+legacy exception is permitted. Clock skew is not repaired by tolerance.
+
+**D0/D: bounded live DETAIL observation, independent of T.** The existing live
+DETAIL batch is not historical Prometheus evaluation. Capture a finite positive
+fractional receiver UTC entry bound D0 immediately before that batch and a
+finite positive fractional completion bound D after it, without truncating or
+rounding either to integer seconds. Reject booleans, invalid types, nonfinite
+or nonpositive clock observations and D < D0; retain the existing strict
+monotonic deadline and aggregate byte bounds. Validate DETAIL `last_scrape`
+against D using the unchanged freshness widths and applicable process/preapply
+lower bounds: later than those lower bounds and D minus the applicable
+freshness, and no later than D. Do not require D0 to equal T, use D to refresh T,
+or compare D against T as the within-batch regression test. Internal clock seams
+may be injected/patched for deterministic tests; no launch override, public
+schema, tolerance or window-width change is allowed. These are two observation
+domains, not an atomic configuration/sample transaction. This bounded handling
+addresses the source-derived DETAIL timing race without asserting that it
+occurred in task 10855. Legacy active-target and loaded-limit checks remain
+strict; only its related sample URLs gain T binding.
+
+**Historical PR #802 ownership and work bounds.** The completed source change owned exactly SIX
+existing files: this `design.md`, `tasks.md`,
+`specs/platform/estate-instrumentation/spec.md`,
+`platform/playbooks/files/summarize-o11y-scrape-baseline.py`,
+`platform/tests/test_o11y_scrape_baseline.py`, and
+`platform/tests/o11y_native_promql_runner.py`. Keep the existing BATS entry
+point, `CONTRIBUTING.md`, playbooks, workflow, merge guard/fixtures, Compose,
+dependencies and unrelated files byte-identical. Return any demonstrated
+necessary interface adjustment to root before expanding ownership. Preserve
+at most six sample API calls: native self-only two, native health/self four,
+composed current-source six, and the existing legacy pair; keep the 4,096 path
+cap, aggregate bytes and shared deadlines. Measure actual maximum encoded
+paths including `time` during implementation; publish no estimated length as
+an observed result. Add no collector retry, extra API, receiver restart,
+deployment or upgrade, or new native network/port/mount/image/engine dependency.
+
+The following test/validation contract records the snapshot repair plan; the
+PR #802 source closure below supersedes its implementation-next-step wording.
+
+**Meaningful RED/GREEN and retained gates.** The delayed fake API must select
+from fixed histories according to ACTUAL production request URLs through the
+builder, batch and collector. Missing HTTP time must select moving-time data
+and produce current-code RED; corrected T must select matching historical
+values and raw times despite delay and newer arrivals. Cover native self-only,
+health/self and legacy paths, all related queries sharing T, and exactly one
+canonical HTTP time. Future-to-T, genuinely stale raw times despite later
+arrivals, process/preapply equality, missing/zero body, missing families,
+malformed/duplicate/wrong identity, aggregate bytes, oversized paths and
+deadline exhaustion remain refusers. A fresh response evaluation timestamp
+with stale raw time must still refuse.
+
+Exercise the actual DETAIL reader/parser/validator with valid fractional scrape
+time between D0 and D, requiring meaningful current-code RED and corrected
+GREEN. Future-to-D, stale, process/preapply equality, D < D0 and deadline cases
+must refuse; validate malformed/nonfinite/type-invalid D0/D observations too.
+Preserve the native Promtool positive plus grouped-timestamp and plain-`or`
+semantic mutant kills, the 20-series fixture and six identity decoys. The
+existing native runner needs URL-context coverage for time only; keep its
+expression evaluator and lifecycle unchanged. Retain StartedAt, parser,
+identity, required-body, freshness, work-budget and caller regressions.
+
+Run focused baseline/expected-target/budget Python checks, the existing native
+BATS entry point, repository-required checks, local unscoped strict OpenSpec
+validation and diff checks. Obtain one independent review, fix findings,
+require green final-head CI, and run both exact-head Dev guard modes before a
+merge commit. Root retains integration/review ownership and the existing model
+policy. The initial planning invocation updated planning only; root separately invokes
+apply/Luna High. Later existing Dev-bound read-only runtime verification is
+already authorized by the end-to-end user request, subject to actual gates;
+it does not require a new routine approval question. No production deployment
+is part of this source repair. Keep owning parent runtime gates open. PBS
+package-channel choice remains pending and independent; physical origin is
+waived, with no new physical gate or PBS scope.
+
+### PR #802 source closure and bounded Dev receipts (2026-10-31)
+
+The supplied verified source record closes **only child 1.3b.3**: feature
+`326917dd057569b7ec23c5c7ff8109b304c5cc0a` merged through PR #802 to Dev as
+`a99eaec7ba4557d625e0f44e99f43371d2ff18a6`. Local Git confirms the merge's
+second parent and the exact six-file scope above. The supplied exact-head guard
+passed all 16 expected checks; independent actual GPT-6.1 Sol Medium read-only
+review was `APPROVED_SOURCE_ONLY`, CodeRabbit approved, and CI `41191390980`
+succeeded with 13 executed jobs and three path skips. Full local Python checks
+passed 9,500 tests and 376 subtests with zero skips; full BATS passed 1,185 tests
+with one existing formatter skip. These are accepted prior source-validation
+receipts, not checks rerun by the initial planning follow-up. The portable focused
+command uses `python3`; reproduction still requires the repository's Python,
+Ansible, collection, BATS and evaluator/engine prerequisites and the recorded
+per-process PATH correction. Portability of the command does not make that
+test environment irrelevant.
+
+The supplied read-only runtime record and private structured receipts bind the
+following sanitized outcomes to that exact controller Dev revision. Operational
+measurements remain in the private structured receipts:
+
+| Task | Narrow accepted evidence | Acceptance limit |
+|---|---|---|
+| 10884 | Alloy healthy; receiver checkout `67b9cffcdda8b3b10e840c50357c1b23f8410cbb` | Checkout HEAD only, not loaded revision/configuration or image identity |
+| 10885 | SUCCESS; fresh current **legacy Prometheus** producer verified | Existing legacy body exception `not_exposed_by_legacy_prometheus`; split loaded limits remain unverified, while on-disk split limits match reviewed source |
+| 10890 | SUCCESS; `exact_match` | Point-in-time membership only |
+| 10893 | SUCCESS; point budget verified at the approved unchanged retention baseline | Point budget only, not seven-day calibration, forecast, backup/restore, retention expansion or growth acceptance |
+
+This corrects the current-producer diagnosis; it does not accept native Alloy
+activation or introduce a native body exception. Parent 1.1, 1.3 and 1.4, the
+representative baseline, calibration, capacity/forecast, backup, immutable
+isolated restore, retention and growth gates stay open. Physical-origin
+attestation remains waived by the user; PBS package-channel choice remains
+pending. This planning follow-up performs no PBS mutation or runtime action.
+
+### Optional legacy gateway canary inherits the shared trace gate (accepted follow-up, 2026-10-31)
+
+**Demonstrated gap and placement.** At base `a99eaec7`,
+`platform/playbooks/verify-o11y-service.yml:97-181` defines the optional canary:
+its existing `_canary_on` is legacy mode plus boolean-converted
+`emit_agentgateway_canary`; tasks first capture the receiver clock, then inspect
+TLS material, resolve the listener and send 100 anonymous GET `/v1/models`
+requests expecting 401. The play has no shared trace-rollout include.
+`deploy-o11y.yml:309-319` and `deploy-agentgateway.yml:414-416` already include
+`tasks/assert-o11y-trace-rollout.yml`. EW 1.1 requires that gate before another
+tracing pilot, including this canary.
+
+Add **one include in the canary play's `pre_tasks`**, guarded by the existing
+`_canary_on`, before any canary timestamp, delegated receiver command, remote
+TLS inspection, resolution or request. Keep `gather_facts: false` and the
+existing `tasks` order: `test_service_o11y.bats:2414-2417` reads `tasks[0]` as
+the start-clock task. Preserve every task's existing `_canary_on` condition,
+including the TLS checks in `test_o11y_canary_gateway_tls.py:80-111`. The
+preflight must resolve receiver prerequisites through the shared task's
+`hostvars` lookup, not copy them onto the gateway or localhost. Refuse zero or
+multiple receivers through the shared exact-one assertion. Do not duplicate,
+loosen or edit that task; preserve its existing budget semantics, including
+its acceptance of a declared `0B` Prometheus cap.
+
+**Exact later source scope.** Change only
+`platform/playbooks/verify-o11y-service.yml` and
+`platform/tests/test_o11y_canary_gateway_tls.py`, plus these three existing EW
+planning artifacts for status. Preserve the shared gate, both deploy callers,
+the gateway configuration, all strict selector/freshness/receipt helpers,
+transport/TLS/no-key controls and existing BATS files byte-for-byte. The
+legacy template's survey at `platform/semaphore/templates.yml:111-154` has no
+`expected_repository_sha`; this follow-up does not add one, mutate a template
+or repository binding, invent launcher/API flags, or launch a canary/deploy.
+Any later runtime checkout provenance must be established through supported
+existing mechanisms as separate work; source acceptance is not launch proof.
+
+**Executable acceptance matrix.** Extend the existing TLS Python test file
+with an isolated synthetic-inventory Ansible harness. Read the actual canary
+play's `pre_tasks`, vars and conditions; execute its real include and the
+unchanged shared assertions, resolving only the include's filesystem location
+for the temporary harness. Put prerequisites only on the synthetic receiver
+host. Use local connections and `gather_facts: false`; replace every subsequent
+clock, stat, resolution and traffic operation with fixed debug/assert
+sentinels. Allowlist harness operations before execution so no URI, command,
+shell, secret read, real network, VM or container operation can run. Do not
+run the production playbook end to end in these tests.
+
+| Synthetic input | Required result |
+|---|---|
+| Legacy plus emit true; omit each shared prerequisite separately | Real Ansible refusal before any post-preflight sentinel |
+| Legacy plus emit true; zero or two receivers | Shared exact-one refusal before timestamp/inspection/traffic sentinels |
+| Legacy plus emit true; complete receiver prerequisites | Both real shared assertions pass and progression sentinels are reached |
+| Legacy with emit absent, boolean false or string `"false"` | New include skips without requiring receipts; canary sentinels remain skipped |
+| Strict with emit true or false and missing canary prerequisites | New include and canary sentinels skip; existing strict checks retain their separate contract |
+
+The per-prerequisite matrix covers `o11y_trace_rollout_enabled`,
+`o11y_alerts_enabled`, `o11y_metrics_receipt_id`,
+`o11y_alert_delivery_receipt_id`, `o11y_retention_receipt_id`,
+`o11y_cardinality_receipt_id`, `o11y_prom_retention`,
+`o11y_prom_retention_size`, `o11y_loki_retention`, `o11y_tempo_retention`,
+`o11y_scrape_sample_limit`, and `agentgateway_metrics_address`. Include disabled
+flags, invalid/nonpositive receipt IDs, invalid retention strings, zero sample
+budget and empty metrics address as refusals under the existing predicates.
+Do not strengthen or weaken those predicates in this slice. Assert the actual
+ordering and gate execution/skip results, not only include presence or a Python
+reimplementation of Jinja truthiness. Prove RED against a temporary gate-removed
+copy and GREEN with the include, without editing the tracked shared gate.
+
+**Implementation sequence and verification.** First build the safe harness and
+observe the absent-gate RED; then add the guarded `pre_tasks` include and obtain
+GREEN for the matrix. Preserve and rerun the existing TLS URL, leaf, CA,
+read-only resolution and no-key tests plus the BATS start-clock contract. Run
+`rtk proxy python3 -m pytest -q platform/tests/test_o11y_canary_gateway_tls.py`,
+`rtk proxy bats platform/tests/test_service_o11y.bats`, the repository-required
+checks, local strict OpenSpec validation and `rtk git diff --check`. The full
+repository BATS suite has its separately documented evaluator prerequisite;
+these new preflight tests themselves perform no container/network action.
+The validation environment must execute the Ansible matrix; missing Ansible
+or a skipped matrix is blocked validation, not a passing source gate.
+Require an independent source review, addressed findings and final-head green
+CI under the existing merge policy in a later implementation workflow. This
+planning invocation edits no code and performs only plan validation. Keep the
+new source tasks and all parent runtime gates open until their own criteria
+pass; no source test authorizes the actual canary.
+
+### Operator inventory synchronization with stdin-only authentication
+
+The production receipt declaration is merged in private site-config PR138, but its live Semaphore inventory activation remains separate. The canonical operator-side platform/semaphore/sync-inventory.yml currently accepts an injected environment token or an existing controller OpenBao AppRole, while the authorized operator interface for this task requires token input exclusively on stdin. Do not override the internal _token variable, inject credentials into environment/argv, or replace the canonical inventory-sync mechanism with ad-hoc API mutations.
+
+Add a thin scripts/semaphore-sync-inventory.py frontend that reads the operator token from stdin and sends a fixed JSON object to the canonical Ansible play through a named pipe in a private (0700) temporary directory. ansible-core resolves symlinks in `--extra-vars @path`, and on Linux `/dev/stdin` is a symlink to an unopenable pipe, so the stdin route cannot carry it; prove the named-pipe route with synthetic input on Linux and macOS. The token must never enter arguments, environment, files, or visible output. Give this play an explicit sync-only credential input; retain existing environment/AppRole behavior for its other callers. Extract the existing parsed-inventory and Semaphore transport prechecks for reuse so selecting the new input cannot skip them. Do not change the shared Python API client, transport policy, repository/template bindings, or any deployment behavior.
+
+Keep the canonical play's YAML validation, actual Ansible host enumeration, existing-record lookup, content comparison, preservation of id/name/project_id/type/ssh_key_id/optional become_key_id, check-mode preview, idempotent update and exact readback. Protect token-bearing and private inventory/response boundaries with scoped no_log; retain useful fixed validation summaries. The frontend captures child output in memory and exposes only fixed safe outcomes. A failed or lost write acknowledgement must require read-only reconciliation and must not be reported as proof that no write occurred. Never automatically retry a possible write, create a missing record, change key bindings, or activate a deployment.
+
+Source validation uses synthetic credentials, inventories, child processes and a fake API. Require independent review, resolved findings, final-head green CI and both mandatory exact-head Dev guard modes before a merge commit. A later production inventory sync requires reviewed merged private source, the exact intended live record and unchanged prior binding, preview, one apply at most, and independent exact-content/key-binding readback. This source slice does not close runtime coverage, alerts, baseline, backup/restore, forecast, retention or growth gates.

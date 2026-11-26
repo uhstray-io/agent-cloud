@@ -42,10 +42,6 @@
 load assert_helpers
 
 setup() {
-  # Bats runs this under the pre-push hook, which exports GIT_DIR and friends; a
-  # fixture's `git init` must not reach the real repository (docs/MISTAKES.md 3.7).
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
-    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX GIT_NAMESPACE
   REPO_ROOT=$(git rev-parse --show-toplevel)
   RATCHET="$REPO_ROOT/platform/tests/known_scripts_without_pipefail.txt"
 }

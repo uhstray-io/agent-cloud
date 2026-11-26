@@ -19,11 +19,6 @@ setup() {
   OLD="$REPO_ROOT/platform/playbooks/set-semaphore-branch.yml"
 }
 
-@test "scoped controller publication: real playbook preserves scope, credentials and bindings" {
-  run python3 "$REPO_ROOT/platform/semaphore/tests/test_scoped_publication.py"
-  [ "$status" -eq 0 ] || { echo "$output"; false; }
-}
-
 @test "repositories: both main and dev records are declared" {
   [ -f "$DECL" ]
   grep -qE '^\s+- name: agent-cloud$' "$DECL"
@@ -184,6 +179,12 @@ print('\n'.join(bad) if bad else 'OK')
   [ -f "$f" ]
   # The Bearer token crosses the wire on every request.
   assert_grep -qF 'ansible.builtin.include_tasks: tasks/runtime-access.yml' "$f"
+  assert_grep -qF 'sync_inventory_token is defined' "$f"
+  assert_grep -qF 'tasks/runtime-preflight.yml' "$f"
+  refute_grep -qE 'sync_inventory_token' "$REPO_ROOT/platform/semaphore/tasks/runtime-access.yml"
+  assert_grep -qF 'runtime-preflight.yml' "$REPO_ROOT/platform/semaphore/tasks/runtime-access.yml"
+  assert_grep -qF 'require-parsed-inventory.yml' "$REPO_ROOT/platform/semaphore/tasks/runtime-preflight.yml"
+  assert_grep -qF 'non-cleartext transport to Semaphore' "$REPO_ROOT/platform/semaphore/tasks/runtime-preflight.yml"
   # `{}` is non-empty AND parses as a mapping, so it cleared both earlier checks
   # while still being hostless — a push would blank the orchestrator.
   grep -qE 'Refuse a hostless inventory' "$f"

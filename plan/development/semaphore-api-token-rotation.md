@@ -1,5 +1,9 @@
 # Semaphore operator API token rotation
 
+**Status:** IMPLEMENTED (rotation source and Dev acceptance complete; production deployment was blocked by the later Alloy health check at production o11y check-mode task 5027)
+> **Parent plan:** [Secrets and credential lifecycle](01-secrets-credentials.md)
+> **Historical record:** The rotation and production check-mode evidence below is point-in-time. The later Alloy health failure did not run apply; recheck service health and current credential state before any operational action.
+
 ## Problem and boundary
 
 The workstation's production Semaphore API token appeared in an agent transcript

@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import unquote
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -465,10 +466,8 @@ def _evaluate(tmp_path, host_vars):
     }]
     path = tmp_path / "harness.yml"
     path.write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env, text=True,
-                          capture_output=True, check=True, stdin=subprocess.DEVNULL)
+    done = harness_sandbox.run_playbook(path, tmp_path)
+    done.check_returncode()
     line = next(ln for ln in done.stdout.splitlines() if "WIRING " in ln)
     return json.loads(json.loads(line.split('"msg": ', 1)[1]).split("WIRING ", 1)[1])
 
@@ -537,10 +536,7 @@ def _gateway_identity(tmp_path, **inv):
                                  "'name': _probe_gw_name, 'address': _probe_gw_address} | to_json }}"}}]}]
     (tmp_path / "pb.yml").write_text(yaml.safe_dump(play))
     (tmp_path / "inv.yml").write_text(yaml.safe_dump(_gateway_inventory(**inv)))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    done = subprocess.run(["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "pb.yml")],
-                          cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    done = harness_sandbox.run_playbook(tmp_path / "pb.yml", tmp_path, inventory=tmp_path / "inv.yml")
     line = next((ln for ln in done.stdout.splitlines() if "PATH " in ln), None)
     derived = json.loads(json.loads(line.split('"msg": ', 1)[1]).split("PATH ", 1)[1]) if line else None
     return done, derived
@@ -628,9 +624,7 @@ def test_the_probe_client_leaf_must_be_issued_with_a_private_key(tmp_path, case,
           "_probe_user": "someone-else" if case == "key owned by another user" else me}
     play = [{"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": pv, "tasks": [block]}]
     (tmp_path / "pb.yml").write_text(yaml.safe_dump(play))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(tmp_path / "pb.yml")], cwd=REPO, env=env,
-                          text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    done = harness_sandbox.run_playbook(tmp_path / "pb.yml", tmp_path)
     assert (done.returncode == 0) is expect, (case, done.stdout[-2000:])
     assert "KEY" not in done.stdout, "the key file's bytes reached the output"
 
@@ -698,10 +692,7 @@ def _cleanup(tmp_path, present, *, forbid_become):
                 "tasks": harness_tasks}]
     path = tmp_path / "harness.yml"
     path.write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env, text=True,
-                          capture_output=True, stdin=subprocess.DEVNULL)
+    done = harness_sandbox.run_playbook(path, tmp_path)
     return done, {k: p.exists() for k, p in paths.items()}
 
 
@@ -779,10 +770,8 @@ def test_verification_accepts_only_a_fresh_sample_for_the_configured_model(tmp_p
     }]
     path = tmp_path / "harness.yml"
     path.write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env, text=True,
-                          capture_output=True, check=True, stdin=subprocess.DEVNULL)
+    done = harness_sandbox.run_playbook(path, tmp_path)
+    done.check_returncode()
     until = next(ln for ln in done.stdout.splitlines() if "UNTIL " in ln)
     assert until.rstrip().endswith(f'UNTIL {str(expect).lower()}"'), (why, until)
     query = unquote(next(ln for ln in done.stdout.splitlines() if "QUERY " in ln).split("QUERY ", 1)[1])

@@ -187,7 +187,7 @@ a_setup() {
 
 @test "deploy playbooks pass deploy_force_recreate to deploy.sh, default off" {
   local pb
-  for pb in deploy-authentik.yml deploy-o11y.yml; do
+  for pb in deploy-authentik.yml deploy-o11y.yml deploy-opa.yml; do
     python3 - "$REPO_ROOT/platform/playbooks/$pb" <<'PY2'
 import sys
 from pathlib import Path
@@ -480,65 +480,10 @@ SH
   deploy; [ "$status" -eq 0 ]; changed true
 }
 
-# ── n8n: ordered start behind the change gate ────────────────────────────────
-n_setup() {
-  svc_setup n8n workflow-n8n-postgres=n8n-postgres workflow-n8n-redis=n8n-redis workflow-n8n=n8n workflow-n8n-worker=n8n-worker
-}
-
-@test "n8n: first deploy starts the stages in order, labelled; the second run touches nothing" {
-  n_setup
-  deploy; [ "$status" -eq 0 ]; changed true
-  [ "$(cat "$S/up.log")" = "$(printf 'up: n8n-postgres n8n-redis n8n\nup: n8n-worker')" ]
-  [ -e "$S/down.log" ]
-  grep -qE '^[0-9a-f]{64}$' "$S/c/workflow-n8n-worker/label"
-  : > "$S/compose.log"; rm -f "$S/up.log" "$S/down.log"
-  deploy; [ "$status" -eq 0 ]; changed false
-  refute_grep -q -e ' up ' -e ' down ' "$S/compose.log"
-  [ ! -e "$S/down.log" ]
-}
-
-@test "n8n: a changed .env or init script restarts the whole ordered stack; the volumes are not removed" {
-  n_setup
-  deploy; [ "$status" -eq 0 ]
-  local f
-  for f in .env config/n8n-init-data.sh; do
-    rm -f "$S/up.log"
-    echo "# changed" >> "$D/$f"
-    deploy; [ "$status" -eq 0 ]; changed true
-    [ "$(wc -l < "$S/up.log" | tr -d ' ')" -eq 2 ]
-    deploy; changed false
-  done
-  # Neither compose (down -v) nor the engine (rm -v) may take a volume with the containers.
-  refute_grep -q -e ' -v' -e '--volumes' "$S/compose.log"
-  grep -q '^rm ' "$S/engine.log"
-  refute_grep -qE '^rm .*( -v|--volumes| -[a-z]*v)' "$S/engine.log"
-}
-
-@test "n8n: a changed published bind address (N8N_LISTEN in .env) recreates, then is a no-op" {
-  n_setup
-  echo 'N8N_LISTEN=127.0.0.1' >> "$D/.env"
-  deploy; [ "$status" -eq 0 ]; changed true
-  deploy; changed false
-  sed -i.bak 's/^N8N_LISTEN=.*/N8N_LISTEN=0.0.0.0/' "$D/.env"
-  deploy; [ "$status" -eq 0 ]; changed true
-  deploy; changed false
-}
-
-@test "n8n: a failing first up fails the deploy, prints no DEPLOY_CHANGED=true, never starts the worker" {
-  n_setup
-  STUB_UP_FAIL=1 deploy
-  [ "$status" -ne 0 ]
-  refute_grep -q 'DEPLOY_CHANGED=true' <<< "$output"
-  [ ! -e "$S/up.log" ]
-  # It stops at the failed up: no health wait on containers that were never created.
-  refute_grep -q 'State.Health' "$S/engine.log"
-  deploy; [ "$status" -eq 0 ]; changed true
-}
-
 # ── playbooks read the line ──────────────────────────────────────────────────
 @test "deploy playbooks derive changed from DEPLOY_CHANGED, not changed_when: true" {
   local pb
-  for pb in deploy-authentik.yml deploy-o11y.yml; do
+  for pb in deploy-authentik.yml deploy-o11y.yml deploy-opa.yml; do
     python3 - "$REPO_ROOT/platform/playbooks/$pb" <<'PY'
 import sys
 from pathlib import Path
@@ -551,4 +496,45 @@ assert len(tasks) == 1, tasks
 assert tasks[0]["changed_when"] == "'DEPLOY_CHANGED=true' in _deploy.stdout_lines", tasks[0]["changed_when"]
 PY
   done
+}
+
+# OPA reads ./policies only at startup, and its deploy dir has no rendered .env (docs/MISTAKES.md
+# 3.11). Its real deploy.sh must run with no .env present, recreate on a policy or substituted-value
+# change, and leave an unchanged OPA alone.
+opa_setup() {
+  svc_setup opa opa=opa
+  rm -f "$D/.env"
+  unset OPA_IMAGE OPA_LOG_LEVEL OPA_BIND OPA_PORT OPA_SERVER_LEAF
+}
+
+@test "opa: write_env carries every variable the compose files substitute" {
+  # A substitution left out of write_env would change OPA's config without recreating it.
+  local used listed
+  used=$(cat "$REPO_ROOT"/platform/services/opa/deployment/compose*.yml \
+    | grep -o '\${OPA_[A-Z_]*' | tr -d '${' | sort -u)
+  listed=$(sed -n 's/^  for v in \(.*\); do$/\1/p' "$REPO_ROOT/platform/services/opa/deployment/deploy.sh" \
+    | tr ' ' '\n' | sort -u)
+  [ -n "$used" ] && [ "$used" = "$listed" ] || { echo "compose: $used"; echo "write_env: $listed"; false; }
+}
+
+@test "opa: a deploy with no .env runs, writes only the set substitutions and labels OPA" {
+  opa_setup
+  OPA_PORT=8281 deploy
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  assert_contains "$output" "DEPLOY_CHANGED=true"
+  [ "$(cat "$D/.env")" = "OPA_PORT=8281" ]
+  [ -s "$S/c/opa/label" ]
+}
+
+@test "opa: same policies and values twice is a no-op; a policy edit or a new port recreates" {
+  opa_setup
+  OPA_PORT=8281 deploy
+  OPA_PORT=8281 deploy
+  assert_contains "$output" "DEPLOY_CHANGED=false"
+  echo "# edited" >> "$D/policies/agentcloud/data.json"
+  OPA_PORT=8281 deploy
+  assert_contains "$output" "DEPLOY_CHANGED=true"
+  OPA_PORT=8282 deploy
+  assert_contains "$output" "DEPLOY_CHANGED=true"
+  [ "$(cat "$S/recreates")" -eq 3 ]
 }

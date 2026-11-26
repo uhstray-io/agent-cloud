@@ -1,0 +1,17 @@
+# skynet — production HTTPS overlay. deploy.sh appends it outside LOCAL_MODE, and only when .env carries
+# SKYNET_TLS_CERT_FILE (the inventory declares skynet_tls). It is loaded beside compose.prod.yml, which every
+# production deploy loads, and it holds the one production setting that only the HTTPS listener needs.
+#
+# user and userns keep-id: the image runs as uid 10001, and under rootless podman that uid cannot read the
+# deploy account's 0600 TLS key, which is read from ./certs once the listener is on (compose.tls.yml). keep-id
+# maps the deploy account to uid 10001 inside the container, so the process stays non-root and owns the key it
+# reads. keep-id needs podman 4.3 or later: deploy-skynet.yml checks that in production when skynet_tls is
+# declared, after placement installs podman.
+#
+# A plain-API production deploy does not load this file, so neither key is set for it. Local-dev runs skynet
+# as uid 1001 through compose.local.yml and never loads this file.
+
+services:
+  skynet:
+    user: "10001:10001"
+    userns_mode: "keep-id:uid=10001,gid=10001"

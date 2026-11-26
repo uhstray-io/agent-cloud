@@ -101,7 +101,7 @@ The signing key and PKCE are *not* on this list — the flow never validates an 
 
 All at `secret/services/postiz`. Three are generated once and reused —
 `postiz_jwt_secret`, `postiz_db_password`, `postiz_temporal_db_password`. Regenerating
-the first invalidates every session **and every API key n8n holds**; regenerating the
+the first invalidates every session **and every API key already issued**; regenerating the
 second locks the app out of its existing volume. The nine social credentials are seeded
 by `seed-postiz-secrets.yml`. `postiz_oidc_client_secret` is a `_shared_read` from
 `authentik`, which owns it — never store a copy under this service's path.

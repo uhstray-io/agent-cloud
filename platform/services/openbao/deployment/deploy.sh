@@ -114,7 +114,7 @@ write_policies() {
   done
 }
 
-# ── Step 6: Enable AppRole auth + create per-service roles ────────────────────
+# ── Step 6: Enable AppRole auth + create the Semaphore role ───────────────────
 
 setup_approle() {
   local token="$1"
@@ -124,34 +124,7 @@ setup_approle() {
     bao_auth "$token" auth enable approle
   fi
 
-  # NemoClaw role — read-only across all service secrets. Bounded TTL + use count per
-  # PRINCIPLES.md Section 3 (TTL=0 is a defect); refreshed on each OpenBao redeploy.
-  bao_auth "$token" write auth/approle/role/nemoclaw \
-    secret_id_ttl=2160h secret_id_num_uses=0 token_num_uses=25 token_ttl=30m token_max_ttl=2h \
-    token_policies=nemoclaw-read
-
   local role_id secret_id
-  role_id=$(bao_auth "$token" read -format=json auth/approle/role/nemoclaw/role-id | jq -r '.data.role_id')
-  secret_id=$(bao_auth "$token" write -format=json -f auth/approle/role/nemoclaw/secret-id | jq -r '.data.secret_id')
-  put_secret "$SECRETS_DIR" nemoclaw-role-id "$role_id"
-  put_secret "$SECRETS_DIR" nemoclaw-secret-id "$secret_id"
-  info "  NemoClaw AppRole created."
-
-  # Per-service write roles — each service can only write to its own path. Bounded
-  # secret_id TTL + use count per PRINCIPLES.md Section 3 (TTL=0 is a defect); refreshed
-  # on each OpenBao redeploy (well within 90d).
-  local svc
-  for svc in nocodb n8n; do
-    bao_auth "$token" write "auth/approle/role/${svc}" \
-      secret_id_ttl=2160h secret_id_num_uses=0 token_num_uses=25 token_ttl=30m token_max_ttl=2h \
-      "token_policies=${svc}-write"
-
-    role_id=$(bao_auth "$token" read -format=json "auth/approle/role/${svc}/role-id" | jq -r '.data.role_id')
-    secret_id=$(bao_auth "$token" write -format=json -f "auth/approle/role/${svc}/secret-id" | jq -r '.data.secret_id')
-    put_secret "$SECRETS_DIR" "${svc}-role-id" "$role_id"
-    put_secret "$SECRETS_DIR" "${svc}-secret-id" "$secret_id"
-    info "  ${svc} AppRole created."
-  done
 
   # Semaphore is the platform ORCHESTRATOR — the single documented unlimited-TTL
   # exception (PRINCIPLES.md Section 3): it needs broad, always-available cross-service
@@ -177,11 +150,9 @@ seed_if_absent() {
 seed_secrets() {
   local token="$1"
   info "Step 7: Seeding placeholder secrets..."
-  seed_if_absent "$token" secret/services/nocodb    url="${NOCODB_URL:-REPLACE_WITH_NOCODB_URL}"       api_token="REPLACE_WITH_NOCODB_API_TOKEN"
   seed_if_absent "$token" secret/services/github    pat="REPLACE_WITH_GITHUB_PAT"                     deploy_key="REPLACE_WITH_GITHUB_DEPLOY_KEY"
   seed_if_absent "$token" secret/services/discord   bot_token="REPLACE_WITH_DISCORD_BOT_TOKEN"
   seed_if_absent "$token" secret/services/proxmox   url="${PROXMOX_URL:-REPLACE_WITH_PROXMOX_URL}"    api_token="REPLACE_WITH_PROXMOX_API_TOKEN" token_id="${PROXMOX_TOKEN_ID:-REPLACE_WITH_PROXMOX_TOKEN_ID}"
-  seed_if_absent "$token" secret/services/n8n       url="${N8N_URL:-REPLACE_WITH_N8N_URL}"             api_key="REPLACE_WITH_N8N_API_KEY"
   seed_if_absent "$token" secret/services/semaphore url="${SEMAPHORE_URL:-REPLACE_WITH_SEMAPHORE_URL}" api_token="REPLACE_WITH_SEMAPHORE_API_TOKEN"
   info "Placeholder secrets in place."
 }

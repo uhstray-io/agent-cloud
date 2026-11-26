@@ -206,7 +206,7 @@ validate() {
 
 # Run ANY registered template by playbook name via LOCAL Semaphore — the same
 # worktree-bound dispatch deploy/validate use, so one-off operational playbooks
-# (backup-n8n-db, restore-n8n-db, store-*-api-key, ...) never need hand-crafted
+# (backup-plane-db, restore-plane-db, store-postiz-api-key, ...) never need hand-crafted
 # curl against the API. Extra vars ride as a JSON object.
 run_playbook() {
   local name="${1:-}" extra="${2:-}"
@@ -232,8 +232,9 @@ task_output() {
   _print_task_output "$task" || die "no output for task ${task} (not found, or local Semaphore is down)"
 }
 
-# Re-publish the template catalog (shared + local-only) to the LOCAL Semaphore, exactly as
-# bootstrap-local-dev.yml's "Register templates" step does, without re-running genesis. Use
+# Re-publish the template catalog (shared + local-only) to the LOCAL Semaphore, then apply the
+# template retirements, exactly as bootstrap-local-dev.yml's "Register templates and apply
+# retirements" step does, without re-running genesis. Use
 # after editing templates-local.yml or templates.yml. Resolves the same records by name
 # (inventory `local`, environment `local-openbao`) that the bootstrap creates.
 templates() {
@@ -249,7 +250,7 @@ templates() {
   env=$(_api "${base}/environment" | python3 -c "import json,sys; print(next(e['id'] for e in json.load(sys.stdin) if e['name'] == 'local-openbao'))") \
     || die "no 'local-openbao' environment record — run: make local-bootstrap"
   SEMAPHORE_URL="$SEMAPHORE_URL" SEMAPHORE_TOKEN="$SEMAPHORE_TOKEN" ansible-playbook \
-    "${REPO_ROOT}/platform/semaphore/setup-templates.yml" \
+    "${REPO_ROOT}/platform/semaphore/converge-local-catalog.yml" \
     -e "semaphore_project_id=${SEMAPHORE_PROJECT_ID}" -e "semaphore_inventory_id=${inv}" \
     -e "semaphore_environment_id=${env}" -e semaphore_include_local_templates=true
 }
@@ -280,11 +281,6 @@ creds() {
   admin_pw=$(printf '%s' "$secret" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['data'].get('agent_cloud_admin_password',''))" 2>/dev/null) || true
   boot_pw=$(printf '%s' "$secret" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['data'].get('bootstrap_password',''))" 2>/dev/null) || true
   [ -n "${boot_pw:-}" ] || die "authentik secrets not in OpenBao — is authentik deployed? (make local-deploy-authentik)"
-  # n8n is community edition (no SSO): forward_auth gates ACCESS, then n8n has its
-  # OWN owner login. Fetch that password too (best-effort — empty if n8n absent).
-  local n8n_pw
-  n8n_pw=$(curl -sf -H "X-Vault-Token: ${tok}" "${BAO_ADDR}/v1/secret/data/services/n8n" 2>/dev/null \
-          | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['data'].get('owner_password',''))" 2>/dev/null) || true
   cat <<EOF
 
   =====================================================================
@@ -304,12 +300,6 @@ creds() {
                    ERPNext    https://erp.${zone}:8443/
      forward_auth: NetBox     https://netbox.${zone}:8443/
                    OpenBao    https://openbao.${zone}:8443/   (then pick "OIDC" login)
-                   n8n        https://n8n.${zone}:8443/
-  ---------------------------------------------------------------------
-   n8n is community edition (no SSO): pass forward_auth as agent-cloud-admin,
-   then log in to n8n itself with its OWNER account:
-     Email:     agent-cloud-admin@${zone}
-     Password:  ${n8n_pw:-<not seeded yet — re-run make local-deploy-n8n>}
   =====================================================================
    (resolves + trusts TLS after: make local-dns-resolver  make local-tls-trust)
 EOF
@@ -632,7 +622,7 @@ usage: scripts/local-dev.sh <subcommand>
   clean-deploy <svc> <host>  DESTRUCTIVE: wipe the service's containers+volumes, redeploy;
                      <host> must name the host (<svc>-local), as confirm_reset
   validate           run Validate All via LOCAL Semaphore
-  templates          re-publish shared + local-only templates to LOCAL Semaphore
+  templates          re-publish shared + local-only templates to LOCAL Semaphore and apply retirements
   run <playbook> [json]  run any registered template by playbook basename via
                      LOCAL Semaphore (worktree-bound dispatch; extra vars as JSON).
                      DRY_RUN=1 runs it in check mode

@@ -13,9 +13,10 @@ use std::collections::BTreeSet;
 use dioxus::prelude::*;
 use serde::Deserialize;
 
-use super::api::{self, Reply};
+use super::api::{self, Me, Reply};
 use super::empty::ACTIVE_WORK;
 use super::icons::icon;
+use super::inventory::end_session;
 use super::shell::Ctx;
 use super::work_detail::{Details, Rail};
 
@@ -456,6 +457,17 @@ pub fn keeps_polling(state: &WorkState) -> bool {
     !matches!(state, WorkState::Forbidden | WorkState::SignedOut)
 }
 
+/// Whether the poll's newest state ends the session. Only a 401 does; a 403 keeps its own sentence.
+pub fn ends_session(state: &WorkState) -> bool {
+    matches!(state, WorkState::SignedOut)
+}
+
+/// Whether a console read's status means the session ended. The reads that call the API directly
+/// (the Active Work poll, the work details, the role registry) use this to sign out on a 401.
+pub fn signs_out(status: u16) -> bool {
+    status == 401
+}
+
 /// What the page shows after one poll. `prev` is the state before the poll,
 /// `now_ms` the client clock at the reply. A failed poll keeps the last list.
 pub fn next_state(prev: &WorkState, reply: &Reply, now_ms: Option<i64>) -> WorkState {
@@ -499,14 +511,18 @@ fn keep_last(prev: &WorkState, reason: &str, now_ms: Option<i64>) -> WorkState {
 /// The page's one poll. It runs for the life of the signed-in shell, and both
 /// the sidebar badge and the page read the state it writes. It waits for the
 /// tab to be visible, reads, then sleeps `POLL_MS` or until the tab is hidden.
-pub async fn poll(mut state: Signal<WorkState>) {
+pub async fn poll(mut state: Signal<WorkState>, me: Signal<Me>) {
     loop {
         api::wait_visible().await;
         let reply = api::request("GET", "/v1/work", None).await;
         let now = api::now_ms().await;
         let next = next_state(&state.peek(), &reply, now);
         let keep = keeps_polling(&next);
+        let signed_out = ends_session(&next);
         state.set(next);
+        if signed_out {
+            end_session(me);
+        }
         if !keep {
             return;
         }
@@ -523,22 +539,28 @@ pub fn Home() -> Element {
     let selected = use_signal(|| None::<String>);
     let minimized = use_signal(|| false);
     let done_open = use_signal(|| false);
+    // Set by Hide, read once by the rail when it mounts. A fresh Home starts false, so a
+    // navigation to this page never moves focus.
+    let focus_rail = use_signal(|| false);
 
     let body = match state {
         WorkState::Loading => rsx! {
-            Notice { message: "Loading work\u{2026}" }
+            Notice { message: "Loading work\u{2026}".to_string() }
         },
         WorkState::Forbidden => rsx! {
-            Notice { message: "Active Work is limited to platform administrators until work maps to tenants (Phase 3)" }
+            Notice { message: "Active Work is limited to platform administrators until work maps to tenants (Phase 3).".to_string() }
         },
         WorkState::SignedOut => rsx! {
-            Notice { message: "Your session ended. Sign in again to see Active Work" }
+            Notice { message: "Your session ended. Sign in again to see Active Work.".to_string() }
         },
         WorkState::Unreachable => rsx! {
-            Notice { message: "Active Work could not be loaded. It retries every 10 seconds while this tab is visible" }
+            Notice { message: format!(
+                "Active Work could not be loaded. It retries every {} seconds while this tab is visible.",
+                POLL_MS / 1000
+            ) }
         },
         WorkState::Shown { list, .. } if list.source == Source::Unconfigured => rsx! {
-            Notice { message: "Semaphore connection not configured" }
+            Notice { message: "Semaphore connection not configured.".to_string() }
         },
         WorkState::Shown {
             list,
@@ -553,6 +575,7 @@ pub fn Home() -> Element {
                 selected,
                 minimized,
                 done_open,
+                focus_rail,
             }
         },
     };
@@ -571,7 +594,7 @@ pub fn Home() -> Element {
 
 /// One empty state: a message in the page's empty-state card.
 #[component]
-fn Notice(message: &'static str) -> Element {
+fn Notice(message: String) -> Element {
     rsx! {
         section { class: "card",
             div { class: "empty",
@@ -592,6 +615,7 @@ fn Live(
     selected: Signal<Option<String>>,
     minimized: Signal<bool>,
     done_open: Signal<bool>,
+    focus_rail: Signal<bool>,
 ) -> Element {
     // One strip per job: the board, its filters, the banner and the rail all count and
     // show the newest run of each job, never the earlier ones.
@@ -631,9 +655,9 @@ fn Live(
         div { class: "{layout}",
             Board { groups, now_ms, selected, minimized, done_open }
             if panel_open {
-                Details { selected, minimized, now_ms }
+                Details { selected, minimized, now_ms, focus_rail }
             } else {
-                Rail { counts, can_open, minimized }
+                Rail { counts, can_open, minimized, focus_rail }
             }
         }
     }
@@ -1007,15 +1031,15 @@ mod tests {
     #[test]
     fn filters_combine_by_role_lane_and_text() {
         let mut skynet = item("sem-1", Lane::Queued);
-        skynet.role = Some("netclaw".to_string());
+        skynet.role = Some("network-agent".to_string());
         skynet.service = Some("netbox".to_string());
         let person = item("sem-2", Lane::Queued);
         let mut other_lane = item("sem-3", Lane::Running);
-        other_lane.role = Some("netclaw".to_string());
+        other_lane.role = Some("network-agent".to_string());
         let items = [skynet, person, other_lane];
 
         let by_role = Filters {
-            role: RoleFilter::Role("netclaw".to_string()),
+            role: RoleFilter::Role("network-agent".to_string()),
             ..Filters::default()
         };
         let picked: Vec<&str> = items
@@ -1081,24 +1105,27 @@ mod tests {
         assert_eq!(RoleFilter::from_value(""), RoleFilter::Any);
         assert_eq!(RoleFilter::from_value("operator"), RoleFilter::Operator);
         assert_eq!(
-            RoleFilter::from_value("netclaw"),
-            RoleFilter::Role("netclaw".to_string())
+            RoleFilter::from_value("network-agent"),
+            RoleFilter::Role("network-agent".to_string())
         );
         assert_eq!(RoleFilter::Any.value(), "");
         assert_eq!(RoleFilter::Operator.value(), "operator");
-        assert_eq!(RoleFilter::Role("netclaw".to_string()).value(), "netclaw");
+        assert_eq!(
+            RoleFilter::Role("network-agent".to_string()).value(),
+            "network-agent"
+        );
     }
 
     #[test]
     fn roles_present_are_distinct_and_sorted() {
         let mut a = item("a", Lane::Queued);
-        a.role = Some("netclaw".to_string());
+        a.role = Some("network-agent".to_string());
         let mut b = item("b", Lane::Queued);
         b.role = Some("bridge".to_string());
         let mut c = item("c", Lane::Queued);
-        c.role = Some("netclaw".to_string());
+        c.role = Some("network-agent".to_string());
         let d = item("d", Lane::Queued);
-        assert_eq!(roles_present(&[a, b, c, d]), ["bridge", "netclaw"]);
+        assert_eq!(roles_present(&[a, b, c, d]), ["bridge", "network-agent"]);
     }
 
     #[test]
@@ -1201,7 +1228,7 @@ mod tests {
                 "ok",
                 json!([{
                     "key": "sem-9", "title": "Deploy", "lane": "running", "status": "running",
-                    "role": "netclaw", "launched_by": "skynet", "run_id": "r1", "step": "apply",
+                    "role": "network-agent", "launched_by": "skynet", "run_id": "r1", "step": "apply",
                     "service": "netbox", "created": "2026-10-26T12:00:00Z", "started": null,
                     "ended": null, "receipt_url": "https://semaphore.example.test/project/1/history?t=9",
                     "latest_in_stream": true, "stream_runs": 1
@@ -1216,7 +1243,7 @@ mod tests {
             } => {
                 assert_eq!(list.items.len(), 1);
                 assert_eq!(list.items[0].lane, Lane::Running);
-                assert_eq!(list.items[0].role.as_deref(), Some("netclaw"));
+                assert_eq!(list.items[0].role.as_deref(), Some("network-agent"));
                 assert_eq!(now_ms, Some(1));
                 assert_eq!(stale, None);
             }
@@ -1285,6 +1312,70 @@ mod tests {
         assert!(!keeps_polling(&WorkState::SignedOut));
         assert!(keeps_polling(&WorkState::Loading));
         assert!(keeps_polling(&WorkState::Unreachable));
+    }
+
+    #[test]
+    fn only_a_401_ends_the_session() {
+        let signed_out = next_state(
+            &WorkState::Loading,
+            &reply(401, json!({"error": "unauthenticated"})),
+            None,
+        );
+        assert!(
+            ends_session(&signed_out),
+            "a 401 poll signs the session out"
+        );
+        assert!(ends_session(&WorkState::SignedOut));
+        let forbidden = next_state(
+            &WorkState::Loading,
+            &reply(403, json!({"error": "forbidden"})),
+            None,
+        );
+        assert!(!ends_session(&forbidden), "a 403 keeps its own sentence");
+        assert!(!ends_session(&WorkState::Unreachable));
+        assert!(!ends_session(&WorkState::Loading));
+        assert!(signs_out(401));
+        assert!(!signs_out(403), "a 403 is not a sign-out");
+        assert!(!signs_out(404));
+        assert!(!signs_out(500));
+    }
+
+    #[test]
+    fn every_retry_sentence_takes_its_seconds_from_the_poll_constant() {
+        // D45: a retry sentence takes its seconds from the poll interval, never a literal. The
+        // needle is split across two literals so this test's own source does not match it.
+        const TAIL: &str = concat!(" seconds", " while this tab is visible");
+        // topology.rs is not in the list: its retry sentences go through `unavailable_message`, which its
+        // own test `a_retry_sentence_takes_its_seconds_from_the_poll_interval` pins, and that test's
+        // expected text is a literal this scan would flag.
+        let sources = [
+            ("work.rs", include_str!("work.rs")),
+            ("inventory.rs", include_str!("inventory.rs")),
+            ("services.rs", include_str!("services.rs")),
+            ("settings.rs", include_str!("settings.rs")),
+            ("roles.rs", include_str!("roles.rs")),
+            ("gateway.rs", include_str!("gateway.rs")),
+            ("telemetry.rs", include_str!("telemetry.rs")),
+            ("policy.rs", include_str!("policy.rs")),
+            ("request.rs", include_str!("request.rs")),
+            ("access.rs", include_str!("access.rs")),
+            ("cicd.rs", include_str!("cicd.rs")),
+            ("secrets.rs", include_str!("secrets.rs")),
+        ];
+        let mut found = 0;
+        for (file, text) in sources {
+            for (at, _) in text.match_indices(TAIL) {
+                found += 1;
+                assert!(
+                    text[..at].ends_with('}'),
+                    "{file} states a literal retry time before the seconds-while-visible tail"
+                );
+            }
+        }
+        assert!(
+            found >= 12,
+            "the scan found {found} retry sentences; every listed page's retry sentence should be among them"
+        );
     }
 
     #[test]

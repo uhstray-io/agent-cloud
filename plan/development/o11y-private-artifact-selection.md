@@ -1,5 +1,8 @@
 # O11y private backup artifact selection implementation plan
 
+**Status:** IMPLEMENTED (source; OpenSpec 4.6e and live acceptance remain open)
+> **Parent plan:** [Observability](05-observability.md)
+
 ## Scope
 
 Implement the bounded source workflow that lets an operator privately preserve a

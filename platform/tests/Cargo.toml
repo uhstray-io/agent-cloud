@@ -1,0 +1,41 @@
+[package]
+name = "agent-cloud-tests"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+autotests = false
+description = "agent-cloud test suite (plan 24): one binary, one module per area, run by cargo-nextest"
+authors = ["Joseph A. Wisneski IV <stray@uhstray.io>"]
+license = "MIT"
+
+# Its own workspace: the console crate (platform/services/console/app) has one too,
+# and the two must not share a lock file or a target directory.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+doctest = false
+# Its tests live in suite/support.rs, so the crate builds one test binary.
+test = false
+
+[[test]]
+name = "suite"
+path = "suite/main.rs"
+
+[dependencies]
+assert_cmd = "2.2"
+globset = "0.4.21"
+predicates = "3.1"
+regex = "1.13"
+# regex-syntax: text.rs parses a line pattern to refuse one no line can match (AC-963).
+regex-syntax = "0.8"
+# preserve_order: a lifted playbook keeps its mapping order (src/playbook.rs).
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+tempfile = "3.27"
+tokio = { version = "1.54", default-features = false, features = ["rt", "time"] }
+wiremock = "0.6.5"
+yaml-rust2 = "0.13"
+
+[dev-dependencies]
+proptest = "1.12"

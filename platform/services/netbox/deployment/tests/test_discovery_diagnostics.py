@@ -242,7 +242,7 @@ def test_revision_preflight_accepts_clean_commit_and_refuses_wrong_or_dirty_sour
     for argv in (["git", "init"], ["git", "add", "."],
                  ["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=Test", "-c",
                   "user.email=test@example.com", "commit", "-m", "fixture"]):
-        subprocess.run(argv, cwd=repo, env=fixture_env, check=True, capture_output=True)
+        subprocess.run(argv, cwd=repo, env=fixture_env, check=True, capture_output=True, timeout=120)
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, env=fixture_env, text=True).strip()
     for command in commands:
         command["chdir"] = str(repo)

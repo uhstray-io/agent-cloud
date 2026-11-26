@@ -31,6 +31,11 @@ it (`8.2` for `### 8.2 ...`). The comparison is a multiset: one ratchet line cov
 occurrence in one entry, so the same missing name cited again -- in a new entry or a second
 time in the old one -- is red. The list may only shrink: a line that resolves again, or is no
 longer cited, fails this test until it is deleted.
+
+A port adds its ratchet lines in its own file, `ledger_citation_ratchet.d/<group>.txt`, same
+format; the entries are the old file plus every `*.txt` there, sorted by name. A port never edits
+docs/MISTAKES.md: a citation of a test it deletes is covered by a ratchet line whose reason names
+the replacing Rust test, and one later change adds each citing entry's "Enforcement moved" note.
 """
 
 from __future__ import annotations
@@ -43,6 +48,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 LEDGER = REPO / "docs" / "MISTAKES.md"
 RATCHET = Path(__file__).with_name("ledger_citation_ratchet.txt")
+RATCHET_DIR = Path(__file__).with_name("ledger_citation_ratchet.d")
 
 _FILE = re.compile(
     r"(?P<path>(?:[\w.-]+/)*(?:test_\w+\.py|[\w-]+\.bats))"
@@ -141,9 +147,10 @@ def unresolved(text: str, root: Path) -> list[str]:
                 pool = cited or test_files
                 if not any(p.stem == s or (p.suffix == ".py" and _defines(p, s)) for p in pool):
                     bad.append(s)
-            elif cited_bats and not _FILE.fullmatch(s) and _looks_like_bats_name(s):
-                if not any(s in _bats_names(p) for p in cited_bats):
-                    bad.append(s)
+            elif cited_bats and not _FILE.fullmatch(s) and _looks_like_bats_name(s) and not any(
+                s in _bats_names(p) for p in cited_bats
+            ):
+                bad.append(s)
         bad[bad_before:] = [f"{entry} {s}" for s in bad[bad_before:]]
     return bad
 
@@ -159,6 +166,14 @@ def parse_ratchet(text: str) -> list[tuple[str, str]]:
     return entries
 
 
+def load_ratchet(ratchet: Path, ratchet_dir: Path) -> list[tuple[str, str]]:
+    """The old ratchet file, then every `*.txt` in `ratchet_dir` by name; missing adds nothing."""
+    parts = [ratchet.read_text()] if ratchet.is_file() else []
+    if ratchet_dir.is_dir():
+        parts += [p.read_text() for p in sorted(ratchet_dir.glob("*.txt"))]
+    return parse_ratchet("\n".join(parts))
+
+
 def ratchet_diff(found: list[str], ratchet: list[tuple[str, str]]) -> tuple[list[str], list[str]]:
     """(new, stale) as multisets: a second occurrence of a ratcheted citation is new, not covered."""
     have, allowed = Counter(found), Counter(k for k, _ in ratchet)
@@ -166,18 +181,30 @@ def ratchet_diff(found: list[str], ratchet: list[tuple[str, str]]) -> tuple[list
 
 
 def test_every_cited_test_exists():
-    new, _ = ratchet_diff(unresolved(LEDGER.read_text(), REPO), parse_ratchet(RATCHET.read_text()))
+    new, _ = ratchet_diff(unresolved(LEDGER.read_text(), REPO), load_ratchet(RATCHET, RATCHET_DIR))
     assert not new, (
         "docs/MISTAKES.md cites tests that do not exist (8.2). Fix the citation, or, for a "
-        f"test deleted or renamed since the entry was written, ratchet it with a reason: {new}"
+        f"test deleted or renamed since the entry was written, ratchet it with a reason in "
+        f"platform/tests/ledger_citation_ratchet.d/<group>.txt: {new}"
     )
 
 
 def test_ratchet_entries_carry_a_reason_and_still_fail():
-    ratchet = parse_ratchet(RATCHET.read_text())
+    ratchet = load_ratchet(RATCHET, RATCHET_DIR)
     assert all(r for _, r in ratchet), f"ratchet entries without a ' # reason': {[k for k, r in ratchet if not r]}"
     _, stale = ratchet_diff(unresolved(LEDGER.read_text(), REPO), ratchet)
     assert not stale, f"ratchet entries that now resolve or are no longer cited; delete them: {stale}"
+
+
+def test_a_ratchet_line_in_a_ratchet_directory_file_covers_a_citation(tmp_path):
+    (tmp_path / "platform" / "tests").mkdir(parents=True)
+    ratchet_dir = tmp_path / "ratchet.d"
+    ratchet_dir.mkdir()
+    (ratchet_dir / "port.txt").write_text("1.1 test_ported_away # replaced by suite/x.rs::y\n")
+    (ratchet_dir / "notes.md").write_text("1.1 test_ignored # not a .txt\n")
+    ledger = "### 1.1 Old entry\n\n**Enforced by.** `test_ported_away`.\n"
+    ratchet = load_ratchet(tmp_path / "missing.txt", ratchet_dir)
+    assert ratchet_diff(unresolved(ledger, tmp_path), ratchet) == ([], [])
 
 
 def test_a_ratcheted_citation_repeated_in_a_new_entry_is_not_covered(tmp_path):

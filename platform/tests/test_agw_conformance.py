@@ -12,6 +12,7 @@ run-agw-conformance.yml runs for real too, on localhost through harness_sandbox,
 stubs and a synthetic OpenBao. All values are synthetic.
 """
 
+import contextlib
 import json
 import os
 import random
@@ -22,8 +23,8 @@ import subprocess
 import sys
 import threading
 import time
-from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import forgeries
 import harness_sandbox
@@ -32,7 +33,7 @@ import pytest
 import seed_harness
 import yaml
 from ansible_python import ansible_python
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 REPO = playbook_yaml.REPO
 SCRIPT = REPO / "platform/services/agentgateway/deployment/tests/conformance.sh"
@@ -117,19 +118,13 @@ class Stub:
                 raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 stub.handle(self, "POST", json.loads(raw or b"{}"))
 
-        class Server(ThreadingHTTPServer):
-            daemon_threads = True
-            request_queue_size = 64
-
-        self.server = Server(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-        self.url = f"http://127.0.0.1:{self.server.server_port}/v1"
-        self.port = self.server.server_port
+        self._fixture = contextlib.ExitStack()
+        root = self._fixture.enter_context(serve(Handler))
+        self.url = f"{root}/v1"
+        self.port = urlsplit(root).port
 
     def stop(self):
-        self.server.shutdown()
-        self.server.server_close()
+        self._fixture.close()
 
     # ── responses ──
     def send(self, h, status, body):
@@ -1257,7 +1252,7 @@ class Bao(seed_harness.FakeBao):
 def _playbook(tmp: Path, gw: Stub, direct: Stub, extra=None, check=False, host_vars=None):
     Bao.requests = []
     Bao.store = {"client_workstation": GW_KEY, "vllm_api_key": UP_KEY, "agw_db_password": "synthetic-db"}
-    with seed_harness.serve(Bao) as address:
+    with serve(Bao) as address:
         host = {"ansible_connection": "local", "ansible_python_interpreter": sys.executable,
                 "service_name": "agentgateway", "agw_clients": ["workstation"], "agw_models": [{"name": "m"}],
                 "agw_upstream_base_url": direct.url, "agw_bind": "127.0.0.1", "agw_port": gw.port,
@@ -1328,7 +1323,7 @@ def _refused_first(out: str, name: str) -> bool:
 @pytest.mark.parametrize("name, forge", [
     pytest.param(name, f.values[0], id=f"{name}-{f.id}")
     for name in ["victim", "agw-conformance.evil"]
-    for f in forgeries.templated_forgeries("_agwc_tmpdir", {"path": "/tmp/agw-conformance.honest"},
+    for f in forgeries.by_name("_agwc_tmpdir", {"path": "/tmp/agw-conformance.honest"},
                                            lambda t, n=name: {"path": str(t / n)})
 ])
 def test_an_extra_var_cannot_redirect_the_key_files_or_the_delete(tmp_path, stubs, name, forge):
@@ -1468,7 +1463,7 @@ PROBE_INTERNALS = {"_agwp_raw": {"status": 401}, "_agwp_out": {"status": 401, "m
 @pytest.mark.parametrize("name, forge", [
     pytest.param(n, f.values[0], id=f"{n}-{f.id}")
     for n, value in [*[(n, "/forged") for n in PROBE_INPUTS + GATEWAY_URLS], *PROBE_INTERNALS.items()]
-    for f in forgeries.templated_forgeries(n, "__override_probe__", value)
+    for f in forgeries.by_name(n, "__override_probe__", value)
 ])
 def test_an_extra_var_cannot_aim_or_forge_the_keyless_gate(tmp_path, stubs, name, forge):
     # The gateway here serves a keyless request: only a redirected or forged gate could pass it.
@@ -1483,7 +1478,7 @@ def test_an_extra_var_cannot_aim_or_forge_the_keyless_gate(tmp_path, stubs, name
     pytest.param(n, f.values[0], id=f"{n}-{f.id}")
     for n, value in [("_agwr_hosts", {"content": "MTI3LjAuMC4xIGdhdGV3YXk="}),
                      ("_agwr_getent", {"rc": 0, "stdout_lines": ["127.0.0.1"]})]
-    for f in forgeries.templated_forgeries(n, "__override_probe__", value)
+    for f in forgeries.by_name(n, "__override_probe__", value)
 ])
 def test_an_extra_var_cannot_forge_the_resolution_verdict(tmp_path, stubs, name, forge):
     gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)

@@ -6,12 +6,8 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
 
 REPO = Path(__file__).resolve().parents[2]
-PLAYBOOK = REPO / "platform/playbooks/apply-cloudflare-tofu.yml"
-TEMPLATES = REPO / "platform/semaphore/templates.yml"
-TASKS = REPO / "plan/development/openspec/changes/o11y-signal-labeling-profiling-alerting/tasks.md"
 FIXTURE = REPO / "platform/tests/fixtures/cloudflare-ruleset-v5.21.1-update.json"
 LOCK = REPO / "platform/infra/cloudflare/.terraform.lock.hcl"
 HELPER = REPO / "platform/playbooks/files/cloudflare_grafana_plan_guard.py"
@@ -253,95 +249,3 @@ def test_verify_requires_the_exact_present_rule_and_zero_diff():
     receipt = guard.inspect_plan(clean, "verify")
     assert receipt["safe"] and receipt["status"] == "present"
     assert not guard.inspect_plan(_plan(), "verify")["safe"]
-
-
-def _tasks():
-    play = next(p for p in yaml.safe_load(PLAYBOOK.read_text()) if p.get("hosts") == "localhost")
-    block = next(t for t in play["tasks"] if t.get("name") == "OpenTofu run")
-    return block["block"]
-
-
-def test_apply_is_bound_to_the_saved_plan_and_digest_is_a_survey_input():
-    tasks = _tasks()
-    names = [t.get("name") for t in tasks]
-    receipt_keys = ["actions", "digest", "digest_matches", "position", "reason", "resource",
-                    "root_field_changes", "rule_ref", "safe", "status"]
-    for name, variable in (("Unpack the safe plan receipt", "_tf_plan_guard"),
-                           ("Unpack the post-apply zero-diff receipt", "_tf_verify_guard")):
-        unpack = next(t for t in tasks if t.get("name") == name)
-        conditions = unpack["block"][1]["ansible.builtin.assert"]["that"]
-        assert [" ".join(condition.split()) for condition in conditions] == [
-            f"{variable} is mapping",
-            f"({variable}.keys() | list | sort) == {receipt_keys!r} | sort",
-        ]
-    gate_i = names.index("Require the reviewed Grafana rule insertion before apply")
-    apply_i = names.index("OpenTofu apply")
-    apply = tasks[apply_i]["ansible.builtin.command"]["argv"]
-    assert gate_i < apply_i
-    assert apply[-1] == "{{ _tf_planfile if _cloudflare_grafana_guard | default(false) else '-auto-approve' }}"
-    assert tasks[names.index("Validate the exact Grafana ruleset plan")]["no_log"] is True
-    validate = tasks[names.index("Validate the exact Grafana ruleset plan")]["ansible.builtin.command"]
-    assert validate["stdin"] and "reviewed_plan_digest" in " ".join(validate["argv"])
-    gate = tasks[gate_i]["ansible.builtin.assert"]
-    assert gate["that"] == [
-        "_tf_plan_guard.safe | default(false) | bool",
-        "_tf_plan_guard.status | default('') in ['insert', 'present']",
-        "_tf_plan_guard.digest_matches | default(false) | bool",
-    ]
-    template = yaml.safe_load(TEMPLATES.read_text())["templates"]
-    entry = next(t for t in template if t.get("name") == "Apply Grafana API Cloudflare Tofu (Dev)")
-    assert entry["repository"] == "agent-cloud dev"
-    assert "dev_variant" not in entry
-    assert not any(t.get("name") == "Apply Grafana API Cloudflare Tofu" for t in template)
-    digest = next(v for v in entry["survey_vars"] if v["name"] == "reviewed_plan_digest")
-    assert digest["required"] is False
-    assert "apply" in digest["description"].lower() and "SHA-256" in digest["description"]
-
-
-def test_generic_cloudflare_executor_stays_unrestricted_and_grafana_uses_wrapper():
-    generic = next(t for t in yaml.safe_load(TEMPLATES.read_text())["templates"]
-                   if t.get("name") == "Apply Cloudflare Tofu")
-    dedicated = next(t for t in yaml.safe_load(TEMPLATES.read_text())["templates"]
-                     if t.get("name") == "Apply Grafana API Cloudflare Tofu (Dev)")
-    wrapper = yaml.safe_load((REPO / "platform/playbooks/apply-cloudflare-grafana-api-tofu.yml").read_text())
-    assert "reviewed_plan_digest" not in {v["name"] for v in generic["survey_vars"]}
-    assert dedicated["repository"] == "agent-cloud dev"
-    assert "dev_variant" not in dedicated
-    assert not any(t.get("name") == "Apply Grafana API Cloudflare Tofu"
-                   for t in yaml.safe_load(TEMPLATES.read_text())["templates"])
-    assert dedicated["playbook"] == "platform/playbooks/apply-cloudflare-grafana-api-tofu.yml"
-    assert wrapper[0]["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
-    assert wrapper[1]["vars"] == {"_extra_var_guard_nested": True, "_cloudflare_grafana_guard": True}
-
-
-def test_editor_exception_is_scoped_and_capacity_gates_stay_open():
-    tasks = TASKS.read_text()
-    task_status = {}
-    task_text = {}
-    for line in tasks.splitlines():
-        if line.startswith(("- [ ] ", "- [x] ")):
-            task_id = line.split("] ", 1)[1].split(maxsplit=1)[0]
-            task_status[task_id] = line[3] == "x"
-            task_text[task_id] = line.lower()
-
-    assert {task_id: task_status[task_id] for task_id in (
-        "2.2a", "2.2b", "2.2c", "2.3", "3.3", "4.3", "5.3", "5.4", "5.5",
-    )} == {
-        "2.2a": True,
-        "2.2b": True,
-        "2.2c": True,
-        "2.3": True,
-        "3.3": True,
-        "4.3": False,
-        "5.3": False,
-        "5.4": False,
-        "5.5": False,
-    }
-    editor_task = task_text["2.2b"]
-    assert "editor" in editor_task and "dedicated account" in editor_task and "scoped" in editor_task
-    assert "watcher" in editor_task and "viewer" in editor_task
-    assert "openbao" in editor_task and "source of truth" in editor_task
-    assert "mode 0600" in editor_task and "~/.config/mcp-grafana/prod.token" in editor_task
-    assert "local profile" in task_text["2.2c"] and "--disable-write" in task_text["2.2c"]
-    assert "production profile" in task_text["2.2c"]
-    assert "without `--disable-write`" in task_text["2.2c"]

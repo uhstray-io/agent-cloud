@@ -12,7 +12,7 @@ LOCAL = ["192.0.2.0/24", "198.51.100.0/25"]
 def _run(allowed, targets):
     return subprocess.run(
         [sys.executable, str(SCRIPT), json.dumps(allowed), json.dumps(targets)],
-        text=True, capture_output=True, check=False,
+        text=True, capture_output=True, check=False, timeout=120,
     )
 
 

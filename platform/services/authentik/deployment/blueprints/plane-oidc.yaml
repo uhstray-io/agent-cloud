@@ -6,7 +6,7 @@
 #
 # Shape, from Plane's own OIDC documentation (developer-docs self-hosting/govern/oidc-sso.md):
 #  - Callback <public-url>/auth/oidc/callback/, logout <public-url>/auth/oidc/logout/. The
-#    redirect below is Strict on the callback.
+#    redirects below are Strict on the web callback and the mobile app's callback.
 #  - Plane requires the `email` claim (userinfo) to sign a user in, so the email scope mapping
 #    is load-bearing; profile carries the name and the `groups` claim.
 #  - Self sign-up is off (invitation-only), so a person can sign in only once a workspace
@@ -18,6 +18,11 @@ context:
   # LOCAL-DEV defaults; production sets plane_redirect_uri / plane_launch_url on the authentik
   # host in site-config (app-catalog.yml prod_required).
   plane_redirect: "{{ plane_redirect_uri | default('https://plane.agent-cloud.test:8443/auth/oidc/callback/') }}"
+  # The Plane mobile app signs in through /auth/mobile/oidc/, which sends its own callback,
+  # <public-url>/auth/mobile/oidc/callback/ (backend-commercial v3.3.3,
+  # plane/authentication/views/app/mobile/oidc.py). The docs list only the web callback.
+  # Derived from the web one so no inventory change is needed.
+  plane_redirect_mobile: "{{ (plane_redirect_uri | default('https://plane.agent-cloud.test:8443/auth/oidc/callback/')) | replace('/auth/oidc/callback/', '/auth/mobile/oidc/callback/') }}"
   plane_launch: "{{ plane_launch_url | default('https://plane.agent-cloud.test:8443/') }}"
 entries:
   - model: authentik_providers_oauth2.oauth2provider
@@ -37,6 +42,8 @@ entries:
       redirect_uris:
         - matching_mode: strict
           url: !Context plane_redirect
+        - matching_mode: strict
+          url: !Context plane_redirect_mobile
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]

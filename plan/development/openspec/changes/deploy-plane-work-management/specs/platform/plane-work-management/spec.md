@@ -2,7 +2,7 @@ Author: Joseph A. Wisneski IV <stray@uhstray.io>
 
 ## Purpose
 
-Provides the platform's work tracker. Plane links GitHub issues and pull requests, each repository's OpenSpec changes, and the work cards that the team and its harnesses act on. It replaces tududi as the tracker. Humans sign in through the central identity provider, roles follow identity-provider groups, harnesses act under the user who signed in, and the tududi tracker is torn down in a fixed order.
+Provides the platform's work tracker. Plane links GitHub issues and pull requests, each repository's OpenSpec changes, and the work cards that the team and its harnesses act on. Humans sign in through the central identity provider, roles follow identity-provider groups, and harnesses act under the user who signed in.
 
 ## ADDED Requirements
 
@@ -98,7 +98,7 @@ The public hostnames SHALL route through the central reverse proxy. The Cloudfla
 #### Scenario: Host firewall denies inbound except from the reverse proxy
 
 - **WHEN** the firewall is applied to the Plane VM
-- **THEN** inbound traffic is denied except from the reverse proxy, and the declared egress is the only outbound path opened
+- **THEN** inbound traffic is denied except from the reverse proxy, and the declared egress is the only outbound path opened. The host firewall matches ports and addresses, not names, so the declaration is a port allowlist (`firewall_allow_egress`), measured in audit mode before it is enforced (Joseph, 2026-11-09)
 
 #### Scenario: Telemetry reaches the observability stack
 
@@ -140,12 +140,12 @@ Interactive users SHALL sign in to Plane through the Authentik OIDC client. Self
 
 ### Requirement: Plane roles follow identity-provider groups
 
-Plane roles SHALL follow Authentik group membership under decision D3. Members of `platform-admins` MUST hold the Admin role, Plane's top workspace role. Members of `platform-developers` and `platform-business` MUST hold the Member role. Members of `platform-user` MUST be denied. The reconcile playbook SHALL be read-only unless it is run with `apply=true`, and a member who has left every member group MUST lose access on apply. The reconcile schedule SHALL be registered only after an apply run has succeeded.
+Plane roles SHALL follow Authentik group membership under decision D3. Members of `platform-admins` MUST hold the workspace's top role the licensed plan offers: Owner on the Pro plan, where Plane's Admin role is not available (amended 2026-11-09). Members of `platform-developers` and `platform-business` MUST hold the Member role. Members of `platform-user` MUST be denied. The reconcile playbook SHALL be read-only unless it is run with `apply=true`, and a member who has left every member group MUST lose access on apply, except a workspace Owner: the reconcile never demotes or removes an Owner, and MUST name each Owner other than the automation account that the groups no longer make one, so an operator offboards them by hand. The reconcile schedule SHALL be registered only after an apply run has succeeded.
 
-#### Scenario: Administrator receives Admin
+#### Scenario: Administrator receives the top role
 
 - **WHEN** the reconcile playbook applies with `apply=true` for a member of `platform-admins`
-- **THEN** that member holds the Admin role in Plane
+- **THEN** that member holds the Owner role in Plane, the top role on the Pro plan
 
 #### Scenario: Developer and business user receive Member
 
@@ -159,8 +159,13 @@ Plane roles SHALL follow Authentik group membership under decision D3. Members o
 
 #### Scenario: Removed member loses access on apply
 
-- **WHEN** a Plane member is no longer in any member group, and the reconcile playbook applies with `apply=true`
+- **WHEN** a Plane member who is not an Owner is no longer in any member group, and the reconcile playbook applies with `apply=true`
 - **THEN** that member is removed from Plane
+
+#### Scenario: Owner who left the groups is kept and named
+
+- **WHEN** a Plane Owner other than the automation account is no longer desired as an Owner, and the reconcile playbook runs
+- **THEN** that Owner keeps its role and membership, and the reconcile names it under `owners_unmanaged` for an operator to offboard by hand
 
 #### Scenario: Reconcile is read-only without apply
 
@@ -174,12 +179,7 @@ Plane roles SHALL follow Authentik group membership under decision D3. Members o
 
 ### Requirement: GitHub integration syncs issues and pull requests
 
-The GitHub integration SHALL use the GitHub App named Plane. Issues and pull requests SHALL sync between GitHub and Plane. The trigger label `plane` SHALL move an issue from GitHub to Plane, and the trigger label `github` SHALL move it from Plane to GitHub. A pull request that names a work item key, such as `[KEY-123]`, MUST link to that work item. The tududi sync MUST be switched off before the Plane sync is enabled, so that the two bidirectional syncs never run at the same time on the same repository.
-
-#### Scenario: tududi sync is switched off before Plane sync starts
-
-- **WHEN** the Plane GitHub integration is enabled for a repository
-- **THEN** the tududi sync for that repository has already been switched off, and the refresher schedules of both the production and the local templates have been removed
+The GitHub integration SHALL use the GitHub App named Plane. Issues and pull requests SHALL sync between GitHub and Plane. The trigger label `plane` SHALL move an issue from GitHub to Plane, and the trigger label `github` SHALL move it from Plane to GitHub. A pull request that names a work item key, such as `[KEY-123]`, MUST link to that work item.
 
 #### Scenario: Labelled issue appears in Plane
 
@@ -249,40 +249,11 @@ The Plane MCP server SHALL run in OAuth mode behind the reverse proxy. A harness
 - **WHEN** weft's builder updates a work item
 - **THEN** the update is made with the `weft` bot user's personal access token, and no human credential is used
 
-### Requirement: tududi retires in a fixed order
-
-The tududi retirement SHALL run only after the gates for the earlier phases pass. Open tasks MUST migrate into Plane under the label `migrated-from-tududi`, each carrying its tududi task id as a stable identity. Before every create, the migration MUST query Plane for that identity, so that a rerun after a partial failure never creates a duplicate. The uninstall of the tududi sync GitHub App MUST happen only after the refresher that mints its tokens is gone. The teardown MUST refuse, before any backup or destructive step, unless its confirmation value equals the VM id.
-
-#### Scenario: Open tasks migrate under a marker label
-
-- **WHEN** the one-time migration runs
-- **THEN** each open tududi task exists in Plane under the label `migrated-from-tududi`, carrying its tududi task id
-
-#### Scenario: Migration rerun creates no duplicates
-
-- **WHEN** the migration is run again after a partial failure
-- **THEN** the items already migrated are skipped, and no item is created a second time
-
-#### Scenario: Teardown refuses without confirmation
-
-- **WHEN** the tududi teardown is launched with a confirmation value that is absent or does not equal the VM id
-- **THEN** its preflight refuses before any backup or destructive step, and it changes nothing
-
-#### Scenario: Sync app is uninstalled after the refresher is gone
-
-- **WHEN** the tududi sync GitHub App is uninstalled
-- **THEN** the refresher that mints its installation tokens has already been removed
-
-#### Scenario: Retirement leaves no tududi surface
-
-- **WHEN** the teardown completes
-- **THEN** no tududi container, route, DNS record, OIDC application or GitHub App remains
-
 ### Requirement: Documentation tracks the deployed platform
 
-`AGENTS.md` SHALL describe the Plane service, its workflows and its secrets layout. It MUST NOT describe tududi once the teardown has completed.
+`AGENTS.md` SHALL describe the Plane service, its workflows and its secrets layout.
 
-#### Scenario: AGENTS.md lists Plane and drops tududi
+#### Scenario: AGENTS.md lists Plane
 
-- **WHEN** the Phase 7 documentation update is complete
-- **THEN** `AGENTS.md` lists the Plane workflows and the Plane sub-directory docs line, and it contains no tududi entry
+- **WHEN** the documentation update is complete
+- **THEN** `AGENTS.md` lists the Plane workflows and the Plane sub-directory docs line

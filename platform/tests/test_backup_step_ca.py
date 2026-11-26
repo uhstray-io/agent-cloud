@@ -20,6 +20,7 @@ import playbook_yaml
 import pytest
 import seed_harness
 import yaml
+from fake_http import serve
 
 PLAYBOOK = playbook_yaml.REPO / "platform/playbooks/backup-step-ca-to-site-config.yml"
 TEMPLATES = playbook_yaml.REPO / "platform/semaphore/templates.yml"
@@ -144,7 +145,7 @@ def _run(tmp: Path, *, files=None, handler=Bao, ca_hosts=("ca",), check=False, d
     bare = _site_config(tmp)
     host = {"ansible_connection": "local", "ansible_python_interpreter": sys.executable,
             "container_engine": str(engine)}
-    with seed_harness.serve(handler) as address:
+    with serve(handler) as address:
         inv = {"all": {"vars": {"openbao_addr": address},
                        "children": {"step_ca_svc": {"hosts": dict.fromkeys(ca_hosts, host)}}}}
         (tmp / "inv.yml").write_text(yaml.safe_dump(inv))

@@ -11,7 +11,7 @@
 #     `${FRONTEND_URL}/settings` in both the authorization-link and the
 #     token-exchange call. There is no configurable callback path, so the Strict
 #     redirect below must be exactly <public-url>/settings — not the
-#     /api/oidc/callback/<slug> shape tududi uses.
+#     /api/oidc/callback/<slug> shape, which carries the provider slug.
 #  2. THE SCOPE IS FIXED at `openid profile email` in postiz's code. The scope
 #     mappings below must therefore include all three; postiz cannot be asked to
 #     request fewer or more.
@@ -22,8 +22,9 @@
 #     irrelevant to this flow (no id_token is ever validated); RS256 is set only
 #     for consistency with the other providers here.
 #
-# Unlike tududi there is no provider-slug coupling: postiz sends no slug, so the
-# application slug below only affects the Authentik-side URL and launch tile.
+# Unlike apps whose callback path carries the provider slug, there is no coupling:
+# postiz sends no slug, so the application slug below only affects the Authentik-side
+# URL and launch tile.
 version: 1
 metadata:
   name: agent-cloud - postiz OIDC

@@ -1,0 +1,17 @@
+{#- launch-gate config, rendered per deploy as /etc/launch-gate/config.json (app/launch_gate.py, load_config).
+    It holds URLs, the allowlist and the caller-to-agent map for this host. It never holds a token: the
+    tokens come from the environment (env.j2). The key set below is exactly what load_config accepts,
+    and load_config refuses any other key. -#}
+{{ {
+  'semaphore_url': _launch_gate_semaphore_url,
+  'semaphore_project': _launch_gate_semaphore_project | int,
+  'opa_url': _launch_gate_opa_url,
+  'opa_ca_bundle': '/certs/step-ca-bundle.crt',
+  'allowlist': _launch_gate_allowlist,
+  'callers': _launch_gate_callers,
+  'listen_host': '0.0.0.0',
+  'listen_port': 8443,
+  'tls_cert': '/certs/' ~ _launch_gate_server_leaf ~ '/current/cert.pem',
+  'tls_key': '/certs/' ~ _launch_gate_server_leaf ~ '/current/key.pem',
+  'local_mode': _launch_gate_local_mode | bool,
+} | to_nice_json }}

@@ -135,8 +135,8 @@ mod tests {
         {"id": 12, "template_id": 3, "project_id": 1, "status": "success",
          "created": "2026-10-26T12:00:00Z", "start": "2026-10-26T12:00:01Z",
          "end": "2026-10-26T12:01:00Z", "message": "skynet service_onboarding:abc step-1",
-         "tpl_alias": "Deploy tududi", "user_name": "svc-console",
-         "environment": "{\"target_service\":\"tududi\",\"SECRET_TOKEN\":\"hunter2\"}",
+         "tpl_alias": "Deploy postiz", "user_name": "svc-console",
+         "environment": "{\"target_service\":\"postiz\",\"SECRET_TOKEN\":\"hunter2\"}",
          "arguments": "{\"password\":\"arg-secret\"}", "params": {"x": 1},
          "output": "log line with hunter2"},
         {"id": 11, "status": "running", "created": "2026-10-26T11:00:00Z",
@@ -179,7 +179,7 @@ mod tests {
         let tasks = fetch_last(&http, &config).await.expect("fetch");
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].id, 12);
-        assert_eq!(tasks[0].tpl_alias.as_deref(), Some("Deploy tududi"));
+        assert_eq!(tasks[0].tpl_alias.as_deref(), Some("Deploy postiz"));
         assert_eq!(tasks[1].environment, None);
         assert_eq!(tasks[1].start, None);
         assert_eq!(tasks[0].template_id, Some(3));
@@ -269,6 +269,6 @@ mod tests {
         ] {
             assert!(!json.contains(leaked), "{leaked} leaked: {json}");
         }
-        assert!(json.contains("tududi"), "{json}");
+        assert!(json.contains("postiz"), "{json}");
     }
 }

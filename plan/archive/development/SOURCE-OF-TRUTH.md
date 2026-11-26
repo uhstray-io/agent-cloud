@@ -195,7 +195,7 @@ Two chicken-and-eggs are named, not hidden: (1) **OpenBao↔step-ca TLS** — Op
 
 | Layer | Agent action | SoT touched | Direction |
 |-------|--------------|-------------|-----------|
-| AI | NemoClaw/NetClaw/WisBot/Cowork form an intent | (reads only) | — |
+| AI | skynet agents form an intent | (reads only) | — |
 | AI → Guardrail | Read DESIRED from **Git**; LIVE from **k8s API + o11y** (k8s tier) or **podman + o11y** (compose tier, §7); NETWORK/names/identity from **NetBox / hickory / step-ca**; images from **Harbor**; policy from **OPA** | all SoTs | READ |
 | Guardrail | OPA authorizes the agent ACTION (e.g. `run_task`); Kyverno gates k8s admission | OPA / Kyverno | VALIDATE |
 | Automation | The proposal becomes a Git PR (DESIRED), a NetBox journal/discovery entry (NETWORK enrichment), or an OpenBao write via `tasks/manage-secrets.yml` (secrets) — executed by Semaphore/Ansible/ArgoCD | the owning SoT | PROPOSE → human/gate → WRITE |
@@ -243,7 +243,7 @@ Phased, grounded in the verified repo state: NetBox + Diode + OpenBao + OPA + hi
 - placeholder (documented) for the future Harbor digest-pin check (INV-6).
 - *Touchpoints:* `.github/workflows/lint-and-test.yml`, `pyproject.toml`, `scripts/` rules.
 
-**1.2 Pin all floating image tags** — eliminate `:latest` defaults (verified live on `openbao`, `nocodb`, `semaphore`, `postiz`, and `ghcr.io/uhstray-io/*` for `uhhcraft`/`inference-*`) to explicit tags in the compose bases, keeping `${SVC_IMAGE:-pinned}` so a future Harbor digest repoint is a one-line default change. *(Interim: Git-pinned tag is the version SoT until Harbor lands; authority transfers to Harbor at Phase 3.)* — *Touchpoints:* `platform/services/{openbao,nocodb,semaphore,postiz,uhhcraft,inference-comfyui,inference-hunyuan3d}/deployment/compose.yml`.
+**1.2 Pin all floating image tags** — eliminate `:latest` defaults (verified live on `openbao`, `semaphore`, `postiz`) to explicit tags in the compose bases, keeping `${SVC_IMAGE:-pinned}` so a future Harbor digest repoint is a one-line default change. *(Interim: Git-pinned tag is the version SoT until Harbor lands; authority transfers to Harbor at Phase 3.)* — *Touchpoints:* `platform/services/{openbao,semaphore,postiz}/deployment/compose.yml`.
 
 **1.3 Retire `local-netbox-discover.sh` → tagged read-only reflection (D5)** — replace the ORM-shell writer with either (a) a small podman-ps **Diode worker** writing `container`-role Devices under `source=podman-reflect` with `last-seen`, or (b) nothing-to-NetBox + the §7 podman read path for local-dev. Add a prune-on-absence sweep scoped strictly by tag with a refuse-to-touch-untagged guard + test. Document it as a reflection sink in the netbox CLAUDE.md. *Then flip the 1.1 NetBox-writer guard to FAIL.* — *Touchpoints:* `scripts/local-netbox-discover.sh` (retire), `platform/services/netbox/deployment/workers/` (new worker or removal), `platform/services/netbox/deployment/CLAUDE.md`.
 
@@ -302,7 +302,6 @@ Phased, grounded in the verified repo state: NetBox + Diode + OpenBao + OPA + hi
 - **Hand-authoring `platform/k8s/base`** (INV-5/D1) — generated only.
 - **Auto-sync to prod / agent write-access to ArgoCD or etcd** (D2/INV-7) — manual prod gate; PRs only.
 - **Bidirectional NetBox↔k8s sync** — read-only reflection only; any write-back is forbidden.
-- **Migrating live NocoDB/n8n to the composable pattern** — separately HELD (`nocodb-n8n-composable-migration.md`); not gated by this document.
 - **Multi-site DNS zone-delegation / split-horizon design** — flagged below as an open question, not designed here.
 
 ---

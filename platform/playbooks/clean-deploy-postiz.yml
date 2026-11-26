@@ -12,8 +12,8 @@
 #          - Every connected social account must be re-authorized by hand, so
 #            this is not a routine recovery step.
 #          - Sessions and API keys SURVIVE, because the signing secret is reused
-#            from OpenBao rather than regenerated — so an n8n workflow holding a
-#            key keeps authenticating, against an account that no longer exists.
+#            from OpenBao rather than regenerated — so a client holding a key
+#            keeps authenticating, against an account that no longer exists.
 #            Expect to re-issue the key after re-registering.
 #
 #          Because registration closes after the first account, a clean deploy

@@ -12,6 +12,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
+use super::proposals::{self, ProposalStore};
 use super::sessions::{self, SqliteStore};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +81,7 @@ impl Prefs {
     fn from_connection(conn: Connection) -> rusqlite::Result<Self> {
         conn.execute_batch(SCHEMA)?;
         sessions::init(&conn)?;
+        proposals::init(&conn)?;
         Ok(Prefs {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -88,6 +90,11 @@ impl Prefs {
     /// The session store over this same connection, so sessions live in `prefs.db`.
     pub fn session_store(&self) -> SqliteStore {
         SqliteStore::new(self.conn.clone())
+    }
+
+    /// The proposal store over this same connection, so proposals live in `prefs.db` beside the preferences (D50).
+    pub fn proposal_store(&self) -> ProposalStore {
+        ProposalStore::new(self.conn.clone())
     }
 
     /// Stored preferences, or the defaults when the user has none yet.

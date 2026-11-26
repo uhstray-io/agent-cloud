@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts/semaphore-launch.py"
@@ -37,7 +38,7 @@ class FakeAPI:
         if path == "/info" and not project_scoped:
             return {"version": self.version}
         if path == "/templates":
-            return [{"id": 220, "name": self.template["name"]}, {"id": 5, "name": "Deploy n8n"}]
+            return [{"id": 220, "name": self.template["name"]}, {"id": 5, "name": "Deploy Postiz"}]
         if path == "/templates/220":
             return copy.deepcopy(self.template)
         if path == "/tasks/last":
@@ -295,6 +296,7 @@ def test_the_launcher_needs_only_the_standard_library():
     import sys
     code = ("import sys; sys.modules['yaml'] = None; sys.argv = ['semaphore-launch.py', '--help']; "
             f"import runpy; runpy.run_path({str(SCRIPT)!r}, run_name='__main__')")
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
     assert result.returncode == 0, result.stderr
     assert "--template" in result.stdout

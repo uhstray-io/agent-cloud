@@ -9,8 +9,9 @@ import socket
 import subprocess
 import threading
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
+import harness_sandbox
 import pytest
 import yaml
 from jinja2 import Environment, StrictUndefined
@@ -27,6 +28,12 @@ BUDGET_SPEC = importlib.util.spec_from_file_location(
 assert BUDGET_SPEC and BUDGET_SPEC.loader
 BUDGET = importlib.util.module_from_spec(BUDGET_SPEC)
 BUDGET_SPEC.loader.exec_module(BUDGET)
+NATIVE_PROMQL_SPEC = importlib.util.spec_from_file_location(
+    "o11y_native_promql_runner", ROOT / "platform/tests/o11y_native_promql_runner.py"
+)
+assert NATIVE_PROMQL_SPEC and NATIVE_PROMQL_SPEC.loader
+NATIVE_PROMQL = importlib.util.module_from_spec(NATIVE_PROMQL_SPEC)
+NATIVE_PROMQL_SPEC.loader.exec_module(NATIVE_PROMQL)
 
 
 def _budget_receipt(*jobs):
@@ -454,12 +461,183 @@ def test_native_readback_accepts_generated_health_hostname_and_self_job_name_con
         SURVEY.validate_availability_native_details(
             details, availability, shared, environment="prod", cluster="prod-west",
         )
-
     details, availability, shared = _native_details_fixture()
     details["prometheus.scrape.alloy_self"]["arguments"]["targets"][0]["job"] = "alloy"
     with pytest.raises(SURVEY.Refusal, match="native_target_mismatch"):
         SURVEY.validate_availability_native_details(
             details, availability, shared, environment="prod", cluster="prod-west",
+        )
+
+
+def _native_self_ui_detail(last_scrape):
+    target = {
+        "__address__": "127.0.0.1:12345", "cluster": "prod-west", "environment": "prod",
+        "instance": "alloy:12345", "service": "o11y/alloy", "target_id": "service:o11y",
+    }
+    target_value = _typed("object", [
+        {"key": key, "value": _typed("string", value)} for key, value in target.items()
+    ])
+    arguments = [
+        _alloy_detail_row("targets", "array", [target_value]),
+        _alloy_detail_row("forward_to", "array", [_typed("capsule", 'capsule("storage.Appendable")')]),
+        _alloy_detail_row("job_name", "string", "alloy"),
+        _alloy_detail_row("scrape_interval", "string", "15s"),
+        _alloy_detail_row("scrape_protocols", "array", [_typed("string", "PrometheusText0.0.4")]),
+        _alloy_detail_row("body_size_limit", "string", "16MiB"),
+        _alloy_detail_row("sample_limit", "number", 10_000),
+        _alloy_detail_row("label_limit", "number", 64),
+        _alloy_detail_row("label_name_length_limit", "number", 128),
+        _alloy_detail_row("label_value_length_limit", "number", 2048),
+        _alloy_detail_row("extra_metrics", "bool", True),
+    ]
+    debug = [{"name": "target", "type": "block", "body": [
+        _alloy_detail_row("job", "string", "alloy"),
+        _alloy_detail_row("health", "string", "up"),
+        _alloy_detail_row("last_scrape", "string", last_scrape),
+        _alloy_detail_row("labels", "object", {
+            **target, "job": "alloy",
+        }),
+    ]}]
+    return {
+        "arguments": arguments, "debugInfo": debug, "exports": [],
+        "health": {"message": "component evaluated", "state": "healthy", "updatedTime": "1970-01-01T00:33:20Z"},
+        "label": "alloy_self", "localID": "prometheus.scrape.alloy_self",
+        "moduleID": "prometheus.scrape", "name": "prometheus.scrape", "original": "",
+        "referencedBy": [], "referencesTo": ["prometheus.relabel.bounded_labels"], "type": "block",
+    }
+
+
+def _read_live_native_self_detail(
+    monkeypatch, *, last_scrape, clock_values, process_started_at=1000,
+    preapply_bound=1600, deadline=None, monotonic_values=None,
+):
+    clock_calls = []
+    observed_times = iter(clock_values)
+
+    def receiver_time():
+        value = next(observed_times)
+        clock_calls.append(value)
+        return value
+
+    monkeypatch.setattr(SURVEY.time, "time", receiver_time)
+    if monotonic_values is not None:
+        observed_monotonic = iter(monotonic_values)
+        monkeypatch.setattr(SURVEY.time, "monotonic", lambda: next(observed_monotonic))
+    command_calls = []
+    wire = _alloy_http_response(_native_self_ui_detail(last_scrape))
+    monkeypatch.setattr(
+        SURVEY, "_availability_command",
+        lambda *_args, **_kwargs: command_calls.append(True) or wire,
+    )
+    result = SURVEY.read_availability_native_details(
+        {"enabled": False, "targets": [], "limits": {}}, {
+            "body_size_limit_bytes": 16_777_216, "sample_limit": 10_000, "label_limit": 64,
+            "label_name_length_limit": 128, "label_value_length_limit": 2048,
+        },
+        environment="prod", cluster="prod-west", process_started_at=process_started_at,
+        preapply_bound=preapply_bound, self_only=True, deadline=deadline,
+    )
+    return result, clock_calls, command_calls
+
+
+def test_live_detail_reader_parser_and_validator_accept_fractional_scrape_between_bounds(monkeypatch):
+    parsed_time = SURVEY._parse_native_time("1970-01-01T00:33:20.100000000Z")
+    old_details, old_availability, old_shared = _native_details_fixture()
+    for component_id in ("prometheus.scrape.alloy_self", "prometheus.scrape.health_01"):
+        old_details[component_id]["debug_info"]["target"]["last_scrape"] = "1970-01-01T00:33:20.100000000Z"
+    assert parsed_time == SURVEY.Decimal("2000.1")
+    with pytest.raises(SURVEY.Refusal, match="native_debug_stale"):
+        SURVEY.validate_availability_native_details(
+            old_details, old_availability, old_shared, environment="prod", cluster="prod-west",
+            oldest_allowed=SURVEY.Decimal(1000), now=2000,
+        )
+    assert SURVEY.validate_availability_native_details(
+        old_details, old_availability, old_shared, environment="prod", cluster="prod-west",
+        oldest_allowed=SURVEY.Decimal(1000), now=SURVEY.Decimal("2000.2"),
+    )["status"] == "observed"
+    clock_values = []
+    receiver_clock = iter((2000.0, 2000.2))
+
+    def read_receiver_clock():
+        value = next(receiver_clock)
+        clock_values.append(value)
+        return value
+
+    monkeypatch.setattr(SURVEY.time, "time", read_receiver_clock)
+    document = _native_self_ui_detail("1970-01-01T00:33:20.100000000Z")
+    wire = _alloy_http_response(document)
+    monkeypatch.setattr(SURVEY, "_availability_command", lambda *_args, **_kwargs: wire)
+    shared = {
+        "body_size_limit_bytes": 16_777_216, "sample_limit": 10_000, "label_limit": 64,
+        "label_name_length_limit": 128, "label_value_length_limit": 2048,
+    }
+    result = SURVEY.read_availability_native_details(
+        {"enabled": False, "targets": [], "limits": {}}, shared,
+        environment="prod", cluster="prod-west", process_started_at=1000, self_only=True,
+    )
+    assert SURVEY._parse_native_time(document["debugInfo"][0]["body"][2]["value"]["value"]) == SURVEY.Decimal("2000.1")
+    assert result["status"] == "observed"
+    assert clock_values == [2000.0, 2000.2]
+
+
+@pytest.mark.parametrize(("last_scrape", "d0", "detail_now", "process_start", "preapply"), [
+    ("1970-01-01T00:33:20.300000000Z", 2000.0, 2000.2, 1000, 1600),
+    ("1970-01-01T00:28:20Z", 2000.0, 2000.2, 1000, 1600),
+    ("1970-01-01T00:16:40Z", 1000.1, 1000.2, 1000, 900),
+    ("1970-01-01T00:26:40Z", 1600.1, 1600.2, 1000, 1600),
+])
+def test_live_detail_reader_refuses_future_stale_process_and_preapply_samples(
+    monkeypatch, last_scrape, d0, detail_now, process_start, preapply,
+):
+    with pytest.raises(SURVEY.Refusal, match="native_debug_stale"):
+        _read_live_native_self_detail(
+            monkeypatch, last_scrape=last_scrape, clock_values=(d0, detail_now),
+            process_started_at=process_start, preapply_bound=preapply,
+        )
+
+
+_INVALID_RECEIVER_CLOCKS = [True, False, None, "2000", float("nan"), float("inf"), 0, -0.1]
+
+
+@pytest.mark.parametrize("clock_position", ["entry", "completion"])
+@pytest.mark.parametrize("invalid_clock", _INVALID_RECEIVER_CLOCKS)
+def test_live_detail_reader_refuses_invalid_entry_and_completion_clocks(
+    monkeypatch, clock_position, invalid_clock,
+):
+    clock_values = (
+        (invalid_clock, 2000.2) if clock_position == "entry" else (2000.0, invalid_clock)
+    )
+    with pytest.raises(SURVEY.Refusal, match="native_declaration_invalid"):
+        _read_live_native_self_detail(
+            monkeypatch, last_scrape="1970-01-01T00:33:20.100000000Z",
+            clock_values=clock_values,
+        )
+
+
+def test_live_detail_reader_refuses_when_monotonic_deadline_expires_after_component_parse(monkeypatch):
+    with pytest.raises(SURVEY.Refusal, match="native_readback_timeout"):
+        _read_live_native_self_detail(
+            monkeypatch, last_scrape="1970-01-01T00:33:20.100000000Z",
+            clock_values=(2000.0, 2000.2), deadline=200,
+            monotonic_values=(100, 100, 201),
+        )
+
+
+@pytest.mark.parametrize("value", [True, None, "2000", float("nan"), float("inf"), 0, -0.1])
+def test_fractional_receiver_clock_rejects_invalid_observations(value):
+    with pytest.raises(SURVEY.Refusal, match="native_declaration_invalid"):
+        SURVEY._fractional_receiver_time(value)
+
+
+def test_live_detail_reader_rejects_completion_clock_before_entry(monkeypatch):
+    clock_values = iter((2000.2, 2000.1))
+    monkeypatch.setattr(SURVEY.time, "time", lambda: next(clock_values))
+    wire = _alloy_http_response(_native_self_ui_detail("1970-01-01T00:33:20.100000000Z"))
+    monkeypatch.setattr(SURVEY, "_availability_command", lambda *_args, **_kwargs: wire)
+    with pytest.raises(SURVEY.Refusal, match="native_declaration_invalid"):
+        SURVEY.read_availability_native_details(
+            {"enabled": False, "targets": [], "limits": {}}, {},
+            environment="prod", cluster="prod-west", self_only=True,
         )
 
 
@@ -505,6 +683,82 @@ def _native_metric_api_document(*, values, timestamp_value, environment="prod", 
     return json.dumps({"status": "success", "data": {"resultType": "vector", "result": rows}}).encode()
 
 
+def _install_delayed_native_history(monkeypatch, histories, *, first_arrival=2011, arrival_step=10):
+    identities = {
+        "service:o11y": ("alloy", "alloy:12345", "o11y/alloy"),
+        "service:api": ("o11y-availability", "service:api", "api/service"),
+    }
+    calls = []
+
+    def api(path, _reason="query_unavailable", **_kwargs):
+        parameters = parse_qs(
+            urlsplit(SURVEY.PROMETHEUS + path).query,
+            keep_blank_values=True, strict_parsing=True,
+        )
+        query = parameters["query"][0]
+        arrival_time = first_arrival + len(calls) * arrival_step
+        evaluation_time = int(parameters["time"][0]) if "time" in parameters else arrival_time
+        target_ids = ["service:o11y"] if 'job="alloy"' in query else ["service:api"]
+        is_timestamp = "timestamp(" in query
+        selected = {}
+        rows = []
+        for target_id in target_ids:
+            prior = [point for point in histories[target_id] if point[0] <= evaluation_time]
+            if not prior:
+                continue
+            raw_timestamp, metric_values = prior[-1]
+            job, instance, service = identities[target_id]
+            selected_families = {
+                family for family in metric_values
+                if re.search(rf"(?<![A-Za-z0-9_]){re.escape(family)}(?![A-Za-z0-9_])", query)
+            }
+            selected_values = {family: metric_values[family] for family in selected_families}
+            response_values = (
+                dict.fromkeys(selected_values, raw_timestamp) if is_timestamp else selected_values
+            )
+            rows.append((target_id, job, instance, service, response_values))
+            selected[target_id] = {
+                "raw_timestamp": raw_timestamp,
+                "metric_values": selected_values,
+            }
+        calls.append({
+            "path": path, "parameters": parameters, "query": query,
+            "arrival_time": arrival_time, "evaluation_time": evaluation_time,
+            "selected": selected,
+        })
+        return _native_metric_api_document(values=rows, timestamp_value=evaluation_time)
+
+    monkeypatch.setattr(SURVEY, "_run_api", api)
+    return calls
+
+
+def _fixed_native_histories():
+    return {
+        "service:o11y": [
+            (1900, {"up": 1, "scrape_samples_scraped": 415, "scrape_body_size_bytes": 73_675}),
+            (2010, {"up": 1, "scrape_samples_scraped": 416, "scrape_body_size_bytes": 73_676}),
+            (2050, {"up": 1, "scrape_samples_scraped": 417, "scrape_body_size_bytes": 73_677}),
+        ],
+        "service:api": [
+            (1900, {
+                "up": 1, "probe_success": 1, "probe_duration_seconds": 0.25,
+                "probe_http_status_code": 200, "scrape_samples_scraped": 17,
+                "scrape_body_size_bytes": 2034,
+            }),
+            (2010, {
+                "up": 1, "probe_success": 1, "probe_duration_seconds": 0.5,
+                "probe_http_status_code": 200, "scrape_samples_scraped": 18,
+                "scrape_body_size_bytes": 2035,
+            }),
+            (2050, {
+                "up": 1, "probe_success": 1, "probe_duration_seconds": 0.75,
+                "probe_http_status_code": 200, "scrape_samples_scraped": 19,
+                "scrape_body_size_bytes": 2036,
+            }),
+        ],
+    }
+
+
 def test_native_sample_projection_uses_raw_timestamp_and_separates_endpoint_and_scrape_failures(monkeypatch):
     _details, availability, shared = _native_details_fixture()
     values = [
@@ -531,9 +785,12 @@ def test_native_sample_projection_uses_raw_timestamp_and_separates_endpoint_and_
     self_raw = _native_metric_api_document(values=self_values, timestamp_value=1999)
 
     def api(path, _reason="query_unavailable", **_kwargs):
-        query = parse_qs(urlsplit(SURVEY.PROMETHEUS + path).query)["query"][0]
+        params = parse_qs(urlsplit(SURVEY.PROMETHEUS + path).query, strict_parsing=True)
+        assert set(params) == {"query", "time"}
+        assert params["time"] == ["2000"]
+        query = params["query"][0]
         is_self = 'job="alloy"' in query
-        if query.startswith("timestamp("):
+        if "timestamp(" in query:
             return self_timestamps if is_self else health_timestamps
         return self_raw if is_self else health_raw
 
@@ -548,6 +805,115 @@ def test_native_sample_projection_uses_raw_timestamp_and_separates_endpoint_and_
         "probe_success": 0, "probe_http_status_code": 503, "probe_duration_seconds": "0.25",
         "scrape_samples_scraped": 17, "scrape_body_size_bytes": 2034,
     }]
+
+
+@pytest.mark.parametrize("snapshot", [2000, 2010, 2050])
+@pytest.mark.parametrize("self_only", [False, True])
+def test_delayed_native_sample_queries_share_the_actual_http_evaluation_snapshot(monkeypatch, self_only, snapshot):
+    _details, availability, shared = _native_details_fixture()
+    if self_only:
+        availability = {"enabled": False, "targets": [], "limits": {}}
+    histories = _fixed_native_histories()
+    calls = _install_delayed_native_history(
+        monkeypatch, histories, first_arrival=max(snapshot + 1, 2011),
+    )
+    receipt = SURVEY.collect_availability_native_samples(
+        availability, shared, environment="prod", cluster="prod-west",
+        process_started_at=1000, preapply_bound=1700, now=snapshot, self_only=self_only,
+    )
+    expected_raw_time = max(raw for raw, _values in histories["service:o11y"] if raw <= snapshot)
+    expected_self_values = next(values for raw, values in histories["service:o11y"] if raw == expected_raw_time)
+    assert len(calls) == (2 if self_only else 4)
+    assert {call["evaluation_time"] for call in calls} == {snapshot}
+    assert all(call["arrival_time"] > call["evaluation_time"] for call in calls)
+    assert all(
+        set(call["parameters"]) == {"query", "time"}
+        and call["parameters"]["time"] == [str(snapshot)]
+        for call in calls
+    )
+    self_calls = [call for call in calls if 'job="alloy"' in call["query"]]
+    health_calls = [call for call in calls if 'job="o11y-availability"' in call["query"]]
+    assert {call["selected"]["service:o11y"]["raw_timestamp"] for call in self_calls} == {expected_raw_time}
+    assert {call["selected"]["service:o11y"]["metric_values"]["scrape_samples_scraped"]
+            for call in self_calls} == {expected_self_values["scrape_samples_scraped"]}
+    assert {"timestamp(" in call["query"] for call in calls} == {False, True}
+    if snapshot == 2000:
+        assert all(
+            call["evaluation_time"] != call["selected"]["service:o11y"]["raw_timestamp"]
+            for call in self_calls
+        )
+    assert receipt["alloy_self"]["scrape_up"] == 1
+    assert receipt["alloy_self"]["scrape_samples_scraped"] == expected_self_values["scrape_samples_scraped"]
+    if not self_only:
+        expected_health_values = next(values for raw, values in histories["service:api"] if raw == expected_raw_time)
+        assert {call["selected"]["service:api"]["raw_timestamp"] for call in health_calls} == {expected_raw_time}
+        assert {call["selected"]["service:api"]["metric_values"]["scrape_samples_scraped"]
+                for call in health_calls} == {
+            expected_health_values["scrape_samples_scraped"],
+        }
+        assert receipt["targets"][0]["scrape_body_size_bytes"] == expected_health_values["scrape_body_size_bytes"]
+
+
+def test_composed_current_source_native_sample_requests_share_one_snapshot(monkeypatch):
+    _details, availability, shared = _native_details_fixture()
+    record = {
+        "id": "a" * 64, "image": "sha256:alloy", "pid": 4101,
+        "started_at": "1970-01-01T00:16:40Z", "running": True,
+        "network_mode": "o11y", "ports": {}, "project": "o11y", "service": "alloy",
+    }
+    process = {"pid": 4101, "proc_start_ticks": 500, "cmdline_sha256": "f" * 64}
+    monkeypatch.setattr(SURVEY, "_current_alloy_identity", lambda: (record, process))
+    monkeypatch.setattr(
+        SURVEY, "_active_prometheus_self_target",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(SURVEY.Refusal("native_source_absent")),
+    )
+    monkeypatch.setattr(SURVEY, "_verify_loaded_candidate_config", lambda *_args, **_kwargs: "c" * 64)
+    monkeypatch.setattr(
+        SURVEY, "read_availability_native_details",
+        lambda *_args, **_kwargs: {"status": "observed", "_detail_bytes": 1},
+    )
+    histories = _fixed_native_histories()
+    requests = _install_delayed_native_history(monkeypatch, histories)
+    receiver_clock_calls = []
+
+    def receiver_clock():
+        receiver_clock_calls.append(None)
+        return 2000.0
+
+    monkeypatch.setattr(SURVEY.time, "time", receiver_clock)
+    receipt = SURVEY.collect_current_availability_source(
+        b"{}", {}, availability, shared, environment="prod", cluster="prod-west",
+        intended_source="alloy", lower_bound=900, require_health_targets=True,
+        candidate_config_sha256="d" * 64,
+    )
+
+    assert receipt["status"] == "observed" and receipt["source"] == "alloy"
+    assert len(receiver_clock_calls) == 1
+    assert len(requests) == 6
+    # The first pair proves the native producer; the remaining four are the full
+    # source read (two self-sample queries and two batched health-sample queries).
+    assert all(item["evaluation_time"] == 2000 for item in requests)
+    assert all(set(item["parameters"]) == {"query", "time"} for item in requests)
+    assert all(item["parameters"]["time"] == ["2000"] for item in requests)
+    assert all(item["arrival_time"] > item["evaluation_time"] for item in requests)
+    assert all(
+        set(item["selected"]) == {"service:o11y" if 'job="alloy"' in item["query"] else "service:api"}
+        for item in requests
+    )
+    assert all(next(iter(item["selected"].values()))["raw_timestamp"] == 1900 for item in requests)
+    assert all(
+        item["evaluation_time"] != next(iter(item["selected"].values()))["raw_timestamp"]
+        for item in requests
+    )
+    assert all(
+        next(iter(item["selected"].values()))["metric_values"]["scrape_samples_scraped"]
+        == (415 if 'job="alloy"' in item["query"] else 17)
+        for item in requests
+    )
+    assert sum('job="alloy"' in item["query"] for item in requests) == 4
+    assert sum('job="o11y-availability"' in item["query"] for item in requests) == 2
+    assert receipt["evidence"]["samples"]["alloy_self"]["scrape_samples_scraped"] == 415
+    assert receipt["evidence"]["samples"]["targets"][0]["scrape_body_size_bytes"] == 2034
 
 
 def test_rendered_availability_relabel_canonicalizes_job_for_probe_and_scrape_families():
@@ -645,7 +1011,7 @@ def test_native_sample_projection_refuses_stale_raw_timestamps_and_reports_scrap
     def api(path, _reason="query_unavailable", **_kwargs):
         query = parse_qs(urlsplit(SURVEY.PROMETHEUS + path).query)["query"][0]
         is_self = 'job="alloy"' in query
-        if query.startswith("timestamp("):
+        if "timestamp(" in query:
             return self_timestamps if is_self else health_timestamps
         return self_raw if is_self else health_raw
 
@@ -666,6 +1032,172 @@ def test_native_sample_projection_refuses_stale_raw_timestamps_and_reports_scrap
     assert receipt["targets"] == [{"target_id": "service:api", "status": "scrape_failed"}]
 
 
+ALERT_ONLY_TARGET = {
+    "target_id": "service:old", "service_identity": "old/service",
+    "environment": "prod", "cluster": "prod-west", "freshness_seconds": 300,
+}
+PROBED_VALUES = {
+    "up": 1, "probe_success": 1, "probe_duration_seconds": 0.25, "probe_http_status_code": 200,
+    "scrape_samples_scraped": 17, "scrape_body_size_bytes": 2034,
+}
+OLD_VALUES = dict.fromkeys(SURVEY.ALLOY_HEALTH_METRICS, 1)
+
+
+def _install_alert_only_readback(monkeypatch, *, health_values, health_timestamps):
+    """One readback: the fixed Alloy self producer is fresh, the health rows are the given ones."""
+    self_values = _native_metric_api_document(values=[("service:o11y", "alloy", "alloy:12345", "o11y/alloy", {
+        "up": 1, "scrape_samples_scraped": 415, "scrape_body_size_bytes": 73_675,
+    })], timestamp_value=1999)
+    self_timestamps = _native_metric_api_document(values=[(
+        "service:o11y", "alloy", "alloy:12345", "o11y/alloy", dict.fromkeys(SURVEY.ALLOY_SELF_METRICS, 1900),
+    )], timestamp_value=1999)
+    health_raw = _native_metric_api_document(values=health_values, timestamp_value=1999)
+    health_ts = _native_metric_api_document(values=health_timestamps, timestamp_value=1999)
+
+    def api(path, _reason="query_unavailable", **_kwargs):
+        query = parse_qs(urlsplit(SURVEY.PROMETHEUS + path).query)["query"][0]
+        is_self = 'job="alloy"' in query
+        if "timestamp(" in query:
+            return self_timestamps if is_self else health_ts
+        return self_values if is_self else health_raw
+
+    monkeypatch.setattr(SURVEY, "_run_api", api)
+
+
+def _probed_row(families):
+    return ("service:api", "o11y-availability", "service:api", "api/service", families)
+
+
+def _alert_only_row(families):
+    return ("service:old", "o11y-availability", "service:old", "old/service", families)
+
+
+PROBED_OBSERVED = {
+    "target_id": "service:api", "status": "observed", "scrape_up": 1, "probe_success": 1,
+    "probe_http_status_code": 200, "probe_duration_seconds": "0.25",
+    "scrape_samples_scraped": 17, "scrape_body_size_bytes": 2034,
+}
+
+
+def test_absent_drill_leftover_samples_of_the_drilled_target_are_ignored_and_never_reported(monkeypatch):
+    # Pre-apply leftovers (1600) sit below the bound (1700): the drilled target's series is still
+    # visible to instant queries, and the readback must neither refuse on it nor report it.
+    _details, availability, shared = _native_details_fixture()
+    availability = {**availability, "alert_only_targets": [ALERT_ONLY_TARGET]}
+    _install_alert_only_readback(
+        monkeypatch,
+        health_values=[_probed_row(PROBED_VALUES), _alert_only_row(OLD_VALUES)],
+        health_timestamps=[
+            _probed_row(dict.fromkeys(SURVEY.ALLOY_HEALTH_METRICS, 1900)),
+            _alert_only_row(dict.fromkeys(SURVEY.ALLOY_HEALTH_METRICS, 1600)),
+        ],
+    )
+    receipt = SURVEY.collect_availability_native_samples(
+        availability, shared, environment="prod", cluster="prod-west",
+        process_started_at=1000, preapply_bound=1700, now=2000, freshness_seconds=300,
+    )
+    assert receipt["targets"] == [PROBED_OBSERVED]
+    assert receipt["alloy_self"]["scrape_up"] == 1
+    assert "service:old" not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize(("sample_time", "outcome"), [(1700, "observed"), (1701, "native_samples_ambiguous")])
+def test_absent_drill_fresh_sample_of_the_drilled_target_refuses_the_read(monkeypatch, sample_time, outcome):
+    # The bound is oldest_allowed (1700). A sample at the bound is a leftover; one newer is not.
+    _details, availability, shared = _native_details_fixture()
+    availability = {**availability, "alert_only_targets": [ALERT_ONLY_TARGET]}
+    _install_alert_only_readback(
+        monkeypatch,
+        health_values=[_probed_row(PROBED_VALUES), _alert_only_row(OLD_VALUES)],
+        health_timestamps=[
+            _probed_row(dict.fromkeys(SURVEY.ALLOY_HEALTH_METRICS, 1900)),
+            _alert_only_row({**dict.fromkeys(SURVEY.ALLOY_HEALTH_METRICS, 1600), "up": sample_time}),
+        ],
+    )
+    def collect():
+        return SURVEY.collect_availability_native_samples(
+            availability, shared, environment="prod", cluster="prod-west",
+            process_started_at=1000, preapply_bound=1700, now=2000, freshness_seconds=300,
+        )
+
+    if outcome == "observed":
+        receipt = collect()
+        assert receipt["targets"] == [PROBED_OBSERVED]
+        assert "service:old" not in json.dumps(receipt)
+    else:
+        with pytest.raises(SURVEY.Refusal, match=outcome):
+            collect()
+
+
+def test_absent_drill_value_row_without_a_timestamp_row_is_a_leftover_too(monkeypatch):
+    _details, availability, shared = _native_details_fixture()
+    availability = {**availability, "alert_only_targets": [ALERT_ONLY_TARGET]}
+    _install_alert_only_readback(
+        monkeypatch,
+        health_values=[_probed_row(PROBED_VALUES), _alert_only_row(OLD_VALUES)],
+        health_timestamps=[_probed_row(dict.fromkeys(SURVEY.ALLOY_HEALTH_METRICS, 1900))],
+    )
+    receipt = SURVEY.collect_availability_native_samples(
+        availability, shared, environment="prod", cluster="prod-west",
+        process_started_at=1000, preapply_bound=1700, now=2000, freshness_seconds=300,
+    )
+    assert receipt["targets"] == [PROBED_OBSERVED]
+    assert "service:old" not in json.dumps(receipt)
+
+
+def test_absent_drill_still_refuses_a_series_no_declaration_names(monkeypatch):
+    _details, availability, shared = _native_details_fixture()
+    availability = {**availability, "alert_only_targets": [ALERT_ONLY_TARGET]}
+    _install_alert_only_readback(
+        monkeypatch,
+        health_values=[
+            _probed_row(PROBED_VALUES), _alert_only_row(OLD_VALUES),
+            ("service:ghost", "o11y-availability", "service:ghost", "ghost/service", {"up": 1}),
+        ],
+        health_timestamps=[
+            _probed_row(dict.fromkeys(SURVEY.ALLOY_HEALTH_METRICS, 1900)),
+            _alert_only_row(dict.fromkeys(SURVEY.ALLOY_HEALTH_METRICS, 1600)),
+        ],
+    )
+    with pytest.raises(SURVEY.Refusal, match="native_samples_ambiguous"):
+        SURVEY.collect_availability_native_samples(
+            availability, shared, environment="prod", cluster="prod-west",
+            process_started_at=1000, preapply_bound=1700, now=2000, freshness_seconds=300,
+        )
+
+
+@pytest.mark.parametrize("alert_only", [
+    [{**ALERT_ONLY_TARGET, "target_id": "service:api", "service_identity": "api/service"}],
+    [ALERT_ONLY_TARGET, ALERT_ONLY_TARGET],
+    [{**ALERT_ONLY_TARGET, "environment": "dev"}],
+    [{k: v for k, v in ALERT_ONLY_TARGET.items() if k != "service_identity"}],
+    [["service:old"]],
+    {"target_id": "service:old"},
+    None,
+])
+def test_absent_drill_declaration_must_be_a_list_of_distinct_identities(monkeypatch, alert_only):
+    _details, availability, shared = _native_details_fixture()
+    availability = {**availability, "alert_only_targets": alert_only}
+    _install_alert_only_readback(monkeypatch, health_values=[], health_timestamps=[])
+    with pytest.raises(SURVEY.Refusal, match="native_declaration_invalid"):
+        SURVEY.collect_availability_native_samples(
+            availability, shared, environment="prod", cluster="prod-west",
+            process_started_at=1000, preapply_bound=1700, now=2000, freshness_seconds=300,
+        )
+
+
+def test_absent_drill_declaration_without_a_probed_target_is_refused(monkeypatch):
+    _details, _availability, shared = _native_details_fixture()
+    availability = {"enabled": False, "targets": [], "limits": {}, "alert_only_targets": [ALERT_ONLY_TARGET]}
+    _install_alert_only_readback(monkeypatch, health_values=[], health_timestamps=[])
+    with pytest.raises(SURVEY.Refusal, match="native_declaration_invalid"):
+        SURVEY.collect_availability_native_samples(
+            availability, shared, environment="prod", cluster="prod-west",
+            process_started_at=1000, preapply_bound=1700, now=2000, freshness_seconds=300,
+            self_only=True,
+        )
+
+
 def test_native_api_batch_enforces_aggregate_call_byte_and_time_bounds(monkeypatch):
     calls = []
 
@@ -674,7 +1206,7 @@ def test_native_api_batch_enforces_aggregate_call_byte_and_time_bounds(monkeypat
         return b"{}"
 
     monkeypatch.setattr(SURVEY, "_run_api", api)
-    paths = [f"/api/v1/query?query=up_{index}" for index in range(4)]
+    paths = [f"/api/v1/query?query=up_{index}&time=2000" for index in range(4)]
     assert SURVEY._run_native_api_batch(paths) == [b"{}"] * 4
     assert len(calls) == 4
     assert all(call[2]["max_response_bytes"] <= SURVEY.MAX_API_BYTES for call in calls)
@@ -686,9 +1218,464 @@ def test_native_api_batch_enforces_aggregate_call_byte_and_time_bounds(monkeypat
         SURVEY._run_native_api_batch(paths[:2])
 
 
+def test_native_api_batch_refuses_more_than_six_calls_and_oversized_encoded_path(monkeypatch):
+    calls = []
+    monkeypatch.setattr(SURVEY, "_run_api", lambda *args, **kwargs: calls.append((args, kwargs)) or b"{}")
+    with pytest.raises(SURVEY.Refusal, match="native_samples_unavailable"):
+        SURVEY._run_native_api_batch(["/api/v1/query?query=up&time=2000"] * 7)
+    with pytest.raises(SURVEY.Refusal, match="native_samples_unavailable"):
+        SURVEY._run_native_api_batch(["/api/v1/query?query=" + "x" * 4070 + "&time=2000"])
+    assert calls == []
+
+
+@pytest.mark.parametrize("paths", [
+    ["/api/v1/query?query=up"],
+    ["/api/v1/query?query=up&time=2000&time=2000"],
+    ["/api/v1/query?query=up&time=%32%30%30%30"],
+    ["/api/v1/query?query=up&time=02000"],
+    ["/api/v1/query?query=up&time=2000", "/api/v1/query?query=up&time=2001"],
+])
+def test_native_api_batch_rejects_missing_duplicate_noncanonical_or_mixed_snapshot(paths):
+    with pytest.raises(SURVEY.Refusal, match="native_samples_unavailable"):
+        SURVEY._run_native_api_batch(paths)
+
+
+def test_timestamp_query_builder_uses_exact_family_branches_and_restores_names():
+    families = ("up", "scrape_samples_scraped", "scrape_body_size_bytes")
+    path = SURVEY._availability_query_path(
+        families, job="alloy", environment="prod", cluster="prod-west",
+        instance="alloy:12345", target_id="service:o11y", timestamp=True, evaluation_time=2000,
+    ).removeprefix(SURVEY.PROMETHEUS)
+    expression = parse_qs(urlsplit(SURVEY.PROMETHEUS + path).query)["query"][0]
+    assert expression.count("label_replace(timestamp(") == len(families)
+    assert expression.count("or on(__name__)") == len(families) - 1
+    for family in families:
+        assert f'__name__="{family}"' in expression
+        assert f'"__name__", "{family}", "job", ".*"' in expression
+    matchers = (
+        'job="alloy"', 'environment="prod"', 'cluster="prod-west"',
+        'instance="alloy:12345"', 'target_id="service:o11y"',
+    )
+    branches = expression.split(" or on(__name__) ")
+    assert len(branches) == len(families)
+    for family, branch in zip(families, branches, strict=True):
+        assert branch.startswith(f'label_replace(timestamp({{__name__="{family}",')
+        assert branch.endswith(f'"__name__", "{family}", "job", ".*")')
+        for matcher in matchers:
+            assert branch.count(matcher) == 1
+    value_path = SURVEY._availability_query_path(
+        families, job="alloy", environment="prod", cluster="prod-west",
+        instance="alloy:12345", target_id="service:o11y", evaluation_time=2000,
+    ).removeprefix(SURVEY.PROMETHEUS)
+    value_expression = parse_qs(urlsplit(SURVEY.PROMETHEUS + value_path).query)["query"][0]
+    assert parse_qs(urlsplit(SURVEY.PROMETHEUS + path).query) == {
+        "query": [expression], "time": ["2000"],
+    }
+    assert value_expression == (
+        '{__name__=~"^(?:up|scrape_samples_scraped|scrape_body_size_bytes)$",job="alloy",'
+        'environment="prod",cluster="prod-west",instance="alloy:12345",target_id="service:o11y"}'
+    )
+
+
+@pytest.mark.parametrize("value", [True, 0, -1, 1.5, "2000"])
+def test_native_query_builder_requires_positive_nonboolean_integer_snapshot(value):
+    with pytest.raises(SURVEY.Refusal, match="native_declaration_invalid"):
+        SURVEY._availability_query_path(
+            ("up",), job="alloy", environment="prod", cluster="prod-west",
+            evaluation_time=value,
+        )
+
+
+def test_native_promql_runner_builds_actual_expressions_and_semantic_mutants():
+    expressions = NATIVE_PROMQL._builder_expressions(SURVEY)
+    assert len(expressions["self_families"]) == 3
+    assert len(expressions["health_families"]) == 6
+    assert expressions["self_timestamps"].count("timestamp(") == 3
+    assert expressions["health_timestamps"].count("timestamp(") == 6
+    assert expressions["max_self_api_path_length"] <= 4096
+    assert expressions["max_health_api_path_length"] <= 4096
+    grouped = f'timestamp({expressions["self_values"]})'
+    assert expressions["grouped_self"] == grouped
+    plain_self, plain_health = NATIVE_PROMQL._query_mutants(expressions)
+    assert "or on(__name__)" not in plain_self
+    assert "or on(__name__)" not in plain_health
+    rules = yaml.safe_load(NATIVE_PROMQL._rules(expressions))
+    assert rules["rule_files"] == []
+    assert len(rules["tests"][0]["promql_expr_test"]) == 2
+    assert any(
+        'unexpected="preserved"' in sample["labels"]
+        for sample in rules["tests"][0]["promql_expr_test"][1]["exp_samples"]
+    )
+    input_series = rules["tests"][0]["input_series"]
+    assert len(input_series) == 3 + 6 + 6 + 5
+    self_decoys = [
+        sample for sample in input_series
+        if 'instance="alloy:wrong-instance"' in sample["series"]
+        or 'target_id="service:wrong-target"' in sample["series"]
+    ]
+    assert len(self_decoys) == 6
+    assert len(rules["tests"][0]["promql_expr_test"][0]["exp_samples"]) == 3
+    NATIVE_PROMQL._consumer_fixture_check(SURVEY, expressions)
+
+
+@pytest.mark.parametrize("bad_time_fields", [
+    [("time", "2001")],
+    [("time", "02000")],
+    [],
+    [("time", "2000"), ("time", "2000")],
+    [("time", "2000"), ("time", "")],
+])
+def test_native_promql_runner_rejects_wrong_noncanonical_missing_and_duplicate_time(
+    monkeypatch, bad_time_fields,
+):
+    production_builder = SURVEY._availability_query_path
+    original_queries = []
+
+    def mutated_builder(*args, **kwargs):
+        url = production_builder(*args, **kwargs)
+        parsed = urlsplit(url)
+        original_parameters = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+        original_queries.append(original_parameters[0][1])
+        mutated_parameters = [("query", original_parameters[0][1]), *bad_time_fields]
+        return urlunsplit(parsed._replace(query=urlencode(mutated_parameters)))
+
+    monkeypatch.setattr(SURVEY, "_availability_query_path", mutated_builder)
+    with pytest.raises(NATIVE_PROMQL.RunnerError, match="canonical evaluation time"):
+        NATIVE_PROMQL._expression(
+            SURVEY, ("up",), job="alloy", environment="prod", cluster="prod-west",
+            evaluation_time=2000,
+        )
+    assert len(original_queries) == 1 and original_queries[0]
+
+
+def test_native_promql_runner_reads_compose_fallback_and_rejects_malformed_image(tmp_path, monkeypatch):
+    image = NATIVE_PROMQL._fallback_image()
+    assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/:@-]*", image)
+    compose = tmp_path / "compose.yml"
+    compose.write_text('services:\n  prometheus:\n    image: "${PROMETHEUS_IMAGE:-}"\n', encoding="utf-8")
+    monkeypatch.setattr(NATIVE_PROMQL, "COMPOSE", compose)
+    with pytest.raises(NATIVE_PROMQL.RunnerError, match="malformed literal fallback Prometheus image"):
+        NATIVE_PROMQL._fallback_image()
+
+
+def test_native_promql_runner_fails_closed_on_nonsemantic_mutant_errors():
+    assert NATIVE_PROMQL._classify_evaluator_failure(
+        b"duplicate output labelset",
+    ) == "duplicate_output_labelset"
+    assert NATIVE_PROMQL._classify_evaluator_failure(b"query result does not match") == "expected_result_mismatch"
+    assert NATIVE_PROMQL._classify_evaluator_failure(b"error parsing expression") is None
+    assert NATIVE_PROMQL._classify_evaluator_failure(
+        b"same labelset\nerror parsing expression",
+    ) is None
+    assert NATIVE_PROMQL._classify_evaluator_failure(b"cannot connect to daemon") is None
+    assert NATIVE_PROMQL._classify_evaluator_failure(
+        b'FAILED:\n  expr: "up or probe_success", time: 2m,\n'
+        b'    exp: {__name__="probe_success"} 0, {__name__="up"} 0\n'
+        b'    got: {__name__="up"} 0',
+    ) == "expected_result_mismatch"
+    assert NATIVE_PROMQL._classify_evaluator_failure(
+        b'FAILED:\n  expr: "up or probe_success", time: 2m,\n'
+        b'error parsing fixture YAML\n'
+        b'    exp: {__name__="probe_success"} 0\n'
+        b'    got: {__name__="up"} 0',
+    ) is None
+    command = NATIVE_PROMQL._evaluator_command("docker", "prometheus:test", "unique-name", "owner")
+    required_args = (
+        "--rm", "-i", "--network", "none", "--pull=never", "--entrypoint",
+        "/bin/promtool", "test", "rules", "/dev/stdin",
+    )
+    for argument in required_args:
+        assert argument in command
+    forbidden_args = {"-v", "--volume", "--privileged", "--network=host", "-p"}
+    assert not any(argument in forbidden_args for argument in command)
+
+
+# The runner keeps min(PROCESS_CLEANUP_RESERVE_SECONDS, a quarter of the time left) for cleanup and
+# PROCESS_REAP_FRACTION of that to reap a killed child. A 0.2 s deadline left 30 ms, which a late
+# wake-up under pre-push load used up (AC-968); 2 s leaves 0.3 s, near what the runner's own 3-4 s
+# engine calls get. The refusal is proven by a stub, below.
+DEADLINE_TEST_SECONDS = 2.0
+
+
+def test_native_promql_runner_process_io_and_post_eof_wait_respect_deadline(monkeypatch):
+    real_popen = NATIVE_PROMQL.subprocess.Popen
+    processes = []
+
+    class TrackingPopen(real_popen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.was_killed = False
+            self.reaped_after_kill = False
+            self.post_kill_wait_timeouts = []
+            processes.append(self)
+
+        def kill(self):
+            self.was_killed = True
+            return super().kill()
+
+        def wait(self, timeout=None):
+            if self.was_killed:
+                self.post_kill_wait_timeouts.append(timeout)
+            result = super().wait(timeout=timeout)
+            if self.was_killed:
+                self.reaped_after_kill = True
+            return result
+
+    reap_window = (
+        min(NATIVE_PROMQL.PROCESS_CLEANUP_RESERVE_SECONDS, DEADLINE_TEST_SECONDS * 0.25)
+        * NATIVE_PROMQL.PROCESS_REAP_FRACTION
+    )
+    assert reap_window >= 0.25, "the runner's reap window shrank: raise DEADLINE_TEST_SECONDS"
+    monkeypatch.setattr(NATIVE_PROMQL.subprocess, "Popen", TrackingPopen)
+    cases = (
+        ("import time; time.sleep(5)", b"x" * (2 * 1024 * 1024)),
+        ("import os, time; os.close(1); os.close(2); time.sleep(5)", None),
+    )
+    for program, input_bytes in cases:
+        started = NATIVE_PROMQL.time.monotonic()
+        result = NATIVE_PROMQL._bounded_process(
+            [NATIVE_PROMQL.sys.executable, "-c", program],
+            deadline=started + DEADLINE_TEST_SECONDS,
+            input_bytes=input_bytes,
+        )
+        elapsed = NATIVE_PROMQL.time.monotonic() - started
+        assert result[2] is True
+        # Past the deadline the runner only closes a pipe and returns; 1 s absorbs a late wake-up and
+        # stays under the child's 5 s sleep, so a runner that waited for the child still fails.
+        assert elapsed < DEADLINE_TEST_SECONDS + 1.0
+        process = processes[-1]
+        assert process.was_killed
+        assert process.post_kill_wait_timeouts
+        assert process.post_kill_wait_timeouts[-1] > 0
+        assert process.reaped_after_kill
+        assert process.returncode is not None
+
+
+def test_native_promql_runner_refuses_a_child_not_reaped_in_its_window(monkeypatch):
+    real_popen = NATIVE_PROMQL.subprocess.Popen
+    processes = []
+
+    class UnreapedPopen(real_popen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.was_killed = False
+            processes.append(self)
+
+        def kill(self):
+            self.was_killed = True
+            return super().kill()
+
+        def wait(self, timeout=None):
+            raise NATIVE_PROMQL.subprocess.TimeoutExpired(self.args, timeout)
+
+    monkeypatch.setattr(NATIVE_PROMQL.subprocess, "Popen", UnreapedPopen)
+    threads_before = set(threading.enumerate())
+    try:
+        with pytest.raises(NATIVE_PROMQL.RunnerError, match="not reaped within its reserved cleanup window"):
+            NATIVE_PROMQL._bounded_process(
+                [NATIVE_PROMQL.sys.executable, "-c", "import time; time.sleep(5)"],
+                deadline=NATIVE_PROMQL.time.monotonic() + DEADLINE_TEST_SECONDS,
+            )
+        assert processes[-1].was_killed
+    finally:
+        for process in processes:
+            process.kill()
+            real_popen.wait(process, timeout=5)
+        # The runner raised before joining its output reader; it ends at the dead child's EOF.
+        for thread in set(threading.enumerate()) - threads_before:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+        for process in processes:
+            process.stdout.close()
+
+
+def test_native_promql_runner_caps_subprocess_output_while_draining():
+    result = NATIVE_PROMQL._bounded_process(
+        [NATIVE_PROMQL.sys.executable, "-c", "import os; os.write(1, b'x' * 40000)"],
+        deadline=NATIVE_PROMQL.time.monotonic() + 2,
+    )
+    assert result[0] == 0
+    assert result[1] == b"x" * NATIVE_PROMQL.OUTPUT_LIMIT
+    assert result[2] is False
+    assert result[3] is True
+
+
+def test_native_promql_runner_distinguishes_missing_image_from_inspection_errors():
+    classify = NATIVE_PROMQL._classify_image_status
+    assert classify("podman", 1, b"", False, False) is False
+    assert classify("docker", 1, b"Error: No such image: prom/test:v1", False, False) is False
+    assert classify("podman", 0, b"", False, False) is True
+    for engine, code, output, timed_out, truncated in (
+        ("podman", 125, b"connection refused", False, False),
+        ("podman", 1, b"socket error", False, False),
+        ("docker", 1, b"cannot connect to API", False, False),
+        ("podman", 124, b"", True, False),
+        ("podman", 1, b"", False, True),
+    ):
+        with pytest.raises(NATIVE_PROMQL.RunnerError):
+            classify(engine, code, output, timed_out, truncated)
+
+
+def _write_fake_container_engine(tmp_path, name, owner, *, wrong_owner=False):
+    executable = tmp_path / "fake-container-engine"
+    removed = tmp_path / "removed"
+    inspected = tmp_path / "inspected"
+    removals = tmp_path / "removals"
+    source = f"#!{NATIVE_PROMQL.sys.executable}\n" + '''
+import json
+import pathlib
+import sys
+
+name = __NAME__
+owner = __OWNER__
+owner_label = __OWNER_LABEL__
+run_label = __RUN_LABEL__
+removed = pathlib.Path(__REMOVED__)
+inspected = pathlib.Path(__INSPECTED__)
+removals = pathlib.Path(__REMOVALS__)
+wrong_owner = __WRONG_OWNER__
+args = sys.argv[1:]
+if args[0] == "ps":
+    names = [name + "-suffix"]
+    if not removed.exists():
+        names.append(name)
+    print("\\n".join(names))
+elif args[0] == "inspect":
+    requested = args[-1]
+    inspected.write_text(requested, encoding="utf-8")
+    labels = {owner_label: "other" if wrong_owner else owner, run_label: requested}
+    print(json.dumps([{"Name": "/" + requested, "Config": {"Labels": labels}}]))
+elif args[0] == "rm":
+    removals.write_text(json.dumps(args[1:]), encoding="utf-8")
+    removed.touch()
+else:
+    raise SystemExit(2)
+'''
+    replacements = {
+        "__NAME__": json.dumps(name),
+        "__OWNER__": json.dumps(owner),
+        "__OWNER_LABEL__": json.dumps(NATIVE_PROMQL.OWNER_LABEL),
+        "__RUN_LABEL__": json.dumps(NATIVE_PROMQL.RUN_LABEL),
+        "__REMOVED__": json.dumps(str(removed)),
+        "__INSPECTED__": json.dumps(str(inspected)),
+        "__REMOVALS__": json.dumps(str(removals)),
+        "__WRONG_OWNER__": repr(wrong_owner),
+    }
+    for token, value in replacements.items():
+        source = source.replace(token, value)
+    executable.write_text(source, encoding="utf-8")
+    executable.chmod(0o700)
+    return executable, inspected, removals
+
+
+# _cleanup gets the runner's whole TOTAL_SECONDS budget, far more than its per-call caps add up to,
+# so only those caps bind; a 2 s budget was used up by slow starts under load (AC-968).
+def test_native_promql_runner_cleans_only_exact_name_and_label_owned_containers(tmp_path):
+    name = "o11y-promql-unique-1"
+    owner = "invocation-unique"
+    engine, inspected, removals = _write_fake_container_engine(tmp_path, name, owner)
+    NATIVE_PROMQL._cleanup(
+        str(engine), owner, [name, name + "-absent"], NATIVE_PROMQL.time.monotonic() + NATIVE_PROMQL.TOTAL_SECONDS,
+    )
+    assert inspected.read_text(encoding="utf-8") == name
+    assert json.loads(removals.read_text(encoding="utf-8")) == [
+        "--force", "--volumes", name,
+    ]
+
+
+def test_native_promql_runner_refuses_cleanup_when_labels_do_not_prove_ownership(tmp_path):
+    name = "o11y-promql-unique-2"
+    owner = "invocation-unique"
+    engine, _inspected, removals = _write_fake_container_engine(
+        tmp_path, name, owner, wrong_owner=True,
+    )
+    with pytest.raises(NATIVE_PROMQL.RunnerError, match="ownership mismatch"):
+        NATIVE_PROMQL._cleanup(
+            str(engine), owner, [name], NATIVE_PROMQL.time.monotonic() + NATIVE_PROMQL.TOTAL_SECONDS,
+        )
+    assert not removals.exists()
+
+
 def test_native_process_timestamp_preserves_subsecond_boundary():
     parsed = SURVEY._parse_native_time("2026-10-28T18:08:11.166822896Z")
     assert parsed == SURVEY.Decimal("1793210891.166822896")
+
+
+def test_podman_template_formats_started_at_as_rfc3339nano_for_the_strict_parser(tmp_path):
+    go = shutil.which("go")
+    assert go is not None, "Go is required to exercise the production Podman template formatter"
+    harness = tmp_path / "render_inspect.go"
+    harness.write_text(
+        '''package main
+import (
+    "encoding/json"
+    "os"
+    "text/template"
+    "time"
+)
+type State struct { Running bool; Pid int; StartedAt time.Time }
+type HostConfig struct { NetworkMode string; PortBindings map[string]any }
+type Config struct { Labels map[string]string }
+type Container struct { Id string; Image string; State State; HostConfig HostConfig; Config Config; Name string }
+func main() {
+    var started time.Time
+    var err error
+    if os.Args[2] != "zero" {
+        started, err = time.Parse(time.RFC3339Nano, os.Args[2])
+        if err != nil { panic(err) }
+    }
+    row := Container{
+        Id: "0123456789abcdef", Image: "docker.io/library/alpine:3.20",
+        State: State{Running: true, Pid: 1234, StartedAt: started},
+        HostConfig: HostConfig{NetworkMode: "bridge", PortBindings: map[string]any{}},
+        Config: Config{Labels: map[string]string{
+            "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy",
+        }},
+        Name: "/alloy",
+    }
+    funcs := template.FuncMap{"json": func(value any) string {
+        encoded, _ := json.Marshal(value)
+        return string(encoded)
+    }}
+    parsed, err := template.New("podman-inspect").Funcs(funcs).Parse(os.Args[1])
+    if err != nil { panic(err) }
+    if err := parsed.Execute(os.Stdout, row); err != nil { panic(err) }
+}
+''',
+        encoding="utf-8",
+    )
+    stamps = (
+        "2026-10-28T18:08:11.166822896Z",
+        "2026-10-28T18:08:11.166822897Z",
+        "2026-10-28T23:38:11.166822897+05:30",
+    )
+    parsed_stamps = []
+    for stamp in stamps:
+        rendered = subprocess.run(
+            [go, "run", str(harness), SURVEY.AVAILABILITY_INSPECT_FORMAT, stamp],
+            check=True, capture_output=True, text=True, timeout=60,
+        ).stdout.encode("utf-8")
+        record = SURVEY._availability_inspect(rendered)
+        assert record["started_at"] == stamp
+        parsed = SURVEY._parse_native_time(record["started_at"])
+        assert parsed == SURVEY._parse_native_time(stamp)
+        parsed_stamps.append(parsed)
+    assert parsed_stamps[1] - parsed_stamps[0] == SURVEY.Decimal("0.000000001")
+
+    zero_rendered = subprocess.run(
+        [go, "run", str(harness), SURVEY.AVAILABILITY_INSPECT_FORMAT, "zero"],
+        check=True, capture_output=True, text=True, timeout=60,
+    ).stdout.encode("utf-8")
+    zero_record = SURVEY._availability_inspect(zero_rendered)
+    assert zero_record["started_at"] == ""
+    for malformed in (zero_record["started_at"], "not-a-timestamp"):
+        with pytest.raises(SURVEY.Refusal, match="native_debug_invalid"):
+            SURVEY._parse_native_time(malformed)
+    malformed_fields = zero_rendered.decode("utf-8").split("\t")
+    malformed_fields[4] = "not-a-timestamp"
+    malformed_record = SURVEY._availability_inspect("\t".join(malformed_fields).encode("utf-8"))
+    with pytest.raises(SURVEY.Refusal, match="native_debug_invalid"):
+        SURVEY._parse_native_time(malformed_record["started_at"])
 
 
 def _prometheus_self_targets_document():
@@ -707,25 +1694,33 @@ def test_prometheus_self_source_requires_fresh_raw_samples_and_all_loaded_limits
         "alloy", static_configs=[{"targets": ["alloy:12345"], "labels": static_labels}],
     )
     readback = _loaded_readback({"scrape_configs": [loaded_job]})
-    values = _native_metric_api_document(
-        values=[("service:o11y", "alloy", "alloy:12345", "o11y/alloy", {"up": 1, "scrape_samples_scraped": 415})],
-        timestamp_value=1999,
-    )
-    timestamp = _native_metric_api_document(
-        values=[("service:o11y", "alloy", "alloy:12345", "o11y/alloy", {"up": 1900, "scrape_samples_scraped": 1900})],
-        timestamp_value=1999,
-    )
+    histories = _fixed_native_histories()
+    requests = _install_delayed_native_history(monkeypatch, histories)
 
-    def api(path, _reason="query_unavailable", **_kwargs):
-        query = parse_qs(urlsplit(SURVEY.PROMETHEUS + path).query)["query"][0]
-        assert query.startswith("timestamp(") or "scrape_samples_scraped" in query
-        return timestamp if query.startswith("timestamp(") else values
-
-    monkeypatch.setattr(SURVEY, "_run_api", api)
     receipt = SURVEY.collect_prometheus_self_source(
         _prometheus_self_targets_document(), readback, _loaded_inventory(),
         environment="prod", cluster="prod-west", now=2000, lower_bound=1700,
     )
+    assert len(requests) == 2
+    assert {item["evaluation_time"] for item in requests} == {2000}
+    assert all(set(item["parameters"]) == {"query", "time"} for item in requests)
+    assert all(item["parameters"]["time"] == ["2000"] for item in requests)
+    assert {item["selected"]["service:o11y"]["raw_timestamp"] for item in requests} == {1900}
+    assert {item["selected"]["service:o11y"]["metric_values"]["scrape_samples_scraped"]
+            for item in requests if "timestamp(" not in item["query"]} == {415}
+    selector = (
+        'job="alloy",environment="prod",cluster="prod-west",instance="alloy:12345",'
+        'target_id="service:o11y"'
+    )
+    expected_queries = {
+        '{__name__=~"^(?:up|scrape_samples_scraped)$",' + selector + '}',
+        'label_replace(timestamp({__name__="up",' + selector + '}), "__name__", "up", "job", ".*")'
+        ' or on(__name__) '
+        'label_replace(timestamp({__name__="scrape_samples_scraped",' + selector
+        + '}), "__name__", "scrape_samples_scraped", "job", ".*")',
+    }
+    assert {item["query"] for item in requests} == expected_queries
+    assert {"timestamp(" in item["query"] for item in requests} == {False, True}
     assert receipt == {
         "status": "observed", "source": "prometheus",
         "alloy_self": {"up": 1, "scrape_samples_scraped": 415},
@@ -752,7 +1747,10 @@ def test_prometheus_self_source_limits_accept_exact_legacy_template_labels():
         return value
 
     env = Environment(undefined=StrictUndefined)
-    env.filters.update(to_json=json.dumps, bool=bool, mandatory=mandatory)
+    env.filters.update(
+        to_json=json.dumps, bool=bool, mandatory=mandatory,
+        o11y_effective_scrape_limits=BUDGET.o11y_effective_scrape_limits,
+    )
     template = ROOT / "platform/services/o11y/deployment/templates/prometheus.yml.j2"
     rendered = env.from_string(template.read_text(encoding="utf-8")).render(
         local_mode=False, o11y_scrape_limits_reviewed=True, o11y_scrape_limits=_loaded_inventory(),
@@ -761,16 +1759,22 @@ def test_prometheus_self_source_limits_accept_exact_legacy_template_labels():
     )
     config = yaml.safe_load(rendered)
     job = next(row for row in config["scrape_configs"] if row["job_name"] == "alloy")
+    # Every source-review caller passes the effective limits (the 2000 default ceiling applies).
     SURVEY._validate_prometheus_alloy_loaded_limits(
-        _loaded_readback({"scrape_configs": [job]}), _loaded_inventory(),
+        _loaded_readback({"scrape_configs": [job]}),
+        BUDGET.o11y_effective_scrape_limits(_loaded_inventory(), 2000, False, True),
         environment="prod", cluster="prod-west",
     )
 
 
 def test_native_self_only_helper_receipt_is_accepted_only_by_expected_source_consumer(monkeypatch):
+    native_limits = {
+        "body_size_limit": 16_777_216, "sample_limit": 10_000, "label_limit": 64,
+        "label_name_length_limit": 128, "label_value_length_limit": 2048,
+    }
     detail = {
         "status": "observed", "reason": "fixed_native_components_loaded", "target_count": 0,
-        "targets": [], "alloy_self": {"status": "observed", "limits": _loaded_inventory()},
+        "targets": [], "alloy_self": {"status": "observed", "limits": native_limits},
     }
     samples = {
         "status": "observed", "reason": "fresh_native_samples", "freshness_seconds": 300,
@@ -957,7 +1961,7 @@ def test_root_graph_alone_does_not_claim_cross_controller_native_absence(monkeyp
         "enabled": False, "limits": {},
         "targets": [{"module_name": "health_01", "freshness_seconds": 300}],
     }
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_binding_digest_invalid"):
         SURVEY.collect_current_availability_source(
             b"{}", {}, availability, _loaded_inventory(), environment="prod", cluster="prod-west",
             intended_source="prometheus", now=2000, require_health_targets=True,
@@ -994,7 +1998,10 @@ def test_loaded_candidate_binding_requires_exact_process_mount_and_config_bytes(
     process = {
         "pid": 4101, "cmdline_sha256": hashlib.sha256(command_line).hexdigest(),
     }
-    state = {"argv": command_line, "root_bytes": config_bytes, "mount_rw": False}
+    state = {
+        "argv": command_line, "root_bytes": config_bytes, "mount_rw": False,
+        "mount_source": str(config_path), "mount_fail": False,
+    }
     provider_state = {"version": "1.3.0", "digest": "b" * 64}
     original_open = open
     original_read = SURVEY._read_bounded_regular_file
@@ -1013,8 +2020,11 @@ def test_loaded_candidate_binding_requires_exact_process_mount_and_config_bytes(
         if "{{.ImageName}}" in argv:
             return b"docker.io/grafana/alloy:v1.5.1\n"
         if "{{json .Mounts}}" in argv:
+            if state["mount_fail"]:
+                # The real helper raises the caller's refusal word for a failed inspect.
+                raise SURVEY.Refusal(_kwargs.get("refusal", "namespace_unverified"))
             return json.dumps([{
-                "Type": "bind", "Source": str(config_path),
+                "Type": "bind", "Source": state["mount_source"],
                 "Destination": "/etc/alloy/config.alloy", "RW": state["mount_rw"],
             }]).encode()
         raise AssertionError("unexpected runtime metadata query")
@@ -1036,6 +2046,33 @@ def test_loaded_candidate_binding_requires_exact_process_mount_and_config_bytes(
         record, process, digest, availability_enabled=True, lower_bound=900,
     )
     assert re.fullmatch(r"[0-9a-f]{64}", binding)
+    # A symlink in the deployment path: podman reports the resolved bind source.
+    link = tmp_path / "deploy-link"
+    link.symlink_to(tmp_path, target_is_directory=True)
+    monkeypatch.setenv("O11Y_DEPLOYMENT_DIR", str(link))
+    assert SURVEY._verify_loaded_candidate_config(
+        record, process, digest, availability_enabled=True, lower_bound=900,
+    )
+    monkeypatch.setenv("O11Y_DEPLOYMENT_DIR", str(tmp_path))
+    # A different host file with identical bytes, and a symlink that resolves outside the
+    # deployment directory, are not the placed config: the mount source must be that file.
+    twin = tmp_path / "twin.alloy"
+    twin.write_bytes(config_bytes)
+    outside = tmp_path / "outside-link.alloy"
+    outside.symlink_to(twin)
+    for source in (str(twin), str(outside)):
+        state["mount_source"] = source
+        with pytest.raises(SURVEY.Refusal, match="native_binding_mounts"):
+            SURVEY._verify_loaded_candidate_config(
+                record, process, digest, availability_enabled=True, lower_bound=900,
+            )
+    state["mount_source"] = str(config_path)
+    state["mount_fail"] = True
+    with pytest.raises(SURVEY.Refusal, match="native_binding_mounts"):
+        SURVEY._verify_loaded_candidate_config(
+            record, process, digest, availability_enabled=True, lower_bound=900,
+        )
+    state["mount_fail"] = False
     provider_state.update(version="1.6.0", digest="d" * 64)
     assert SURVEY._verify_loaded_candidate_config(
         record, process, digest, availability_enabled=True, lower_bound=900,
@@ -1043,24 +2080,24 @@ def test_loaded_candidate_binding_requires_exact_process_mount_and_config_bytes(
     provider_state.update(version="1.3.0", digest="b" * 64)
 
     state["argv"] = command_line.replace(b"127.0.0.1", b"0.0.0.0")
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_binding_argv"):
         SURVEY._verify_loaded_candidate_config(
             record, process, digest, availability_enabled=True, lower_bound=900,
         )
     state["argv"] = command_line
     state["mount_rw"] = True
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_binding_mounts"):
         SURVEY._verify_loaded_candidate_config(
             record, process, digest, availability_enabled=True, lower_bound=900,
         )
     state["mount_rw"] = False
     state["root_bytes"] = b'prometheus.scrape "stale" {}\n'
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_binding_config_bytes"):
         SURVEY._verify_loaded_candidate_config(
             record, process, digest, availability_enabled=True, lower_bound=900,
         )
     state["root_bytes"] = config_bytes
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_binding_config_digest"):
         SURVEY._verify_loaded_candidate_config(
             record, process, "f" * 64, availability_enabled=True, lower_bound=900,
         )
@@ -1101,7 +2138,7 @@ def test_source_transition_requires_new_post_apply_alloy_process(monkeypatch):
     assert binding_calls
 
     binding_calls.clear()
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_source_transition_unproven"):
         SURVEY.collect_current_availability_source(
             b"{}", {}, {"enabled": True, "targets": [{"freshness_seconds": 300}], "limits": {}},
             _loaded_inventory(), environment="prod", cluster="prod-west", intended_source="alloy",
@@ -1112,7 +2149,7 @@ def test_source_transition_requires_new_post_apply_alloy_process(monkeypatch):
     assert binding_calls == []
 
     record["started_at"] = "1970-01-01T00:14:00Z"
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_source_transition_unproven"):
         SURVEY.collect_current_availability_source(
             b"{}", {}, {"enabled": True, "targets": [{"freshness_seconds": 300}], "limits": {}},
             _loaded_inventory(), environment="prod", cluster="prod-west", intended_source="alloy",
@@ -1258,6 +2295,111 @@ def test_availability_source_action_consumes_ansible_environment_json_and_stdin_
         SURVEY._availability_source_action()
 
 
+def _effective_compose_fixture(ports=None):
+    alloy = {
+        "image": "docker.io/grafana/alloy:v1.5.1",
+        "command": ["run", "--server.http.listen-addr=0.0.0.0:12345", "/etc/alloy/config.alloy"],
+        "volumes": [{
+            "type": "bind", "source": str((ROOT / "platform/services/o11y/deployment/config/config.alloy").resolve()),
+            "target": "/etc/alloy/config.alloy", "read_only": True,
+        }],
+    }
+    if ports is not None:
+        alloy["ports"] = ports
+    return {"name": "o11y", "services": {"alloy": alloy}}
+
+
+def _check_effective_compose_ports(monkeypatch, config, *, enabled):
+    monkeypatch.setenv("LOCAL_MODE", "true")
+    monkeypatch.setenv("O11Y_AVAILABILITY_ENABLED", "true" if enabled else "false")
+    config["services"]["alloy"]["command"][1] = (
+        "--server.http.listen-addr=127.0.0.1:12345" if enabled
+        else "--server.http.listen-addr=0.0.0.0:12345"
+    )
+    if enabled:
+        config["x-podman"] = {"in_pod": False}
+    monkeypatch.setattr(
+        SURVEY, "_availability_command", lambda _argv, **_kwargs: yaml.safe_dump(config).encode("utf-8")
+    )
+    return SURVEY._verify_availability_effective_compose(
+        str(ROOT / "platform/services/o11y/deployment"), ["synthetic-compose"], []
+    )
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_effective_compose_accepts_normalized_otlp_ports_in_both_modes(monkeypatch, enabled):
+    ports = [
+        {"target": 4317, "published": "7421", "protocol": "tcp", "host_ip": "127.0.0.1"},
+        {"target": 4318, "published": "4318", "protocol": "tcp", "host_ip": "192.168.1.10"},
+    ]
+    assert _check_effective_compose_ports(monkeypatch, _effective_compose_fixture(ports), enabled=enabled) == "o11y"
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_effective_compose_accepts_only_narrow_otlp_short_port_forms(monkeypatch, enabled):
+    for port in ("127.0.0.1:4317:4317/tcp", "192.168.1.10:4318:4318"):
+        assert _check_effective_compose_ports(
+            monkeypatch, _effective_compose_fixture([port]), enabled=enabled
+        ) == "o11y"
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize(
+    "port",
+    [
+        {"target": 12345, "published": "9999", "protocol": "tcp"},
+        {"target": 4317, "published": "12345", "protocol": "tcp"},
+        {"target": True, "published": "4317", "protocol": "tcp"},
+        {"target": "4317-4318", "published": "4317", "protocol": "tcp"},
+        {"target": 4317, "published": "90000", "protocol": "tcp"},
+        {"target": 4317, "published": "4317", "protocol": "udp"},
+        {"target": 4317, "published": "4317", "protocol": "tcp", "extra": "ambiguous"},
+        {"target": 4317, "published": "4317", "protocol": "tcp", "host_ip": None},
+        {"target": 4317, "published": "4317", "protocol": "tcp", "host_ip": "0.0.0.0"},
+        {"target": 4317, "published": "4317", "protocol": "tcp", "host_ip": "203.0.113.10"},
+        "4317",
+        "4317:4317/tcp",
+        "127.0.0.1:4317-4318:4317/tcp",
+        ":::4317:4317/tcp",
+    ],
+)
+def test_effective_compose_refuses_admin_remaps_and_malformed_port_shapes(monkeypatch, port, enabled):
+    if isinstance(port, dict):
+        port = {"host_ip": "127.0.0.1", **port}
+    with pytest.raises(SURVEY.Refusal, match="namespace_candidate_ports"):
+        _check_effective_compose_ports(monkeypatch, _effective_compose_fixture([port]), enabled=enabled)
+
+
+@pytest.mark.parametrize("ports", [None, {}, "4317:4317"])
+def test_effective_compose_refuses_malformed_ports_collection(monkeypatch, ports):
+    config = _effective_compose_fixture()
+    config["services"]["alloy"]["ports"] = ports
+    with pytest.raises(SURVEY.Refusal, match="namespace_candidate_ports"):
+        _check_effective_compose_ports(monkeypatch, config, enabled=False)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize(
+    "admin_mapping",
+    [
+        {"target": 12345, "published": "9999"},
+        {"target": 9999, "published": "12345"},
+    ],
+)
+def test_effective_compose_refuses_admin_publication_on_other_services(monkeypatch, admin_mapping, enabled):
+    valid_alloy_otlp = {
+        "target": 4317, "published": "7431", "protocol": "tcp", "host_ip": "127.0.0.1",
+    }
+    other_service_admin_port = {
+        **admin_mapping, "protocol": "tcp", "host_ip": "127.0.0.1",
+    }
+    config = _effective_compose_fixture([valid_alloy_otlp])
+    config["services"]["synthetic"] = {"ports": [other_service_admin_port]}
+
+    with pytest.raises(SURVEY.Refusal, match="namespace_candidate_ports"):
+        _check_effective_compose_ports(monkeypatch, config, enabled=enabled)
+
+
 def test_availability_namespace_proof_uses_kernel_identity_and_finds_project_siblings():
     containers, processes = _availability_namespace_fixture()
     assert SURVEY.validate_availability_namespace_snapshot(
@@ -1286,17 +2428,25 @@ def test_availability_namespace_refuses_short_and_transitive_container_joiners()
             "pid": pid, "proc_start_ticks": 200 + len(processes),
             "cmdline_sha256": "a" * 64, "netns_dev": 7, "netns_ino": 101,
         }
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_network_mode"):
         SURVEY.validate_availability_namespace_snapshot(containers, processes, (7, 1))
 
     # Different namespace path strings cannot disguise a shared kernel namespace.
     processes["b" * 64]["netns_ino"] = processes["a" * 64]["netns_ino"]
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_network_mode"):
         SURVEY.validate_availability_namespace_snapshot(containers, processes, (7, 1))
 
 
-@pytest.mark.parametrize("failure", ["host", "unstable_pid", "published_port", "hidden_sibling"])
-def test_availability_namespace_proof_refuses_unverified_or_shared_state(failure):
+@pytest.mark.parametrize(
+    ("failure", "category"),
+    [
+        ("host", "namespace_shared"),
+        ("unstable_pid", "namespace_unstable"),
+        ("published_port", "namespace_alloy_host_port"),
+        ("hidden_sibling", "namespace_shared"),
+    ],
+)
+def test_availability_namespace_proof_refuses_unverified_or_shared_state(failure, category):
     containers, processes = _availability_namespace_fixture()
     if failure == "host":
         processes["a" * 64]["netns_ino"] = 1
@@ -1307,7 +2457,7 @@ def test_availability_namespace_proof_refuses_unverified_or_shared_state(failure
     elif failure == "hidden_sibling":
         containers[1]["service"] = ""
         processes["b" * 64]["netns_ino"] = processes["a" * 64]["netns_ino"]
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match=category):
         SURVEY.validate_availability_namespace_snapshot(containers, processes, (7, 1))
 
 
@@ -1315,7 +2465,7 @@ def test_availability_namespace_proof_refuses_unverified_or_shared_state(failure
 def test_availability_namespace_proof_refuses_host_and_namespace_join_modes(network_mode):
     containers, processes = _availability_namespace_fixture()
     containers[0]["network_mode"] = network_mode
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_network_mode"):
         SURVEY.validate_availability_namespace_snapshot(containers, processes, (7, 1))
 
 
@@ -1368,7 +2518,7 @@ def test_availability_provider_context_accepts_only_reviewed_local_provider_and_
             lambda argv, output=invalid_output, **_kwargs: b"podman version 4.9.3\n"
             if argv[0] == "/usr/bin/podman" else output,
         )
-        with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+        with pytest.raises(SURVEY.Refusal, match="namespace_provider_unverified"):
             SURVEY._availability_provider_context()
 
     monkeypatch.setattr(
@@ -1377,11 +2527,11 @@ def test_availability_provider_context_accepts_only_reviewed_local_provider_and_
         if argv[0] != "/usr/bin/podman" else b"podman version 4.9.3\n",
     )
     monkeypatch.setenv("COMPOSE_CMD", "/opt/other-podman-compose")
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_provider_unverified"):
         SURVEY._availability_provider_context()
     monkeypatch.delenv("COMPOSE_CMD")
     monkeypatch.setenv("PODMAN_COMPOSE_PROVIDER", "docker-compose")
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_provider_unverified"):
         SURVEY._availability_provider_context()
 
     monkeypatch.delenv("PODMAN_COMPOSE_PROVIDER")
@@ -1390,11 +2540,11 @@ def test_availability_provider_context_accepts_only_reviewed_local_provider_and_
         lambda argv, **_kwargs: b"podman version 4.9.3\n" if argv[0] == "/usr/bin/podman"
         else b"Docker Compose version v1.3.0\npodman version 4.9.3\n",
     )
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_provider_unverified"):
         SURVEY._availability_provider_context()
 
     monkeypatch.setenv("COMPOSE_CMD", "podman compose")
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_provider_unverified"):
         SURVEY._availability_provider_context()
 
 
@@ -1487,7 +2637,8 @@ services:
         SURVEY, "_availability_command",
         lambda argv, **_kwargs: unsafe_config if argv[-1] == "config" else command(argv, **_kwargs),
     )
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    # The pod check runs before the alloy-spec check, so the in_pod change is named first.
+    with pytest.raises(SURVEY.Refusal, match="namespace_candidate_pod"):
         SURVEY.verify_availability_namespace(validate_candidate=True)
 
 
@@ -1948,11 +3099,12 @@ def test_candidate_equal_to_any_observed_maximum_is_incompatible(field, candidat
     }
 
 
-def test_receiver_and_host_node_use_the_stricter_sample_cap_only():
-    receipt = _budget_receipt("receiver-host", "host-node", "grafana")
+def test_receiver_host_node_and_alloy_use_the_stricter_sample_cap_only():
+    receipt = _budget_receipt("receiver-host", "host-node", "alloy", "grafana")
     receipt["jobs"][0]["max_scrape_samples_scraped_24h"] = 2000
     receipt["jobs"][1]["max_scrape_samples_scraped_24h"] = 2001
-    receipt["jobs"][2]["max_scrape_samples_scraped_24h"] = 9999
+    receipt["jobs"][2]["max_scrape_samples_scraped_24h"] = 2001
+    receipt["jobs"][3]["max_scrape_samples_scraped_24h"] = 9999
 
     result = BUDGET.o11y_scrape_budget_preview(receipt, _budget_limits(), True, 2000)
 
@@ -1960,6 +3112,7 @@ def test_receiver_and_host_node_use_the_stricter_sample_cap_only():
     assert result["jobs"] == [
         {"job": "receiver-host", "status": "incompatible"},
         {"job": "host-node", "status": "incompatible"},
+        {"job": "alloy", "status": "incompatible"},
         {"job": "grafana", "status": "compatible"},
     ]
 
@@ -2372,6 +3525,7 @@ def test_generated_curl_configs_parse_with_installed_curl(config):
         input=config,
         capture_output=True,
         check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr.decode(errors="replace")
 
@@ -2866,6 +4020,10 @@ def test_alert_input_availability_uses_lookback_and_empty_vector_for_missing_or_
         families[4]: b'{"status":"success","private_payload":"API-BODY-SENTINEL"}',
         families[5]: SURVEY.Refusal("alert_query_unavailable"),
     }
+    # The enqueue counter is lazy, so its liveness query runs; the queue series is absent too,
+    # so the family stays missing_or_stale.
+    liveness_name = SURVEY.LAZY_ALERT_INPUT_LIVENESS[families[2]][0]
+    results[liveness_name] = []
     queries = []
     lookbacks = []
 
@@ -2874,7 +4032,7 @@ def test_alert_input_availability_uses_lookback_and_empty_vector_for_missing_or_
         query = params["query"][0]
         queries.append(query)
         lookbacks.append(params["lookback_delta"])
-        family = next(name for name in families if query.startswith(name + "{"))
+        family = next(name for name in results if query.startswith(name + "{"))
         assert "or vector(0)" not in query
         result = results[family]
         if isinstance(result, Exception):
@@ -2895,12 +4053,203 @@ def test_alert_input_availability_uses_lookback_and_empty_vector_for_missing_or_
         {"family": families[4], "status": "unavailable", "reason": "malformed_response"},
         {"family": families[5], "status": "unavailable", "reason": "api_unavailable"},
     ]
-    assert len(queries) == 6
-    assert lookbacks == [["5m"]] * 6
+    assert len(queries) == 7
+    assert f'{liveness_name}{{job="alloy",data_type="traces"}}' in queries
+    assert lookbacks == [["5m"]] * 7
     assert all("or%20vector" not in query for query in queries)
     public = json.dumps(receipt)
     for sentinel in ("alloy-private", "loki-private", "tempo-private", "private-reason", "API-BODY-SENTINEL"):
         assert sentinel not in public
+
+
+def _alert_series(name, job, instance, value="1", timestamp=1000, **labels):
+    return {
+        "metric": {"__name__": name, "job": job, "instance": instance, **labels},
+        "value": [timestamp, value],
+    }
+
+
+def _route_alert_queries(monkeypatch, results):
+    """Serve each alert query by metric name; a metric not listed has no series. Returns the query log."""
+    queries = []
+
+    def run_api(path, _reason="query_unavailable"):
+        params = parse_qs(urlsplit("http://prometheus" + path).query)
+        query = params["query"][0]
+        queries.append(query)
+        assert params["lookback_delta"] == ["5m"]
+        assert "or vector(0)" not in query
+        name = next((name for name in results if query.startswith(name + "{")), None)
+        result = [] if name is None else results[name]
+        if isinstance(result, Exception):
+            raise result
+        if isinstance(result, bytes):
+            return result
+        return _vector(result).encode()
+
+    monkeypatch.setattr(SURVEY, "_run_api", run_api)
+    return queries
+
+
+def test_lazy_enqueue_counter_with_live_traces_queue_is_absent_lazy_counter(monkeypatch):
+    enqueue = SURVEY.ALERT_INPUTS[2][0]
+    queue = SURVEY.LAZY_ALERT_INPUT_LIVENESS[enqueue][0]
+    queries = _route_alert_queries(monkeypatch, {
+        queue: [_alert_series(queue, "alloy", "alloy-private:4317", value="3", data_type="traces")],
+    })
+    receipt = SURVEY._alert_input_availability(_targets([_target("alloy", "alloy-private:4317")]))
+    assert receipt["families"][2] == {
+        "family": enqueue, "status": "absent_lazy_counter", "reason": "liveness_series_present",
+    }
+    assert f'{queue}{{job="alloy",data_type="traces"}}' in queries
+
+
+def test_lazy_loki_counter_with_live_distributor_is_absent_lazy_counter(monkeypatch):
+    loki = SURVEY.ALERT_INPUTS[4][0]
+    liveness = SURVEY.LAZY_ALERT_INPUT_LIVENESS[loki][0]
+    queries = _route_alert_queries(monkeypatch, {
+        liveness: [
+            _alert_series(liveness, "loki", "loki-private:3100", tenant="tenant-private-a"),
+            _alert_series(liveness, "loki", "loki-private:3100", tenant="tenant-private-b"),
+        ],
+    })
+    receipt = SURVEY._alert_input_availability(_targets([_target("loki", "loki-private:3100")]))
+    assert receipt["families"][4] == {
+        "family": loki, "status": "absent_lazy_counter", "reason": "liveness_series_present",
+    }
+    assert f'{liveness}{{job="loki"}}' in queries
+
+
+@pytest.mark.parametrize("index", [2, 4])
+def test_lazy_counter_liveness_from_a_foreign_target_stays_missing_or_stale(index, monkeypatch):
+    family, job = SURVEY.ALERT_INPUTS[index]
+    liveness = SURVEY.LAZY_ALERT_INPUT_LIVENESS[family][0]
+    _route_alert_queries(monkeypatch, {
+        liveness: [_alert_series(liveness, job, "foreign-private:9")],
+    })
+    receipt = SURVEY._alert_input_availability(_targets([_target(job, f"{job}-private:9")]))
+    assert receipt["families"][index] == {"family": family, "status": "missing_or_stale", "reason": "no_samples"}
+
+
+@pytest.mark.parametrize("index", [2, 4])
+def test_lazy_counter_without_liveness_series_stays_missing_or_stale(index, monkeypatch):
+    family, job = SURVEY.ALERT_INPUTS[index]
+    liveness = SURVEY.LAZY_ALERT_INPUT_LIVENESS[family][0]
+    queries = _route_alert_queries(monkeypatch, {})
+    receipt = SURVEY._alert_input_availability(_targets([_target(job, f"{job}-private:9")]))
+    assert receipt["families"][index] == {"family": family, "status": "missing_or_stale", "reason": "no_samples"}
+    assert any(query.startswith(liveness + "{") for query in queries)
+
+
+@pytest.mark.parametrize("index", [2, 4])
+@pytest.mark.parametrize(
+    "failure",
+    [SURVEY.Refusal("alert_query_unavailable"), RuntimeError("LIVENESS-ERROR-SENTINEL")],
+)
+def test_lazy_counter_liveness_query_failure_stays_missing_or_stale(index, failure, monkeypatch):
+    family, job = SURVEY.ALERT_INPUTS[index]
+    liveness = SURVEY.LAZY_ALERT_INPUT_LIVENESS[family][0]
+    _route_alert_queries(monkeypatch, {liveness: failure})
+    receipt = SURVEY._alert_input_availability(_targets([_target(job, f"{job}-private:9")]))
+    assert receipt["families"][index] == {"family": family, "status": "missing_or_stale", "reason": "no_samples"}
+    assert "LIVENESS-ERROR-SENTINEL" not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize("index", [2, 4])
+@pytest.mark.parametrize("malformed", ["not-json", "matrix", "nan-sample", "negative-sample"])
+def test_lazy_counter_malformed_liveness_response_stays_missing_or_stale(index, malformed, monkeypatch):
+    family, job = SURVEY.ALERT_INPUTS[index]
+    liveness = SURVEY.LAZY_ALERT_INPUT_LIVENESS[family][0]
+    responses = {
+        "not-json": b"not json",
+        "matrix": b'{"status":"success","data":{"resultType":"matrix","result":[]}}',
+        "nan-sample": _vector([_alert_series(liveness, job, f"{job}-private:9", value="NaN")]).encode(),
+        "negative-sample": _vector([_alert_series(liveness, job, f"{job}-private:9", value="-1")]).encode(),
+    }
+    _route_alert_queries(monkeypatch, {liveness: responses[malformed]})
+    receipt = SURVEY._alert_input_availability(_targets([_target(job, f"{job}-private:9")]))
+    assert receipt["families"][index] == {"family": family, "status": "missing_or_stale", "reason": "no_samples"}
+
+
+def test_absent_family_without_a_liveness_mapping_issues_no_liveness_query(monkeypatch):
+    tempo = SURVEY.ALERT_INPUTS[5][0]
+    queries = _route_alert_queries(monkeypatch, {})
+    receipt = SURVEY._alert_input_availability(_targets([_target("tempo", "tempo-private:3200")]))
+    assert receipt["families"][5] == {"family": tempo, "status": "missing_or_stale", "reason": "no_samples"}
+    assert queries == [f'{tempo}{{job="tempo"}}']
+
+
+def test_lazy_counter_with_samples_is_observed_and_issues_no_liveness_query(monkeypatch):
+    enqueue = SURVEY.ALERT_INPUTS[2][0]
+    queries = _route_alert_queries(monkeypatch, {
+        enqueue: [_alert_series(enqueue, "alloy", "alloy-private:4317", value="0")],
+    })
+    receipt = SURVEY._alert_input_availability(_targets([_target("alloy", "alloy-private:4317")]))
+    assert receipt["families"][2] == {"family": enqueue, "status": "observed_zero", "reason": "samples_present"}
+    assert queries == [f'{name}{{job="alloy"}}' for name, job in SURVEY.ALERT_INPUTS if job == "alloy"]
+
+
+def test_lazy_counter_liveness_labels_and_values_never_reach_the_receipt(monkeypatch):
+    loki = SURVEY.ALERT_INPUTS[4][0]
+    liveness = SURVEY.LAZY_ALERT_INPUT_LIVENESS[loki][0]
+    _route_alert_queries(monkeypatch, {
+        liveness: [_alert_series(
+            liveness, "loki", "loki-private:3100", value="4242", tenant="TENANT-LABEL-SENTINEL",
+            private_label="PRIVATE-LABEL-SENTINEL",
+        )],
+    })
+    receipt = SURVEY._alert_input_availability(_targets([_target("loki", "loki-private:3100")]))
+    assert receipt["families"][4]["status"] == "absent_lazy_counter"
+    public = json.dumps(receipt)
+    for sentinel in ("TENANT-LABEL-SENTINEL", "PRIVATE-LABEL-SENTINEL", "loki-private", "4242"):
+        assert sentinel not in public
+
+
+@pytest.mark.parametrize(
+    "live_instances,expected",
+    [
+        (["loki-a-private:3100"], {"status": "missing_or_stale", "reason": "no_samples"}),
+        (["loki-b-private:3100"], {"status": "missing_or_stale", "reason": "no_samples"}),
+        (
+            ["loki-a-private:3100", "loki-b-private:3100"],
+            {"status": "absent_lazy_counter", "reason": "liveness_series_present"},
+        ),
+    ],
+)
+def test_lazy_counter_needs_liveness_from_every_expected_target(live_instances, expected, monkeypatch):
+    loki = SURVEY.ALERT_INPUTS[4][0]
+    liveness = SURVEY.LAZY_ALERT_INPUT_LIVENESS[loki][0]
+    _route_alert_queries(monkeypatch, {
+        liveness: [_alert_series(liveness, "loki", instance) for instance in live_instances],
+    })
+    receipt = SURVEY._alert_input_availability(_targets([
+        _target("loki", "loki-a-private:3100"),
+        _target("loki", "loki-b-private:3100"),
+    ]))
+    assert receipt["families"][4] == {"family": loki, **expected}
+
+
+@pytest.mark.parametrize(
+    "live_instance,expected_status,expected_reason",
+    [
+        ("alloy:12345", "absent_lazy_counter", "liveness_series_present"),
+        ("alloy-private:4317", "missing_or_stale", "no_samples"),
+    ],
+)
+def test_native_alloy_lazy_counter_liveness_is_judged_at_the_native_instance(
+    live_instance, expected_status, expected_reason, monkeypatch,
+):
+    enqueue = SURVEY.ALERT_INPUTS[2][0]
+    queue = SURVEY.LAZY_ALERT_INPUT_LIVENESS[enqueue][0]
+    queries = _route_alert_queries(monkeypatch, {
+        queue: [_alert_series(queue, "alloy", live_instance, value="3", data_type="traces")],
+    })
+    receipt = SURVEY._alert_input_availability(
+        _targets([_target("alloy", "alloy:12345"), _target("alloy", "alloy-private:4317")]),
+        native_alloy_verified=True,
+    )
+    assert receipt["families"][2] == {"family": enqueue, "status": expected_status, "reason": expected_reason}
+    assert f'{queue}{{job="alloy",data_type="traces"}}' in queries
 
 
 @pytest.mark.parametrize(
@@ -2981,3 +4330,108 @@ def test_alert_input_playbook_reports_only_fixed_projection_and_skips_check_mode
     assert source_report["when"] == "not ansible_check_mode"
     assert source_report["ansible.builtin.debug"]["msg"] == "{{ _scrape_availability_source_coverage | to_json }}"
     assert "_scrape_survey_result" not in str(source_report)
+
+
+def test_alert_input_playbook_admits_the_lazy_counter_vocabulary():
+    playbook = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-scrape-baseline.yml").read_text())
+    receiver = next(play for play in playbook if play.get("name") == "Read and reduce the production scrape baseline")
+    validate = next(
+        task for task in receiver["tasks"]
+        if task.get("name") == "Validate the fixed alert-input availability projection"
+    )
+    expressions = validate["ansible.builtin.assert"]["that"]
+    statuses = next(expression for expression in expressions if "selectattr('status', 'in'" in expression)
+    reasons = next(expression for expression in expressions if "selectattr('reason', 'in'" in expression)
+    assert "'absent_lazy_counter'" in statuses
+    assert "'liveness_series_present'" in reasons
+
+
+@pytest.mark.parametrize(("loaded", "expected"), [(2000, "matched"), (2001, "mismatch")])
+def test_loaded_alloy_job_uses_the_stricter_sample_cap(loaded, expected):
+    alloy = _loaded_config_job("alloy", sample_limit=loaded)
+    result = BUDGET.o11y_loaded_scrape_limit_coverage(
+        _loaded_readback({"scrape_configs": [alloy]}, [{"pool": "alloy", "job": "alloy"}]),
+        _budget_receipt("alloy"), _loaded_inventory(), True, 2000,
+    )
+    assert result["status"] == expected
+
+
+def test_loaded_coverage_matches_every_job_the_real_template_renders():
+    """The coverage filter must agree with prometheus.yml.j2 on which jobs it caps."""
+    env = Environment(undefined=StrictUndefined)
+    env.filters.update(
+        to_json=json.dumps, bool=bool, mandatory=lambda value: value,
+        o11y_effective_scrape_limits=BUDGET.o11y_effective_scrape_limits,
+    )
+    template = ROOT / "platform/services/o11y/deployment/templates/prometheus.yml.j2"
+    rendered = env.from_string(template.read_text(encoding="utf-8")).render(
+        local_mode=False, o11y_scrape_limits=_loaded_inventory(), o11y_scrape_limits_reviewed=True,
+        o11y_scrape_sample_limit=2000, o11y_environment="prod", o11y_cluster="prod-west",
+        _o11y_forbidden_metric_label_names_regex="^private$", o11y_availability_probes_enabled=False,
+    )
+    jobs = [job["job_name"] for job in yaml.safe_load(rendered)["scrape_configs"]]
+    result = BUDGET.o11y_loaded_scrape_limit_coverage(
+        {"status": "observed", "reason": "stable_loaded_config", "config_yaml": rendered,
+         "target_pools": [{"pool": job, "job": job} for job in jobs]},
+        {"status": "observed", "jobs": [{"job": job} for job in jobs]},
+        _loaded_inventory(), True, 2000,
+    )
+    assert {row["job"]: row["status"] for row in result["jobs"]} == dict.fromkeys(jobs, "matched")
+
+
+def _rendered_enabled_alloy_config():
+    """config.alloy.j2 with availability enabled and production-shaped probe targets."""
+    policy = yaml.safe_load(
+        (ROOT / "platform/playbooks/vars/o11y-metric-labels.yml").read_text(encoding="utf-8")
+    )["_o11y_forbidden_metric_label_names_regex"]
+    env = Environment(undefined=StrictUndefined)
+    env.filters.update(to_json=json.dumps, bool=bool, mandatory=lambda value: value, string=str)
+    targets = [{
+        "module_name": f"health_0{index}", "blackbox_config": "modules: {}",
+        "target_id": f"service:svc{index}", "endpoint": f"https://svc{index}.example.test/health",
+        "service_identity": f"svc{index}", "environment": "prod", "cluster": "prod-west",
+        "interval_seconds": 60, "scrape_timeout_seconds": 5, "samples_per_scrape": 128,
+    } for index in (1, 2, 3)]
+    template = ROOT / "platform/services/o11y/deployment/templates/config.alloy.j2"
+    return env.from_string(template.read_text(encoding="utf-8")).render(
+        local_mode=False, o11y_cluster="prod-west", o11y_environment="prod",
+        o11y_availability_probes_enabled=True, _o11y_availability={"enabled": True, "targets": targets},
+        _o11y_forbidden_metric_label_names_regex=policy,
+    )
+
+
+def test_the_rendered_enabled_alloy_config_passes_the_component_binding():
+    # Semaphore task 14536: the keyword check matched the blackbox target's `module = "health_NN"`
+    # attribute, so every enabled deploy refused its post-apply readback.
+    rendered = _rendered_enabled_alloy_config()
+    assert 'module  = "health_01"' in rendered
+    SURVEY._validate_alloy_config_components(rendered.encode("utf-8"), availability_enabled=True)
+
+
+@pytest.mark.parametrize("block", [
+    'import.file "extra" {\n  filename = "/tmp/x.alloy"\n}\n',
+    'module.file "extra" {\n  filename = "/tmp/x.alloy"\n}\n',
+    'remotecfg {\n  url = "https://example.test"\n}\n',
+    'import.git "extra" {\n  repository = "https://example.test/x.git"\n}\n',
+    # A label the component regex cannot match, so only the config-loading keyword check refuses it.
+    'import.file "a/b" {\n  filename = "/tmp/x.alloy"\n}\n',
+])
+def test_config_loading_blocks_still_refuse_the_component_binding(block):
+    rendered = _rendered_enabled_alloy_config() + block
+    with pytest.raises(SURVEY.Refusal, match="native_binding_components"):
+        SURVEY._validate_alloy_config_components(rendered.encode("utf-8"), availability_enabled=True)
+
+
+def test_source_cli_prints_its_own_word_for_an_unexpected_exception(monkeypatch, capsys):
+    def explode():
+        raise RuntimeError("detail that must never be printed")
+
+    monkeypatch.setattr(SURVEY, "_availability_source_action", explode)
+    monkeypatch.setattr(SURVEY.sys, "argv", ["helper", "--verify-availability-source"])
+    assert SURVEY.main() == 2
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["reason"] == "native_source_internal_error"
+    assert "detail" not in json.dumps(printed)
+    assert BUDGET.o11y_availability_source_gate_diagnostic(
+        {"rc": 2, "stdout": json.dumps(printed), "stderr": ""}
+    ) == "native_source_internal_error"
