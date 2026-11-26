@@ -81,3 +81,9 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1214 (AC-1026).
 - **DERIVED:** A ledger candidate is written down with the source that proves it (a PR comment or review id, a Plane comment's item and time, or a batch-index decision number). The ledger writer checks every fact at its source, and a chat message or a session's memory cannot be checked later.
 - **APPLIES TO:** batch coordinators and owners keeping a ledger candidate list for a closing ledger pass.
+
+### L-014 · 2026-11-26 · process
+
+- **ACCEPTED:** the pull request for AC-1034 (fixed review-pass rounds).
+- **DERIVED:** A review pass costs about the same whatever the size of the diff, because each pass agent starts with about 130k tokens of context before it reads the change. A two-line docs pull request took 1,524,367 reported tokens for two `/simplify` rounds, one `/security-review` and one review (coordinator's sum). Estimate pass cost as rounds × agents × that starting context, and give each pull request a fixed number of rounds in its plan. Never budget it as "repeat until a round finds nothing".
+- **APPLIES TO:** briefs and batch plans that estimate or cap review-pass tokens; any rule that sets how many `/simplify` or `/security-review` rounds a pull request runs.
