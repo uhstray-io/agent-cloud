@@ -625,12 +625,15 @@ the two, and it acts only on what these rules mark:
    - Update the root `CLAUDE.md` if the PR adds new conventions, plans, or cross-cutting patterns
 4. Run `/simplify` and `/security-review` on the branch changes, and commit the fixes they make. The number of
    rounds is fixed (why: `docs/MISTAKES.md` 5.25):
-   - Docs-only pull request (every changed path ends in `.md`: `git diff --name-only origin/dev...HEAD`): one
-     round of each pass, once for the pull request, on its first head.
-   - Any other pull request: on its first head, `/simplify` at most twice (a second round only when the first
-     made a fix) and `/security-review` once. On each later head made by a fix for a reviewer's finding (step 8)
-     or a `dev` merge, one round of each.
-   - Beyond those rounds, a fix made from a pass's own findings starts no new round.
+   - Docs-only pull request (every changed path ends in `.md`, both sides of a rename included:
+     `git diff --name-only --no-renames origin/dev...HEAD`): one round of each pass, once for the pull request,
+     on its first head. The first head that changes any other path makes it a code pull request, and that head
+     is its first head under the next rule.
+   - Any other pull request: on its first head, `/simplify` at most twice and `/security-review` once. The
+     second `/simplify` round runs only when the first made a fix, and it reads the head that fix made. Each
+     later head gets one round of each, whatever made it (a fix for a reviewer's finding, a CI fix, a new
+     commit, a `dev` merge).
+   - A head made only of fixes from a pass's own findings starts no new round.
    - A finding the owner does not fix is deferred: list it in a pull request comment whose first line starts
      `simplify: deferred` or `security-review: deferred`, one finding per line with its `file:line`, and file
      each one as a Plane sub-item of the pull request's item.

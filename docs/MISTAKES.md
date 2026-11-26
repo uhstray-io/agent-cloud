@@ -5469,8 +5469,7 @@ be posted only on a commit GitHub already holds.
 **Rule changed (2026-11-21).** The operator replaced "run both again until a round changes nothing" with a fixed
 number of rounds (batch v0.17.1, AC-1034): a docs-only pull request runs one round of each pass, on its first head;
 any other pull request runs `/simplify` at most twice and `/security-review` once on its first head, then one round
-of each on every later head made by a reviewer's fix or a `dev` merge. A fix made from a pass's own findings starts
-no round beyond those. Every pushed head still carries both statuses; one that no round read says `covered by the
+of each on every later head, except a head made only of fixes from a pass's own findings. Every pushed head still carries both statuses; one that no round read says `covered by the
 round on <sha>: <what changed since>`, which the guard accepts unchanged. The full wording, deferred findings
 included, is `AGENTS.md`, Branch Workflow steps 4 and 5. Why: each round's fixes made a new head, and the old rule
 sent every new head back through both passes, so the loop ended only when a round found nothing. Measured in that
