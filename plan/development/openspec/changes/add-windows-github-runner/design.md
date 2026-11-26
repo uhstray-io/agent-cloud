@@ -565,9 +565,12 @@ follow-up from the Linux change, and this host is one more reason to do it.
 
 **Decision.** Automatic Windows Update is disabled by policy. A patch playbook
 (`ansible.windows.win_updates`) is launched from the orchestrator. It first **drains** the
-host: it tells the supervisor (D7) to start no further runner and to stop a runner that
-has not taken a job (deleting its runner record), then waits until a runner that has taken
-one has finished it (bounded by the longest Windows job timeout, 180 minutes; D11). Only then does it install updates, reboot if required, let the supervisor reset
+host the way `deploy.sh quiesce` drains a Linux runner: it sets a drain flag in the
+supervisor's state directory (D7), so the supervisor starts no further runner; it waits
+until the running listener has no worker process, that is no job in flight (bounded by the
+longest Windows job timeout, 180 minutes; D11); then it stops the listener gracefully.
+An idle listener therefore stops at once, and a job assigned in the instant before the stop
+is cancelled and reported, as on Linux. Only then does it install updates, reboot if required, let the supervisor reset
 the account and resume, and verify a runner is online with its declared labels. A run that
 fails after draining leaves the supervisor drained, so the host stays out of rotation
 rather than taking work half-patched, and verification reports it. The monthly template

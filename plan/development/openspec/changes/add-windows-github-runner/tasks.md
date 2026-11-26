@@ -224,7 +224,11 @@ under the decision it settles.
       unchanged after a reset; a listener that exits with code 3 or 4 is relaunched with
       the same configuration and its job completes, without counting as a failed start.
 - [ ] 6.8 Add or extend the Semaphore templates (deploy, drain, verify), run the deploy from
-      Semaphore, then re-run it unchanged.
+      Semaphore, then re-run it unchanged. Give the deploy the Linux leave path
+      (`tasks/github-runner-lifecycle.yml`, prepare phase) for a host no longer declared
+      `ephemeral`: drain (D9) and disable the supervisor, prune the host's runner records
+      (`grs_prune_only`), remove the stock, and register nothing in their place (rollback
+      stage 2). Test it on the live host once, then restore the declaration and redeploy.
 - [ ] 6.9 Validation gate: the runner shows in the group with labels
       `self-hosted, Windows, X64, uhstray-lan`, one job per runner name, and spec
       scenarios **"An abrupt reboot does not skip the reset"** and **"The job account
