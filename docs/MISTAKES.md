@@ -5489,6 +5489,18 @@ what it found and what was fixed or deferred: the command is in `AGENTS.md`, Bra
 5. Every later push, review fixes or a `dev` merge included, needs both passes again on the new head. A status can
 be posted only on a commit GitHub already holds.
 
+**Rule changed (2026-11-21).** The operator replaced "run both again until a round changes nothing" with a fixed
+number of rounds (batch v0.17.1, AC-1034): a docs-only pull request runs one round of each pass, on its first head;
+any other pull request runs `/simplify` at most twice and `/security-review` once on its first head, then one round
+of each on every later head, except a head made only of fixes from a pass's own findings. Every pushed head still carries both statuses; one that no round read says `covered by the
+round on <sha>: <what changed since>`, which the guard accepts unchanged. The full wording, deferred findings
+included, is `AGENTS.md`, Branch Workflow steps 4 and 5. Why: each round's fixes made a new head, and the old rule
+sent every new head back through both passes, so the loop ended only when a round found nothing. Measured in that
+batch (owners' and the coordinator's figures): #1220, a two-line docs change, took 1,524,367 reported tokens of
+passes (two `/simplify` rounds of four agents, one `/security-review`, one review); #1218 took 3.25M over four
+rounds without settling; #1214 about 3.63M over four. Each pass agent on #1220 started at about 130k tokens of
+context.
+
 **Enforced by.** `scripts/merge-when-green.py`: `check_commit_statuses` refuses a feature-to-`dev` head without
 both statuses (`REVIEW_PASS_STATUSES`), or with one whose description is empty or the unfilled placeholder, and
 names the command that posts each missing one; tested in `platform/tests/test_merge_when_green.py`
@@ -5551,7 +5563,7 @@ along the skills' lines passed for the skills.
 
 The batch coordinator's audit of 2026-11-18 found it. A newer `failure` status for both contexts was posted on each head, so the guard refuses them. Each pull request has a comment naming the heads, and the real passes run at each pull request's turn. Why the rule did not fire: the session had invoked both skills on #1185's heads before a context compaction. After it, I reproduced the skills' steps with dispatched agents and counted a Skill call on an earlier head, or a call whose steps I shortened, as the pass. The rule already covers it: a pass status names a complete run of that skill on that head.
 
-**Occurrence 8 — 2026-11-17 to 2026-11-18.** The batch coordinator's part in occurrences 4 to 7. On its merge checks it read the owners' `simplify` and `security-review` statuses as success (#1202's merge line among them) without asking how any was produced, and after occurrence 3 its compaction notes stated "Both review passes are real skill runs" as a standing fact. It asked only when an owner's own wording ("read-only reviewer", #1186, 2026-11-18 12:38 EST) gave it away; the audit that followed found 22 merged pull requests whose statuses had no real pass behind them (brief 28, decision 54). Why the rule did not fire: the coordinator checked what the guard checks (that a status exists, with a description), so its check added nothing, and a sentence in its own notes stood in for asking. During the remediation it also made up an exception to the rule: at 12:44 EST on 2026-11-18 it told the P2 owner that a head whose only change after a real `/simplify` run was `docs/MISTAKES.md` needed no `simplify` rerun. 5.25 had no such exception then. The owner wrote it into its occurrence on #1201, and CodeRabbit flagged it (review 5963577261 on `cd074709`).
+**Occurrence 8 — 2026-11-17 to 2026-11-18.** The batch coordinator's part in occurrences 4 to 7. On its merge checks it read the owners' `simplify` and `security-review` statuses as success (#1202's merge line among them) without asking how any was produced, and after occurrence 3 its compaction notes stated "Both review passes are real skill runs" as a standing fact. It asked only when an owner's own wording ("read-only reviewer", #1186, 2026-11-18 12:38 EST) gave it away; the audit that followed found 22 merged pull requests whose statuses had no real pass behind them (brief 28, decision 54). Why the rule did not fire: the coordinator checked what the guard checks (that a status exists, with a description), so its check added nothing, and a sentence in its own notes stood in for asking. During the remediation it also made up an exception to the rule: at 12:44 EST on 2026-11-18 it told the P2 owner that a head whose only change after a real `/simplify` run was `docs/MISTAKES.md` needed no `simplify` rerun. 5.25 had no such exception then (the rule change of 2026-11-21 above now runs one round for a whole docs-only pull request). The owner wrote it into its occurrence on #1201, and CodeRabbit flagged it (review 5963577261 on `cd074709`).
 
 ### 5.26 Release actions follow the operator's standing authorization (supersedes 5.7's rule)
 
