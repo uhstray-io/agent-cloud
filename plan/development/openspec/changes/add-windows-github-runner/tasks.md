@@ -108,7 +108,9 @@ under the decision it settles.
 
 ## 3. Declare the host
 
-- [ ] 3.1 Allocate the vmid and address: the next free vmid from the
+- [ ] 3.1 Allocate two vmids and the address. The Windows template gets its own vmid,
+      never the Ubuntu template's 9000, declared beside the host as the Windows template's
+      `template_vmid`; task 4.3 passes it. The host's vmid is the next free one from the
       `site-config/proxmox/vm-specs.yml` ledger cross-checked against the hypervisor's
       own resource list, and an address that is free in the inventory, silent to ICMP and
       outside the DHCP range (`validate-address-free.yml`). The declaration is the
@@ -143,8 +145,10 @@ under the decision it settles.
 - [ ] 4.2 Store the bootstrap administrator password for clones in the secret store
       (`store-ssh-password.yml` path) and generate the per-service key
       (`generate-service-ssh-key.yml`).
-- [ ] 4.3 Run `provision-template.yml -e template_os=windows` targeting crabnebula from
-      Semaphore. Confirm the template exists on crabnebula and the seed ISO is gone.
+- [ ] 4.3 Run `provision-template.yml -e template_os=windows -e template_vmid=<the Windows
+      template vmid declared in 3.1>` targeting crabnebula from Semaphore, so the 2.1
+      collision guard sees the Windows vmid and not the Ubuntu default. Confirm the
+      template exists on crabnebula and the seed ISO is gone.
 - [ ] 4.4 Run `provision-vm.yml` for `gh-runner-win-01` with `target_host:
       gh-runner-win-01` set explicitly (required whenever the group has more than one
       host). Confirm the clone is local to crabnebula, has both disks, and comes up with
@@ -164,12 +168,17 @@ under the decision it settles.
 
 ## 5. Converge the build toolchain
 
-- [ ] 5.1 Write `platform/playbooks/configure-windows-build-host.yml` (D5): download each
-      manifest entry, verify its SHA-256 before executing it, install machine-wide,
-      apply the machine settings table (NASM, Vulkan SDK and `VULKAN_SDK`, LLVM and
-      `LIBCLANG_PATH`, `LongPathsEnabled`, Git `core.longpaths`, the `D:` volume and
-      `D:\z` with modify rights for the runner account only, antivirus exclusions or a Dev
-      Drive per 1.4, Git `bin` ahead of `System32`, automatic updates disabled).
+- [ ] 5.1 Write `platform/playbooks/configure-windows-build-host.yml` (D5): first create
+      the `ghrunner` account (not in `Administrators`), its password generated if absent
+      and stored in the secret store, never written to disk, because the `D:\z` rights
+      below and the 5.4 smoke test name it; then download each manifest entry, verify its
+      SHA-256 before executing it, install machine-wide, apply the machine settings table
+      (NASM, Vulkan SDK and `VULKAN_SDK`, LLVM and `LIBCLANG_PATH`, `LongPathsEnabled`, Git
+      `core.longpaths`, the `D:` volume and `D:\z` with modify rights for the runner
+      account only, antivirus exclusions or a Dev Drive per 1.4, Git `bin` ahead of
+      `System32`, automatic updates disabled); last, install rustup for the runner account,
+      its installer pinned and digest-checked as a manifest entry like the others, and the
+      declared toolchains.
 - [ ] 5.2 Check in the Visual Studio Build Tools `.vsconfig` listing exactly the C++ build
       tools and Windows SDK components the jobs need. Build a versioned offline layout
       from the declared fixed-version bootstrapper (D5), verify the layout's manifest
@@ -194,12 +203,11 @@ under the decision it settles.
       `deploy-github-runner.yml` or in a sibling playbook composed from the same
       credential and stock tasks as `add-ephemeral-github-runners`. The minting and the
       stock must be shared either way; record the decision in the playbook header.
-- [ ] 6.2 Create the `ghrunner` account (not in `Administrators`), its password generated
-      if absent and stored in the secret store, never written to disk.
+- [ ] 6.2 Confirm the `ghrunner` account task 5.1 created is still outside
+      `Administrators` and that its stored password logs it on; a deploy refuses otherwise.
 - [ ] 6.3 Install the pinned `win-x64` runner archive, verified against the checksum
       published for that release before extraction; abort on mismatch. Never run
-      `config.cmd`. Install rustup and the declared toolchains for the account, and place
-      the pinned NSIS and WiX where the bundler looks for them.
+      `config.cmd`. Place the pinned NSIS and WiX where the bundler looks for them.
 - [ ] 6.4 Build the seed from the deployed account home (D7): copy it to
       `C:\ProgramData\github-runner\seed\`, set every entry's owner to `SYSTEM` and its
       access to `SYSTEM` and `Administrators` write only, drop per-job state, refuse if any
@@ -207,8 +215,9 @@ under the decision it settles.
 - [ ] 6.5 Install the supervisor (D7): a `LocalSystem` service whose script is under
       `Program Files`; the stock and state directories under `C:\ProgramData\github-runner`
       with access for `SYSTEM` and `Administrators` only; the reset (kill the account's
-      processes, unload its hive, remove its profile, work directory and declared build
-      roots, verify, rebuild from the seed) before every runner start; the runner started
+      processes, unload its hive, remove its profile, work directory, declared build
+      roots and every scheduled task whose principal is the account, verify, rebuild from
+      the seed) before every runner start; the runner started
       as `ghrunner` with `ACTIONS_RUNNER_INPUT_JITCONFIG`, using the mechanism task 1.6 kept;
       quarantine on an unverifiable reset or on `github_runner_max_start_failures` empty
       runs.
@@ -243,8 +252,11 @@ under the decision it settles.
       prints the runner name; asserts the job is not elevated; asserts the secret store,
       a hypervisor and the orchestrator are unreachable; attempts a machine-wide install,
       an `HKLM` write and `Add-MpPreference`, asserting each fails; writes a marker into
-      the workspace and into `D:\z`.
-- [ ] 7.2 Run it twice; the second run asserts both markers are absent, and that a marker
+      the workspace and into `D:\z`; registers a scheduled task, as the runner account,
+      that writes a third marker a minute later.
+- [ ] 7.2 Run it twice; the second run asserts both markers are absent, that no
+      scheduled task whose principal is the runner account exists and the third marker
+      was not written during it, and that a marker
       executable the first run placed in `~\.cargo\bin` is not the one the second run finds. Run a Linux job
       naming the plane label without the OS label and record where it lands, then confirm
       the Windows job never lands on a Linux runner.
@@ -269,6 +281,7 @@ under the decision it settles.
 - [ ] 7.7 Validation gate: spec scenarios **"The release build runs without machine
       administration"** (7.4), **"A job cannot change the machine"** (7.1),
       **"A release's target directory does not survive into the next job"** (7.2),
+      **"A scheduled task a job registers does not run in the next job"** (7.2),
       **"A Windows job lands only on a Windows runner"** (7.2) and **"A Windows job cannot
       remove the denial"** verified with recorded run output.
 
@@ -277,8 +290,13 @@ under the decision it settles.
 - [ ] 8.1 Extend `verify-github-runners.yml` (or its equivalent) to cover the Windows
       runner: online, labels, stock level, and the supervisor's quarantine state (6.5),
       with a remediation mode that reboots the host and clears the quarantine only when the
-      supervisor's reset then verifies clean. Prove the quarantine with a test job that
-      leaves a process holding a file open, and prove a job cannot clear it.
+      supervisor's reset then verifies clean. Prove the quarantine from the playbook, not
+      from a job, because the reset stops every process of the runner account: before a
+      runner start, open a file in `D:\z` without delete sharing from a process running
+      as an administrator, and confirm the reset reports the quarantine and no runner
+      starts; then close the file and confirm remediation clears it. Prove the account
+      cannot clear it: as `ghrunner`, attempt to remove and to rewrite the quarantine
+      state, and confirm both are denied.
 - [ ] 8.2 Add the patch playbook (D9): drain the supervisor, then `win_updates`, reboot if
       needed, let the supervisor reset the account and resume, and verify a runner is
       online with its declared labels. Labels are not touched: under the just-in-time

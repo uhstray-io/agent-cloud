@@ -113,8 +113,9 @@ serve both operating systems; a Windows-only copy of the list MUST NOT exist.
 
 On a runner whose workflows build outside the job workspace, every such directory SHALL
 be declared. Before every runner start, a supervisor that is not the job account SHALL
-stop every process of the runner account, remove its profile, its work directory and
-every declared build root, verify that nothing of the account remains, and rebuild the
+stop every process of the runner account, remove its profile, its work directory, every
+declared build root and every scheduled task registered to run as the account, verify
+that nothing of the account remains, and rebuild the
 profile from a machine-owned seed. A runner SHALL NOT start until that verification
 passes.
 
@@ -130,6 +131,13 @@ passes.
 - **GIVEN** a job that replaces an executable in the runner account's profile
 - **WHEN** the next job runs on the same runner host
 - **THEN** the next job runs the seed's copy of that executable, not the replacement
+
+#### Scenario: A scheduled task a job registers does not run in the next job
+
+- **GIVEN** a job that registers a scheduled task to run as the runner account
+- **WHEN** the reset before the next runner start completes
+- **THEN** no scheduled task whose principal is the runner account remains, and the task
+  never runs during the next job
 
 #### Scenario: An abrupt reboot does not skip the reset
 
@@ -147,7 +155,8 @@ clean MAY clear the quarantine.
 
 #### Scenario: A surviving locked file quarantines the host
 
-- **GIVEN** a job that leaves a file locked by a process the reset cannot stop, so the
+- **GIVEN** a file in a declared build root held open, without delete sharing, by a
+  process the reset does not stop because it does not run as the runner account, so the
   reset does not verify
 - **WHEN** the supervisor would start the next runner
 - **THEN** no runner starts, no job is dispatched to the host, the leftover file is never

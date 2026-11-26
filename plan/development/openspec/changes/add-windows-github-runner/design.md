@@ -397,7 +397,7 @@ apply themselves:
 | Visual Studio Build Tools + Windows SDK | preinstalled on the hosted image | from a **versioned offline layout**: the fixed-version bootstrapper of one declared servicing release (not a channel bootstrapper, which installs the channel's latest) builds a layout of exactly the components in the checked-in `.vsconfig` (C++ build tools, the Windows 11 SDK; CMake is installed separately); the layout's manifest is digest-checked against the declaration, the install runs from it with `--noWeb`, and `vswhere` must report the declared version and component versions before the host serves a job. A new servicing release is a new declared layout, a reviewed change |
 | CMake, Git for Windows, LLVM, Strawberry Perl, PowerShell 7, WebView2 runtime, VC++ x64 redistributable | preinstalled on the hosted image | pinned installers; LLVM sets machine `LIBCLANG_PATH` |
 | NSIS and WiX (for `dx bundle`) | the bundler downloads them on first use | pinned installers with their digests, installed machine-wide, and placed in the bundler's tool directory in the seed (D7) so it finds them and downloads nothing; task 7.4 fails the dry run if the bundler fetched anything |
-| rustup and the declared Rust toolchains | preinstalled | installed for the runner account at deploy time and captured in the seed (D7), so each job starts with the declared nightly and `rustup toolchain install` in a job works without elevation; whatever a job installs or replaces is discarded with its account |
+| rustup and the declared Rust toolchains | preinstalled | installed for the runner account by the build-host playbook (task 5.1) and captured in the seed (D7), so each job starts with the declared nightly and `rustup toolchain install` in a job works without elevation; whatever a job installs or replaces is discarded with its account |
 
 Git for Windows' `bin` is placed ahead of `System32` on the machine `PATH`, and WSL is not
 installed, so `shell: bash` resolves to Git Bash rather than to the WSL launcher, a
@@ -427,9 +427,9 @@ variable (D11) is the escape hatch, and the manifest is the place the fix lands.
 
 ### D6: The runner is a Windows service under a dedicated non-administrative account
 
-**Decision.** A local account `ghrunner` is created by the playbook, is **not** a member
-of `Administrators`, holds the "Log on as a service" right, and has modify rights only on
-the runner home, the runner work directory and `D:\z`. Its password is generated once in
+**Decision.** A local account `ghrunner` is created by the build-host playbook (task 5.1),
+because the build volume's rights name it. It is **not** a member of `Administrators`,
+holds the "Log on as a service" right, and has modify rights only on the runner home, the runner work directory and `D:\z`. Its password is generated once in
 Ansible memory and stored in the secret store (generate if absent, reuse always), never
 on disk. The runner is installed from the pinned `win-x64` archive, verified against the
 checksum published with that release before extraction (the Linux change's D7), into the
@@ -498,9 +498,14 @@ for Linux, with Windows mechanisms in place of the Linux ones:
      removing it, as the Linux sweep does. That covers the shared locations a standard
      user can write, such as `C:\Windows\Temp`, `C:\ProgramData` and `C:\Users\Public`,
      without listing them; the deploy also removes the `Users` group's write access from
-     `C:\Users\Public`, which no job needs;
-  3. verify: no process, no profile, no path owned by the account anywhere, each declared
-     root empty;
+     `C:\Users\Public`, which no job needs. The reset also unregisters **every scheduled task
+     whose principal is the account**: Task Scheduler keeps its registrations outside the
+     profile and the account's files, so the owner sweep would leave a task a job
+     registered, and its trigger could run code as the account during the next job. The
+     reset detects and removes such registrations rather than relying on the account
+     being unable to create one;
+  3. verify: no process, no profile, no scheduled task whose principal is the account, no
+     path owned by the account anywhere, each declared root empty;
   4. recreate the profile from a machine-owned **seed** (the account's home as the deploy
      built it, with the declared Rust toolchains and the bundler's pinned tools, as in that
      change's D5), and only then start the runner. The seed lives under
@@ -745,6 +750,7 @@ Each check is a scenario of this change's spec delta, verified where the last co
 | A Windows job cannot remove the denial | The attempt fails for lack of administrative rights | task 7.7 |
 | A release's target directory does not survive into the next job | The build root is empty at the next job's start | task 7.2 |
 | A tool replaced by one job is not run by the next | The next job runs the seed's copy | task 7.2 |
+| A scheduled task a job registers does not run in the next job | No task registered to the account remains and its marker is not written | task 7.2 |
 | An abrupt reboot does not skip the reset | The account is reset before any runner starts | task 6.9 |
 | A surviving locked file quarantines the host | No runner starts and verification reports the quarantine | task 8.1 |
 | The job account cannot clear the quarantine | The attempt fails and the host stays quarantined | task 6.9 |
