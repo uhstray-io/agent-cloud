@@ -144,7 +144,7 @@ not depending on the included allowance, of a faster gate, and of control.
   needs unsupported boot loaders. Not a trade-off; not available.
 - *A personal workstation.* Rejected by the owner, and rightly: a machine someone uses is a
   machine whose state the builds depend on and whose files the jobs can reach.
-- *The base Mac mini (M6, up to 32 GB).* Cheaper, rejected on memory: two VMs at under 12 GB
+- *The base Mac mini (M5, up to 32 GB).* Cheaper, rejected on memory: two VMs at under 12 GB
   each would be the hosted runner's problem again.
 - *Mac Studio.* More cores and memory than two VMs can use, at about twice the price, and
   still limited to two macOS VMs by the licence.
@@ -165,8 +165,11 @@ job, then stop and delete the VM. A slot keeps one VM booted and registered whil
 a queued job starts in seconds rather than waiting for a boot.
 
 **Teardown is bounded.** Waiting for the runner is not open-ended: once a VM has taken a
-job, the slot allows it at most the declared `macos_runner_max_job_minutes` (default 210,
-the longest workflow timeout plus 30 minutes for the runner's own cancellation grace).
+job, the slot allows it at most the declared `macos_runner_max_job_minutes` (default 150:
+the longest declared macOS job timeout, 120 minutes for `release.yml` `macos` and
+`ci.yml` "Heavy feature check", plus 30 minutes for the runner's own cancellation grace).
+The bound holds only when every macOS job declares a timeout; D10 makes that part of the
+contract.
 At that deadline, or when the runner has exited but the guest still runs any process of
 the job account, the slot force-stops the VM (`tart stop --timeout 0`) and deletes it.
 The VM is the job's whole machine, so destroying it ends every process the job started,
@@ -177,6 +180,15 @@ the slot remains. Verification reports a failed slot and how long it has been fa
 failed for longer than an hour is an operator's to clear (the deploy's slot-recovery step,
 which force-deletes the slot's VMs and restarts it). The other slot keeps serving
 throughout.
+
+**The idle VM is bounded too.** A warm VM that has taken no job within the declared
+`macos_runner_max_idle_minutes` (default 1200, the Windows stock's age limit) is stopped
+and deleted, and its runner record removed, and the slot clones a fresh one. That keeps a
+promoted image and a bumped runner version from waiting behind an idle VM indefinitely.
+GitHub does not bound it for us: its documentation says a just-in-time runner that never
+runs a job is removed automatically, but names no interval, and the one-day removal it
+states applies to an ephemeral runner that has **not connected**, whereas an idle warm
+runner stays connected (GitHub Docs, "Removing self-hosted runners", read 2026-11-26).
 
 **Why.** It is the strongest isolation available anywhere in the fleet, and on this
 hardware it is cheap: a clone is an APFS copy-on-write copy that takes seconds, and a boot
@@ -418,7 +430,10 @@ seen when it is planned, not when someone reads the licence.
 `runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macos","arm64","uhstray-lan"]') }}`,
 the same pattern as `LINUX_RUNNER` and `WINDOWS_RUNNER`. Setting `MACOS_RUNNER` to
 the JSON array `["macos-15"]` (it must parse with `fromJSON`) sends every macOS job back
-to GitHub. No other step needs to change: the
+to GitHub. Every macOS job declares `timeout-minutes`, at most 120: `warm-cache.yml`
+`macos` declares none today (read 2026-11-26), so it runs under GitHub's default job limit
+of 360 minutes and would be cut at the slot's deadline (D2); the `zerds` pull request adds
+one. No other step needs to change: the
 disk-freeing steps succeed (and free little) in a VM sized for the build, `setup-xcode`
 finds the one Xcode, `brew install cmake` is already satisfied, and the keychain steps
 work in the VM.

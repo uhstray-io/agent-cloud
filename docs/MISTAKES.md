@@ -39,7 +39,7 @@ and why.
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | 1 | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | 1 | Test |
 | 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | 1 | OPA branch rule (`agent_actions.rego`; inert until callers send fields) |
-| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused (2026-11-15: called CodeRabbit "paused" on #1152 from `gh pr checks`' `skipping` bucket, to the operator and in a dismissal message; the check's own title read "Review rate limited", and reviews were already on the PR; 2026-11-17: told the coordinator and the operator CodeRabbit was skipping #1206 from the same bucket, after a push, without listing reviews; it had requested changes on the previous head) — **x3** | Unverified claim | 3 | Convention; guard proposed in occurrence 3 |
+| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused (2026-11-15: called CodeRabbit "paused" on #1152 from `gh pr checks`' `skipping` bucket, to the operator and in a dismissal message; the check's own title read "Review rate limited", and reviews were already on the PR; 2026-11-17: told the coordinator and the operator CodeRabbit was skipping #1206 from the same bucket, after a push, without listing reviews; it had requested changes on the previous head; 2026-11-26: a review session told the operator CodeRabbit "shows skipping" on #535 from the same bucket, where the check's title read "Review rate limited") — **x4** | Unverified claim | 4 | Convention; guard proposed in occurrence 3 |
 | 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | 1 | Test (synthetic OpenBao, mutation-proven)  |
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
@@ -778,7 +778,7 @@ indexes, and the regression asserts a sentinel argument is absent from output.
 
 ### 1.10 Reported that a review had started, from a keyword match on a comment I never read
 
-**Occurrences: 3** — 2026-09-23, 2026-11-15, 2026-11-17
+**Occurrences: 4** — 2026-09-23, 2026-11-15, 2026-11-17, 2026-11-26
 
 **What happened.** On 2026-09-23 at 15:13Z I posted review requests to CodeRabbit on four
 PRs and sorted its replies with a `jq` keyword test. My patterns for a started review
@@ -830,6 +830,14 @@ read-only `--reviews` mode to `scripts/merge-when-green.py` that prints every re
 (reviewer, state, commit, submitted time) and each review check run's title and summary for the head,
 and make that output the only source an owner session quotes when it reports a reviewer's state in a
 batch report ("row green", a return, a hold).
+
+**Occurrence 4 — 2026-11-26.** A pull-request review session told the operator that CodeRabbit "shows
+skipping" on #535's head `4bb91eee`, read from `gh pr checks`. The check run on that head has conclusion
+`neutral` and the title "Review rate limited"
+(`gh api repos/uhstray-io/agent-cloud/commits/4bb91eeecdede6680abcf3c0052ad321a2c2f535/check-runs`), and
+CodeRabbit's last CHANGES_REQUESTED review on the pull request was on `6cc03fc7`, the head before. The rule did not fire
+for the reason occurrence 3 names: it lives in prose a session has to recall, and the proposed
+`--reviews` mode, which would have been the one source to quote, is still unbuilt.
 
 ### 1.14 A fact about the private inventory read from the public template
 

@@ -466,8 +466,10 @@ for Linux instead of designing a second one.
 
 **What it costs.** Every job starts cold: the profile and `D:\z` are rebuilt, so the
 workflow's `rust-cache` restore (from the forge's cache service) does the warming, as on a
-hosted runner. The seed copy takes seconds; a job that installs extra tools pays for them
-each time.
+hosted runner. A job that installs extra tools pays for them each time. The reset itself
+walks every file on `C:` and `D:` for the account's ownership and digests the whole seed,
+and nothing yet measures how long that takes on this hardware: the spike (task 1.6) times
+each step and holds the whole reset to under 5 minutes before anything depends on it.
 
 **Spike first.** How the supervisor starts a process as `ghrunner` with the configuration
 in its environment (a per-job service entry with an `Environment` value only
@@ -499,8 +501,8 @@ follow-up from the Linux change, and this host is one more reason to do it.
 **Decision.** Automatic Windows Update is disabled by policy. A patch playbook
 (`ansible.windows.win_updates`) is launched from the orchestrator. It first **drains** the
 host: it tells the supervisor (D7) to start no further runner, then waits until the
-running one, if any, has finished its job (bounded by the longest job timeout, 180
-minutes). Only then does it install updates, reboot if required, let the supervisor reset
+running one, if any, has finished its job (bounded by the longest declared Windows job
+timeout, 180 minutes, which D11 makes every Windows job declare). Only then does it install updates, reboot if required, let the supervisor reset
 the account and resume, and verify a runner is online with its declared labels. A run that
 fails after draining leaves the supervisor drained, so the host stays out of rotation
 rather than taking work half-patched, and verification reports it. The monthly template
@@ -560,6 +562,10 @@ request, the following:
   step (both), so `VULKAN_SDK` is still exported and `glslc --version` still proves the SDK
   before an hour of build depends on it.
 - **`CARGO_TARGET_DIR: D:\z` is unchanged**, because the host provides `D:` and `D:\z`.
+- **Every Windows job declares `timeout-minutes`, at most 180.** `warm-cache.yml` `windows`
+  declares none today (read 2026-11-26), so it runs under GitHub's default job limit of
+  360 minutes; the `zerds` pull request adds one. The drain (D9) waits for at most 180
+  minutes, which holds only when no job may run longer.
 
 **Why gate rather than delete.** Deleting the steps would make the hosted fallback
 incomplete, and the fallback is rollback stage 1. Gating keeps one workflow that is

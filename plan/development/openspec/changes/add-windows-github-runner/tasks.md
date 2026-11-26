@@ -47,7 +47,12 @@ under the decision it settles.
       its registry hive, delete its profile, and recreate the profile from a seed copy.
       Record the mechanism that worked for each step (per-job service entry or scheduled
       task; how a hive held open is released), and whether the reset verifies clean while
-      the account still had a process holding a file open.
+      the account still had a process holding a file open. Time each step of the reset
+      (kill, hive unload, the owned-path sweep of `C:` and `D:`, the seed digest check, the
+      seed copy) with a seed carrying the declared toolchains and a `D:\z` left by a full
+      build. Acceptance: the whole reset finishes in under 5 minutes; if it does not, the
+      sweep or the digest check is redesigned (for example, a digest of the seed's
+      manifest instead of every file) before phase 6 depends on it.
 - [ ] 1.7 Validation gate: every unknown in the design's Risks section that phase 1 owns
       is resolved in `design.md` with recorded output, and spec scenario **"The template
       is rebuilt from code"** is shown to be achievable on this cluster (the spike built
@@ -265,11 +270,14 @@ under the decision it settles.
       with a remediation mode that reboots the host and clears the quarantine only when the
       supervisor's reset then verifies clean. Prove the quarantine with a test job that
       leaves a process holding a file open, and prove a job cannot clear it.
-- [ ] 8.2 Add the patch playbook (D9): drains first (removes the plane label through the
-      organisation API, waits until no job is in progress), then stops the service,
-      `win_updates`, reboots if needed, starts the runner, restores the label and verifies
-      it. Test that a job queued during the drain is not picked up. Add its Semaphore
-      template and run it once.
+- [ ] 8.2 Add the patch playbook (D9): drains first (tells the supervisor to start no
+      further runner, then waits, bounded by the longest Windows job timeout, until the
+      running runner, if any, has exited after its job), then `win_updates`, reboots if
+      needed, lets the supervisor reset the account and resume, and verifies a runner is
+      online with its declared labels. A run that fails after draining leaves the
+      supervisor drained. Labels are not touched: under the just-in-time lifecycle (D7) a
+      stocked configuration already carries them. Test that a stocked configuration is not
+      started while the supervisor is drained. Add its Semaphore template and run it once.
 - [ ] 8.3 Add the monthly template rebuild and host rebuild as scheduled Semaphore
       templates (D3), add the runner-release check (bump `github_runner_version` within
       14 days of each upstream release, shared with the Linux pool), and record queue time

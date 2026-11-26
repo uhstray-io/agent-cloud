@@ -109,7 +109,9 @@
       the declared size, mint a just-in-time configuration (task 5.2), pass it to the
       runner in the VM over SSH standard input, wait for the runner to exit, stop and
       delete the VM, repeat. Delete the VM on every exit path, including a supervisor
-      restart (on start, delete any VM it owns that is not in a live slot).
+      restart (on start, delete any VM it owns that is not in a live slot). Recycle a warm
+      VM that has taken no job within `macos_runner_max_idle_minutes` (default 1200, D2):
+      stop and delete it, remove its runner record, clone a fresh one.
 - [ ] 4.2 Refuse a declaration with more than two slots, naming the licence limit.
 - [ ] 4.3 Log each slot's VM name, runner name, job outcome and lifetime where the verify
       playbook can read them. No credential in any log.
@@ -124,7 +126,9 @@
       exits non-zero, when the supervisor is killed mid-job and restarted, and when a
       cancelled job leaves a wedged child process (the slot's deadline destroys the VM, D2);
       a failed slot recovers once its VM deletion succeeds; a listener update exit (code 3
-      or 4) is relaunched with the same configuration and its job completes.
+      or 4) is relaunched with the same configuration and its job completes; an idle VM
+      older than the idle bound (set low for the test) is deleted with its runner record
+      and replaced.
 - [ ] 4.6 Validation gate: spec scenarios **"An over-limit declaration is refused"** and
       **"A cancelled job's machine is destroyed"** verified (4.5 plus a live cancellation).
 
