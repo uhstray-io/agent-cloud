@@ -788,7 +788,8 @@ Each has a recommendation. None changes the specs; each is a parameter of a task
 exists either way.
 
 Decided 2026-11-26 outside this list: the `ansible.windows` collection is added with a
-pinned minimum version, proven on the orchestrator by the spike first (task 2.8).
+pinned minimum version, proven on the orchestrator by spike task 1.5 first, then added in
+task 2.8.
 
 1. **Licence.** Windows Server 2025 Standard for crabnebula's 20 cores (a 16-core pack plus
    two 2-core packs; list price is about 1,176 US dollars per 16 cores, so roughly 1,470
