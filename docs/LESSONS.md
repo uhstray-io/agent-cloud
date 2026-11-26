@@ -99,3 +99,9 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1219 (AC-1029).
 - **DERIVED:** An "Enforcement moved" note names only the replacing Rust tests in code spans, as `platform/tests/suite/<module>.rs::<fn>`, and refers to the deleted file in plain words ("the BATS file this entry cites"). The ledger citation check reads every code span shaped like a test path or a `test_` name as a citation (`platform/tests/suite/ledger.rs`, parse rule in its module comment) and compares the unresolved ones against the ratchet as a multiset, so a deleted file's name put in a code span again is one more unresolved citation, and the check fails.
 - **APPLIES TO:** any edit to `docs/MISTAKES.md` that mentions a deleted or renamed test, notes written by a port pull request included.
+
+### L-017 · 2026-11-26 · playbooks
+
+- **ACCEPTED:** #1221 (AC-924).
+- **DERIVED:** A guard that reads a fact set by another play of the same playbook (`hostvars[...]._fact`) asserts the fact's full shape as its first task, with no `when` the fact's own value can skip. A `--limit` that leaves the setting play with no host, or a `--start-at-task` past it, skips that play without an error, so the fact arrives empty; a guard gated on `_fact | length > 0` then skips itself, and the writes in the plays that still run go ahead unchecked.
+- **APPLIES TO:** multi-play playbooks under `platform/playbooks/` whose checks read a fact another play sets, before any write.
