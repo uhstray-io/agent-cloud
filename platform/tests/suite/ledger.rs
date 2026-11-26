@@ -33,8 +33,8 @@
 //! file per port group in `platform/tests/ledger_citation_ratchet.d/`, list it as
 //! `<entry> <citation> # <reason>`. The comparison is a multiset: one ratchet line covers one
 //! occurrence. The old file may only shrink; a port adds its lines in its own `ratchet.d` file,
-//! each naming the replacing test as `suite/<module>.rs::<fn>`, and edits no ledger file (plan 24,
-//! D10). In the same pull request it appends an "Enforcement moved" note naming those tests to
+//! each naming the replacing test as `suite/<module>.rs::<fn>`, and edits neither `suite/main.rs`,
+//! `areas.yml` nor the old ratchet file (plan 24, D10). In the same pull request it appends an "Enforcement moved" note naming those tests to
 //! each citing entry (docs/MISTAKES.md 5.29). A Rust citation cannot be ratcheted while the Python
 //! checker runs: it does not read `.rs` spans, so it reads such a ratchet line as stale. Until
 //! the Python checker goes (Phase 5), a cited Rust test that is renamed gets a dated note in the
