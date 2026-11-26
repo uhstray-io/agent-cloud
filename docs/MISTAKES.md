@@ -189,6 +189,7 @@ and why.
 | 5.39 | The pre-push hook tested one commit; a commit made during the hook was pushed untested | Process | 1 | Convention (hook check for a ref that moved during the run proposed, AC-929) |
 | 5.40 | A destructive playbook (#1206) was briefed without an identity for its targets or the reads its decision depends on; three returns | Process | 1 | Convention |
 | 5.41 | The coordinator's question dialog left owner mail unread and the monitor still while it was open | Process | 3 | Convention; pre-dialog step and a dialog time limit proposed (count 3, AC-1052) |
+| 5.42 | A plan reused the Linux runner stock playbook for macOS and Windows from its header, without reading its host-side steps or its leave path; three returns on #535 | Process | 1 | Convention |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -5906,6 +5907,24 @@ batch's later briefs; that is a brief convention, not a check.
 **Occurrence 2 — 2026-11-18.** The dialog for #1186's fifth return was open from 09:06 to 12:22 EST (decision 50). #1201's scope question on the lanes guard and #1206's sixth return (CodeRabbit review 5958770229, 14:40:34Z) sat unread for that time. Why the rule did not fire: the practice adopted after the first occurrence (pass the turn and send every owner its next step first) did not cover mail that arrives while the dialog is open.
 
 **Occurrence 3 — 2026-11-18.** A dialog on stalled sessions and #1201's return, opened at 17:03 EST by the coordinator's own record, was answered at 19:48 EST (decisions 59 and 60). No owner was running, so no mail was lost, but the monitor did not tick for that time. Why the rule did not fire: nothing bounds how long a dialog may stay open.
+
+### 5.42 A plan reused an existing playbook for a new kind of host from its header, without reading what it runs on the host
+
+**Occurrences: 1** — 2026-11-26
+
+**What happened.** On 2026-11-26 the owner chose to have the macOS runner of #535 (AC-1040) take configurations minted by the orchestrator. Commit `448fe0af` rewrote the macOS plan to match. Task 5.1 said to extend the scheduled stock template "as Windows task 6.6 does", and rollback stage 2 relied on the stock task's prune mode (`grs_prune_only`). The author had read only the playbook's header (`platform/playbooks/stock-github-runner-jit.yml:1-70`). The pull request's third review return was the independent `pr-reviewer` round on head `6bff6c31`. The first two were CodeRabbit's review of `55e2be5a` and its thread follow-ups on `9e634e84`. That round found four gaps:
+- The playbook ends every host that is not `ephemeral` before its prune (`stock-github-runner-jit.yml:50-52`).
+- Prune mode is reached only through the Linux leave path (`platform/playbooks/tasks/github-runner-lifecycle.yml:166-169`), so the plan had no way to withdraw a Mac.
+- After stocking, the playbook runs the Linux supervisor's `status`, `systemctl` and `journalctl` on every host and requires it `active` (`stock-github-runner-jit.yml:76-108`).
+- The stock task reads the stock with GNU `find -printf` and writes each file `root:root` (`platform/playbooks/tasks/github-runner-jit-stock.yml:51-52`, `:192-193`).
+
+Windows task 6.6 had carried the same one-line "extend the stock template" since before this pull request. Fixed in `ae2955ab`.
+
+**Root cause.** In the plan. The plan named an existing mechanism as serving a new operating system on the strength of its name and its header. Nobody read the steps it runs on the host, or the entry point the rollback relied on. So each review found one host-specific gap at a time.
+
+**The rule.** A plan that says an existing playbook or task serves a new kind of host reads every step it runs on the host: commands, paths, owners and the checks after the work. It also reads every entry point the plan relies on, such as a mode or a leave path. The plan names, with `file:line`, each step that needs a branch for the new host, and how the plan reaches each entry point. Related: 10.24 (Docker's mount semantics assumed on rootless podman).
+
+**Enforced by.** Convention.
 
 ## 6. Working from assumptions about files
 
