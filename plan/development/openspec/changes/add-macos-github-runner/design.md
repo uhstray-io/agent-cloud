@@ -1,3 +1,40 @@
+# macOS GitHub Actions Runner
+
+**Date:** 2026-10-11
+**Status:** PROPOSED
+**Context:** This is the design of the OpenSpec change `add-macos-github-runner`, which adds a
+macOS member to the organisation's self-hosted GitHub Actions plane on a dedicated Mac mini,
+so that the `zerds` macOS jobs run on hardware the organisation controls. It keeps OpenSpec's
+design sections (Context, Goals / Non-Goals, Decisions, Risks / Trade-offs, Migration Plan,
+Open Questions) and adds the sections `plan/architecture/00-foundation-standards.md` requires
+of every plan document around them.
+
+---
+
+## Problem
+
+The self-hosted plane serves Linux x64 only, and macOS cannot run on the Proxmox nodes:
+Apple's licence permits macOS virtual machines only on Apple hardware (D1). The five `zerds`
+macOS jobs run on GitHub's hosted `macos-15`, a 3 vCPU runner with 7 GB of memory, and the
+release job deletes Xcode installs and replaces the default keychain, so it needs a machine
+it may administer (Context, below). This change gives the plane a macOS member that runs each
+job in a virtual machine created for it and destroyed after it. The full motivation is in
+`proposal.md`, Why.
+
+## Design Principles
+
+1. **Config-as-code** (`PRINCIPLES.md` section 1) -- the host, its image and its supervisor
+   come from playbooks and a declaration; the steps Apple's hardware makes unavoidable are
+   written down as exceptions with their reasons (D5, D7).
+2. **A fresh machine per job** -- the job may administer its VM because no later job runs in
+   it; the VM is destroyed after one job and its wait is bounded (D2, D8).
+3. **Credentials are scoped to what they can stop** (section 3) -- a macOS-only App key that
+   never enters a VM, so revoking it stops macOS alone (D4).
+4. **Adopt the standard tool where the platform has no mechanism** (section 2) -- Packer and
+   Tart for the image, a thin supervisor owned in this repository for the loop (D3, D5).
+5. **Licences are declared facts** -- at most two macOS VMs per host, and the Tart core count
+   is watched against its free tier (D2, D9).
+
 ## Context
 
 See `proposal.md`, Why. This section records the facts that shape the approach, each
@@ -104,6 +141,35 @@ hardware in the estate today and no OCI image registry.
 - **iOS simulators or device testing.** No job needs them; the image carries none.
 - **A second Mac or an image registry.** Designed not to block either, not built.
 - **Editing `zerds` here.** The workflow edits are a cross-repository task.
+
+## Architecture
+
+The decisions D1 to D10 below are the design. This diagram is one slot's loop (D2, D4); the
+host runs two.
+
+```mermaid
+flowchart TD
+    CLONE["Clone the declared golden image<br/>(APFS copy-on-write)"]
+    BOOT["Boot the VM headless on Softnet"]
+    MINT["Supervisor mints a just-in-time configuration<br/>(macOS-only App key, on the host)"]
+    RUN["Runner in the VM, one job<br/>(configuration over SSH standard input)"]
+    IDLE{"Job taken before the idle bound?"}
+    DONE{"Runner exited before the job deadline?"}
+    DEL["Stop and delete the VM"]
+    FAIL["Slot failed: retry the deletion every 5 minutes"]
+    GH["GitHub Actions"]
+
+    CLONE --> BOOT --> MINT --> RUN
+    RUN --> IDLE
+    IDLE -->|"no: recycle, remove the runner record"| DEL
+    IDLE -->|"yes"| GH
+    GH --> DONE
+    DONE -->|"yes"| DEL
+    DONE -->|"no: force-stop"| DEL
+    DEL -->|"deleted"| CLONE
+    DEL -->|"deletion fails"| FAIL
+    FAIL -->|"deletion succeeds"| CLONE
+```
 
 ## Decisions
 
@@ -479,6 +545,62 @@ documented response to a host outage.
 
 Rollback is in `proposal.md`, Rollback Plan.
 
+## Implementation Phases
+
+The phases are `tasks.md` sections 0 to 8. Each ends in a validation gate, which is its
+acceptance criterion.
+
+| Phase | Goal | Acceptance |
+|---|---|---|
+| 0. Owner decisions, branch and working ground | The owner's answers to the Open Questions and a feature branch from `dev` | task 0.4 |
+| 1. Bootstrap the host and spike the unknowns | Headless operation, Softnet, the IPSW build, the just-in-time runner and the two-VM limit proven | task 1.7 |
+| 2. Bring the host under automation | Declared, key-only, hardened and firewalled; the bootstrap repeatable | task 2.9 |
+| 3. Build the golden image as code | The image built from pinned inputs | task 3.5 |
+| 4. Deploy the supervisor | The slot loop, its limits and its teardown | task 4.6 |
+| 5. Establish the macOS credential | The macOS-only App and its just-in-time step | task 5.4 |
+| 6. Prove it with real work | Smoke, the CI jobs and a release dry run; the hosted fallback | task 6.6 |
+| 7. Verification, operations and documentation | Verification, the image rebuild schedule, documentation | task 7.7 |
+| 8. Review and promotion | The change on `main` with the slots serving work | task 8.10 |
+
+## Validation Criteria
+
+Each check is a scenario of this change's spec delta, verified where the last column says.
+
+| Check | Pass condition | Verified in |
+|---|---|---|
+| A macOS job cannot see the previous job's machine | The file, process and keychain are gone and the deleted application is present | task 6.1 |
+| A runner accepts only one job | The runner is gone from the group and its VM no longer exists | task 1.5 |
+| A cancelled job's machine is destroyed | The VM that ran it no longer exists | tasks 4.5, 4.6 |
+| Administration inside the VM does not reach the host | The connection fails and nothing on the host changed | task 6.1 |
+| A third job queues | It waits for a slot and no third VM starts | task 6.6 |
+| An over-limit declaration is refused | The supervisor deploy refuses, naming the limit | task 4.5 |
+| The image is rebuilt from code | An image with the declared versions, built with no interactive step beyond the Xcode archive | task 3.5 |
+| An Xcode archive with the wrong digest aborts the build | The build fails before installing it; the current image is unchanged | task 3.4 |
+| The platform interior is unreachable from a macOS job | The connection fails | tasks 1.3, 6.1 |
+| Build egress from a macOS job still works | The connection succeeds | tasks 6.2, 6.3 |
+| A job cannot read the application key | It is not present in the VM | task 6.1 |
+| Revoking the macOS credential stops only macOS | No macOS runner registers while Linux and Windows keep serving | task 5.4 |
+| Switching to hosted runners is one change | The next run completes on a hosted runner with no workflow edit | task 6.5 |
+
+## Security Considerations
+
+- **Credential handling.** The macOS App's private key is placed on the host by Ansible from
+  the secret store as a `0400` file and never enters a VM; each VM gets a just-in-time
+  configuration over SSH standard input, held in the runner's environment and never an
+  argument (D4). A separate App means a compromised Mac is revoked without stopping Linux or
+  Windows CI (D4).
+- **Blast radius.** A job administers only its own VM, which is destroyed after one job or at
+  its deadline (D2, D8). What does not hold: signing secrets are in the release job's VM, as
+  on a hosted runner; a defect in the golden image reaches every job until it is rebuilt; a
+  VM escape reaches the host and the App key (D8).
+- **Access control.** The host is managed only over SSH with the platform's issued keys,
+  hardened after a key-only proof; first boot is a written exception (D7). FileVault's
+  trade-off between the key at rest and unattended recovery is an owner decision (Open
+  Question 4).
+- **Network exposure.** Softnet keeps a VM from reaching other VMs, the host and private
+  address ranges; the host's packet filter enforces the plane's egress denial list and admits
+  SSH from the declared ranges only, and the host publishes no other service (D6).
+
 ## Open Questions (owner decisions)
 
 1. **Purchase.** Mac mini M5 Pro, 64 GB, 2 TB, about 2,900 US dollars (confirm on Apple's
@@ -500,3 +622,25 @@ Rollback is in `proposal.md`, Rollback Plan.
    explicitly and the separate App making revocation cheap.
 5. **Slot sizing.** **Recommendation: two slots at just under half the cores and 24 GB
    each**, re-measured after the first month (task 7.3).
+
+## Cross-references
+
+| Document | Relationship |
+|---|---|
+| [proposal.md](proposal.md) | Why, what changes, impact and the staged rollback plan |
+| [tasks.md](tasks.md) | The implementation phases and their validation gates |
+| [specs/platform/github-actions-runners/spec.md](specs/platform/github-actions-runners/spec.md) | The requirements and scenarios the Validation Criteria table checks |
+| [add-github-actions-runners/design.md](../add-github-actions-runners/design.md) | The Linux plane this change extends |
+| [add-ephemeral-github-runners/design.md](../add-ephemeral-github-runners/design.md) | The Linux just-in-time lifecycle and its runner-input handling |
+| [add-windows-github-runner/design.md](../add-windows-github-runner/design.md) | The Windows member planned beside this one |
+| [platform/services/github-runner/CLAUDE.md](../../../../../platform/services/github-runner/CLAUDE.md) | The runner service's operating notes and isolation table |
+| [plan/architecture/00-foundation-standards.md](../../../../architecture/00-foundation-standards.md) | The plan-document standard this file follows |
+| [Root AGENTS.md](../../../../../AGENTS.md) | Platform rules and the workflow table |
+
+## Revision History
+
+| Date | Change |
+|---|---|
+| 2026-10-11 | Initial draft, then the first review round |
+| 2026-10-29 | The runner input through the environment, the update restart, and the second and third review rounds |
+| 2026-11-26 | Owner review: the job deadline is 150 minutes and every macOS job declares a timeout, the warm VM has an idle bound, and this file takes the numbered-plan structure |

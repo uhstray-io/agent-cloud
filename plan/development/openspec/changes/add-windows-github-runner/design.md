@@ -1,3 +1,40 @@
+# Windows GitHub Actions Runner
+
+**Date:** 2026-10-11
+**Status:** PROPOSED
+**Context:** This is the design of the OpenSpec change `add-windows-github-runner`, which adds
+one Windows member to the organisation's self-hosted GitHub Actions plane so that the `zerds`
+Windows jobs run on hardware the organisation controls. It keeps OpenSpec's design sections
+(Context, Goals / Non-Goals, Decisions, Risks / Trade-offs, Migration Plan, Open Questions)
+and adds the sections `plan/architecture/00-foundation-standards.md` requires of every plan
+document around them.
+
+---
+
+## Problem
+
+The self-hosted plane (`add-github-actions-runners`) serves Linux x64 only. The three
+`zerds` Windows jobs run on GitHub's hosted `windows-latest`, a 2 vCPU runner on which the GPU
+release build was killed at a 120-minute timeout, and four of their steps administer the
+machine, which a self-hosted runner that isolates its jobs must not allow (Context, below).
+This change gives the plane a Windows member that runs those jobs faster, from declared
+configuration, without letting one job change the machine the next job runs on. The full
+motivation is in `proposal.md`, Why.
+
+## Design Principles
+
+1. **Config-as-code** (`PRINCIPLES.md` section 1) -- the host, its template, its toolchain and
+   its runner come from playbooks and a declaration; nothing in the path is a click (D3, D5).
+2. **Extend the shared mechanism** (section 2) -- the template, provisioning, host-access and
+   firewall playbooks gain a Windows branch instead of a second tool (D3, D4, D8).
+3. **The application key stays on the orchestrator** (section 3) -- the host receives
+   single-use just-in-time configurations and is denied the secret store (D6, D8).
+4. **A job cannot change the next job's machine** -- the runner account is not an
+   administrator and is reset from a root-only seed before every job; a reset that cannot be
+   verified quarantines the host (D6, D7).
+5. **Say what does not hold** -- every place the Windows mechanism is weaker than the Linux
+   one is written down (D10).
+
 ## Context
 
 See `proposal.md`, Why. This section records the facts that shape the approach. Each is
@@ -115,6 +152,34 @@ storage (`SharedISOs`) that every node can read.
   needs a domain, and introducing one for a single runner would be a second platform.
 - **Editing `zerds` in this repository.** The workflow edits are a cross-repository task
   that targets the label contract published here.
+
+## Architecture
+
+The decisions D1 to D11 below are the design. This diagram is the path one job takes through
+them: the orchestrator stocks configurations (D6), and the supervisor resets the account
+before it starts each runner (D7).
+
+```mermaid
+flowchart TD
+    ORCH["Orchestrator: scheduled stock template<br/>(holds the application key)"]
+    STOCK["Root-only stock on the host<br/>(SYSTEM and Administrators only)"]
+    SUP["Supervisor service (LocalSystem)"]
+    RESET["Reset: stop the account's processes, unload its hive,<br/>remove every path it owns, verify"]
+    SEED["Recreate the profile from the root-only seed<br/>(digests checked)"]
+    RUN["One runner as ghrunner, one job<br/>(configuration in its environment, never an argument)"]
+    QUAR["Quarantine: reason written outside the account's reach;<br/>no runner starts"]
+    GH["GitHub Actions"]
+
+    ORCH -->|"mint just-in-time configurations"| STOCK
+    STOCK -->|"oldest taken and deleted"| SUP
+    SUP --> RESET
+    RESET -->|"verified clean"| SEED
+    RESET -->|"cannot verify"| QUAR
+    SUP -->|"too many runs without a job"| QUAR
+    SEED --> RUN
+    RUN -->|"takes one job"| GH
+    RUN -->|"exits after its job"| SUP
+```
 
 ## Decisions
 
@@ -636,6 +701,71 @@ Nothing is migrated. The sequencing is risk ordering:
 
 Rollback is in `proposal.md`, Rollback Plan.
 
+## Implementation Phases
+
+The phases are `tasks.md` sections 0 to 9. Each ends in a validation gate, which is its
+acceptance criterion.
+
+| Phase | Goal | Acceptance |
+|---|---|---|
+| 0. Branch and working ground | A feature branch from `dev` with the hooks active | task 0.4 |
+| 1. Spike the unknowns | Unattended install, clone identity, Dev Drive, Windows over SSH and the account reset proven on a throwaway VM | task 1.7 |
+| 2. Extend the shared mechanisms | Windows branches in the template, provisioning, host-access and firewall playbooks, with regression tests | task 2.10 |
+| 3. Declare the host | The host and its runner variables in the private inventory | task 3.6 |
+| 4. Build the template, then provision and harden the host | Template on crabnebula; host provisioned, key-only, firewalled | task 4.7 |
+| 5. Converge the build toolchain | The pinned toolchain installed and re-run without change | task 5.6 |
+| 6. Install and register the runner | Account, seed, supervisor and stock in place; one job per runner | task 6.9 |
+| 7. Prove it with real work | Smoke workflow and a full release dry run; licence before production | task 7.7 |
+| 8. Verification, operations and documentation | Verification, the patch playbook, scheduled rebuilds, documentation | task 8.7 |
+| 9. Review and promotion | The change on `main` with the runner online | task 9.10 |
+
+## Validation Criteria
+
+Each check is a scenario of this change's spec delta, verified where the last column says.
+
+| Check | Pass condition | Verified in |
+|---|---|---|
+| The release build runs without machine administration | The build completes and no step ran with administrative rights | task 7.4 |
+| A job cannot change the machine | The attempt fails: the runner account holds no administrative right | task 7.1 |
+| Toolchain convergence is idempotent | A re-run reports no change | task 5.3 |
+| A corrupted toolchain download aborts its install | The installer is not executed and the previous version stays | task 5.5 |
+| The template is rebuilt from code | A template exists on the node, built with no hand on the installer | tasks 1.7, 4.3 |
+| No answer file is left on hypervisor storage | The answer-file media is absent after the build | task 2.10 |
+| The Ubuntu template path is unchanged | The same hypervisor requests as before this change | task 2.10 |
+| Key access is proven before password access is withdrawn on Windows | Key-only login verified first; a failed check disables nothing | task 4.7 |
+| Only SSH is reachable on the Windows host | SSH from the declared ranges only; no remote desktop, file sharing or remote management | task 4.7 |
+| The platform interior is unreachable from a Windows job | The connection is blocked whatever credential the job holds | tasks 4.6, 4.7 |
+| A Windows job cannot remove the denial | The attempt fails for lack of administrative rights | task 7.7 |
+| A release's target directory does not survive into the next job | The build root is empty at the next job's start | task 7.2 |
+| A tool replaced by one job is not run by the next | The next job runs the seed's copy | task 7.2 |
+| An abrupt reboot does not skip the reset | The account is reset before any runner starts | task 6.9 |
+| A surviving locked file quarantines the host | No runner starts and verification reports the quarantine | task 8.1 |
+| The job account cannot clear the quarantine | The attempt fails and the host stays quarantined | task 6.9 |
+| A Windows job lands only on a Windows runner | It runs on the Windows runner and on no Linux runner | task 7.2 |
+| A licensed host is not placed off its licensed node | Provisioning refuses, naming both nodes | tasks 2.5, 8.7 |
+
+## Security Considerations
+
+- **Credential handling.** The application key never reaches the host: the orchestrator mints
+  just-in-time configurations and stocks them in a directory only `SYSTEM` and
+  `Administrators` can read; a configuration reaches the runner through its environment,
+  never an argument (D6, D7). The runner account's password and the bootstrap administrator
+  password live in the secret store; the seed ISO carries only a public key and a one-time
+  password that dies with sysprep (D3).
+- **Blast radius.** A job runs as a non-administrative account that is destroyed and rebuilt
+  before every job; a reset that cannot be verified quarantines the host, decided by state the
+  job account cannot write (D7). Within a job, the job owns its tools and a signing secret is
+  exposed to that job only (D10); signing stays off this host until the lifecycle passes its
+  acceptance (Open Question 5).
+- **Access control.** Administration is SSH with the platform's issued keys, hardened only
+  after a key-only proof (D4). No job runs in a container on Windows, so nothing may be
+  placed on the host that every repository in `github_runner_repos` is not entitled to read
+  (D10).
+- **Network exposure.** Inbound default-deny with SSH from the declared ranges only, and
+  egress denial of the secret store, the orchestrator, the IPAM authority and the
+  hypervisors, from the same declaration as Linux; the job cannot change the rules (D8).
+  No remote desktop, file-sharing or remote-management listener (D3).
+
 ## Open Questions (owner decisions)
 
 Each has a recommendation. None changes the specs; each is a parameter of a task that
@@ -663,3 +793,25 @@ exists either way.
    runs only on hosted runners (`if: runner.environment == 'github-hosted'`, the D11
    pattern), so self-hosted release builds are unsigned. After acceptance, allow it, knowing
    that a self-hosted signer is a host the certificate's private key passes through.
+
+## Cross-references
+
+| Document | Relationship |
+|---|---|
+| [proposal.md](proposal.md) | Why, what changes, impact and the staged rollback plan |
+| [tasks.md](tasks.md) | The implementation phases and their validation gates |
+| [specs/platform/github-actions-runners/spec.md](specs/platform/github-actions-runners/spec.md) | The requirements and scenarios the Validation Criteria table checks |
+| [add-github-actions-runners/design.md](../add-github-actions-runners/design.md) | The Linux plane this change extends |
+| [add-ephemeral-github-runners/design.md](../add-ephemeral-github-runners/design.md) | The just-in-time lifecycle D7 adopts |
+| [add-macos-github-runner/design.md](../add-macos-github-runner/design.md) | The macOS member planned beside this one |
+| [platform/services/github-runner/CLAUDE.md](../../../../../platform/services/github-runner/CLAUDE.md) | The runner service's operating notes and isolation table |
+| [plan/architecture/00-foundation-standards.md](../../../../architecture/00-foundation-standards.md) | The plan-document standard this file follows |
+| [Root AGENTS.md](../../../../../AGENTS.md) | Platform rules and the workflow table |
+
+## Revision History
+
+| Date | Change |
+|---|---|
+| 2026-10-11 | Initial draft, then the first review round |
+| 2026-10-29 | The account reset before every job (D7) and the second and third review rounds |
+| 2026-11-26 | Owner review: the patch playbook's drain follows D9, every Windows job declares a timeout, the reset is timed in the spike, and this file takes the numbered-plan structure |
