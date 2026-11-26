@@ -494,7 +494,7 @@ def test_the_drift_refusal_is_visible_names_the_short_pin_and_says_nothing_was_m
     assert "no_log" not in assertion, "an assert with no_log hides its own fail_msg"
     assert set(assertion["ansible.builtin.assert"]["that"]) == {"_drift_present.rc == 0", "_drift_diff.rc == 0"}
     msg = assertion["ansible.builtin.assert"]["fail_msg"]
-    assert "the controller's console deploy inputs differ from what the console runs" in msg
+    assert DRIFT_REFUSAL in msg
     assert "{{ _drift_pin[:12] }}" in msg
     assert "redeploy the console from this branch first, then rerun" in msg
     assert "Nothing was rotated" in msg
@@ -517,7 +517,7 @@ def test_the_drift_play_refuses_an_unpinned_run_first_and_gates_on_local_dev_onl
 
 # The drift gate on a PRODUCTION inventory with local_mode forged (AC-726, plan 24). The pin and the drift check are
 # skipped on a local-dev inventory only, so a forged local_mode must not skip them. The fake git answers the three
-# commands the pin and the drift check run: a commit for HEAD, the pin exists, and the console's inputs differ or not.
+# commands the pin and the drift check run: a commit for HEAD, the pin exists, and the console's inputs differ.
 CONSOLE_PROD_INI = (
     "localhost ansible_connection=local\n"
     "console-prod ansible_connection=local\n\n"
@@ -537,8 +537,8 @@ def _fake_git(diff_exit: int) -> str:
     )
 
 
-# The console's inputs differ from the pin (drift), or match it: with the second no drift refusal can fire, so a run
-# that skipped the pin check would reach the mint.
+# diff exit 1: the console's inputs differ from the pin (drift). Exit 0: they match, so no drift refusal can fire, and a
+# run that skipped the pin check would reach the mint.
 FAKE_GIT_DRIFT = _fake_git(1)
 FAKE_GIT_CLEAN = _fake_git(0)
 DRIFT_REFUSAL = "the controller's console deploy inputs differ from what the console runs"
@@ -549,12 +549,12 @@ PIN_REFUSAL = "the console's deployed commit was not pinned this run"
 NO_OPENBAO_ENV = {"OPENBAO_ADDR": "", "BAO_ROLE_ID": "", "BAO_SECRET_ID": ""}
 
 
-def _run_rotate(tmp_path, *args, git: str):
+def _run_rotate(tmp_path, *args, git: str, check: bool = False):
     """The rotation on the production-shaped inventory with a fake git; returns (returncode, joined output)."""
     inventory = tmp_path / "inventory.ini"
     inventory.write_text(CONSOLE_PROD_INI)
     proc = harness_sandbox.run_playbook(
-        ROTATE, tmp_path, *args, inventory=inventory,
+        ROTATE, tmp_path, *args, *(["--check"] if check else []), inventory=inventory,
         env={**harness_sandbox.fake_bin(tmp_path, {"git": git}), **NO_OPENBAO_ENV},
     )
     return proc.returncode, " ".join((proc.stdout + proc.stderr).split())
@@ -576,7 +576,7 @@ def test_the_drift_gate_refuses_before_a_mint_on_production_whatever_local_mode_
 @needs_ansible
 @pytest.mark.parametrize("check", [False, True], ids=["real", "check"])
 def test_a_run_limited_past_the_pin_is_refused_before_the_mint(tmp_path, check):
-    rc, output = _run_rotate(tmp_path, "--limit", "localhost", *(["--check"] if check else []), git=FAKE_GIT_CLEAN)
+    rc, output = _run_rotate(tmp_path, "--limit", "localhost", git=FAKE_GIT_CLEAN, check=check)
     assert rc != 0, output
     assert PIN_REFUSAL in output, output
     assert MINT not in output, "the run reached the mint"
@@ -585,7 +585,7 @@ def test_a_run_limited_past_the_pin_is_refused_before_the_mint(tmp_path, check):
 @needs_ansible
 @pytest.mark.parametrize("check", [False, True], ids=["real", "check"])
 def test_a_pinned_run_with_no_drift_is_not_refused_and_reaches_the_mint(tmp_path, check):
-    _, output = _run_rotate(tmp_path, *(["--check"] if check else []), git=FAKE_GIT_CLEAN)
+    _, output = _run_rotate(tmp_path, git=FAKE_GIT_CLEAN, check=check)
     assert PIN_REFUSAL not in output, output
     # The run ends at the empty OpenBao address, after the mint's header: every refusal before the mint passed.
     assert MINT in output, "the run did not reach the mint"
