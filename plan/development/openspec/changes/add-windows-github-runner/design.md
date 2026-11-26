@@ -565,14 +565,17 @@ follow-up from the Linux change, and this host is one more reason to do it.
 
 **Decision.** Automatic Windows Update is disabled by policy. A patch playbook
 (`ansible.windows.win_updates`) is launched from the orchestrator. It first **drains** the
-host the way `deploy.sh quiesce` drains a Linux runner: it sets a drain flag in the
-supervisor's state directory (D7), so the supervisor starts no further runner; it waits
-until the running listener has no worker process, that is no job in flight (bounded by the
-longest Windows job timeout, 180 minutes; D11); then it stops the listener gracefully.
-An idle listener therefore stops at once, and a job assigned in the instant before the stop
-is cancelled and reported, as on Linux. Only then does it install updates, reboot if required, let the supervisor reset
-the account and resume, and verify a runner is online with its declared labels. A run that
-fails after draining leaves the supervisor drained, so the host stays out of rotation
+host in the order the Linux lifecycle uses (`tasks/github-runner-lifecycle.yml`): it stops
+the supervisor service, so no further runner starts, while the runner it started keeps
+running (whether stopping the service leaves its child running on this edition is settled
+by task 1.6); then it drains as `deploy.sh quiesce` does, waiting until the listener has no
+worker process, that is no job in flight, bounded by the longest Windows job timeout (180
+minutes; D11), and stopping the listener gracefully, with a bounded grace and a forced stop
+after it. An idle listener stops at once; a job still running at the bound, or assigned in
+the instant before the stop, is cancelled and reported, as on Linux. Only then does it
+install updates, reboot if required, start the supervisor (which resets the account before
+its first runner, D7), and verify a runner is online with its declared labels. A run that
+fails after draining leaves the supervisor stopped, so the host stays out of rotation
 rather than taking work half-patched, and verification reports it. The monthly template
 rebuild (D3) is the other half: a freshly built host starts patched.
 

@@ -234,8 +234,9 @@ a queued job starts in seconds rather than waiting for a boot.
 job, the slot allows it at most the declared `macos_runner_max_job_minutes` (default 150:
 the longest declared macOS job timeout, 120 minutes for `release.yml` `macos` and
 `ci.yml` "Heavy feature check", plus 30 minutes for the runner's own cancellation grace).
-The deadline applies whatever a job declares; D10 caps every macOS job's own timeout, so a
-legitimate job finishes before it.
+The deadline applies whatever a job declares. D10 requires every macOS job to declare a
+timeout of at most 120 minutes so that a legitimate job finishes before it; `warm-cache.yml`
+does not declare one yet.
 At that deadline, or when the runner has exited but the guest still runs any process of
 the job account, the slot force-stops the VM (`tart stop --timeout 0`) and deletes it.
 The VM is the job's whole machine, so destroying it ends every process the job started,

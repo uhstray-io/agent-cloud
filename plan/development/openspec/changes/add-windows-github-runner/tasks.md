@@ -47,7 +47,9 @@ under the decision it settles.
       its registry hive, delete its profile, and recreate the profile from a seed copy.
       Record the mechanism that worked for each step (per-job service entry or scheduled
       task; how a hive held open is released), and whether the reset verifies clean while
-      the account still had a process holding a file open. Time each step of the reset
+      the account still had a process holding a file open, and whether stopping the
+      supervisor service leaves the runner it started running (the drain, D9, depends on
+      it). Time each step of the reset
       (kill, hive unload, the owned-path sweep of `C:` and `D:`, the seed digest check, the
       seed copy) with a seed carrying the declared toolchains and a `D:\z` left by a full
       build. Acceptance: the whole reset finishes in under 5 minutes; if it does not, the
@@ -224,11 +226,11 @@ under the decision it settles.
       unchanged after a reset; a listener that exits with code 3 or 4 is relaunched with
       the same configuration and its job completes, without counting as a failed start.
 - [ ] 6.8 Add or extend the Semaphore templates (deploy, drain, verify), run the deploy from
-      Semaphore, then re-run it unchanged. Give the deploy the Linux leave path
-      (`tasks/github-runner-lifecycle.yml`, prepare phase) for a host no longer declared
-      `ephemeral`: drain (D9) and disable the supervisor, prune the host's runner records
-      (`grs_prune_only`), remove the stock, and register nothing in their place (rollback
-      stage 2). Test it on the live host once, then restore the declaration and redeploy.
+      Semaphore, then re-run it unchanged. Give the Windows deploy a leave path for a host
+      no longer declared `ephemeral`, in the order of `proposal.md` rollback stage 2 (the
+      Windows form of the Linux leave path; the Linux task file itself is POSIX-only).
+      Prove it once on this host before it serves any repository's work, then restore the
+      declaration and redeploy.
 - [ ] 6.9 Validation gate: the runner shows in the group with labels
       `self-hosted, Windows, X64, uhstray-lan`, one job per runner name, and spec
       scenarios **"An abrupt reboot does not skip the reset"** and **"The job account

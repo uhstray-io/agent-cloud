@@ -124,13 +124,15 @@ Staged, each stage independently sufficient, matching the Linux change:
    hosted runners run again there, so the workflow is complete on either surface. No
    platform change.
 2. **Withdraw availability.** Remove `github_runner_lifecycle: ephemeral` from the host's
-   declaration, so the stock template skips it, and run the Windows deploy. Its leave
-   path does what the Linux deploy's does (`tasks/github-runner-lifecycle.yml`, prepare
-   phase): it drains (design D9) and disables the supervisor, deletes the host's runner
-   records with the stock task's prune mode (`grs_prune_only`), and removes the stock
-   under `C:\ProgramData\github-runner\jit\`. Unlike Linux, it registers no persistent
-   runner in their place. The Linux pool is untouched: the runner group is shared, but
-   each runner record belongs to one host.
+   declaration, so the stock template skips it, and run the Windows deploy's leave path
+   (task 6.8). In order: drain as design D9 does and disable the supervisor; delete the
+   host's runner records with the stock task's prune mode (`grs_prune_only`), so no
+   stocked configuration can start a runner; remove the stock under
+   `C:\ProgramData\github-runner\jit\`; then reset the account (D7) and remove the
+   supervisor and its seed. The records go before the reset, so a reset that cannot verify
+   still leaves the host withdrawn. Unlike the Linux leave path, it registers no persistent
+   runner afterwards. The Linux pool is untouched: the runner group is shared, but each
+   runner record belongs to one host.
 3. **Revoke identity.** Unchanged from the Linux change: revoking the application stops
    every runner in the group. Use stage 2 when only Windows must stop.
 4. **Remove the host.** Destroy the VM and, if it is no longer wanted, the Windows
