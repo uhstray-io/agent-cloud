@@ -75,7 +75,8 @@
     _home: "{{ github_runner_home | default('/opt/actions-runner') }}"
     _account: "{{ github_runner_account | default('ghrunner') }}"
     # A runner started with --disableupdate must be upgraded by hand within 63 days of a
-    # newer version, or GitHub does not assign it jobs (GitHub Docs, Self-hosted runners
+    # newer version (sooner when GitHub requires a critical security update), or GitHub
+    # does not assign it jobs (GitHub Docs, Self-hosted runners
     # reference, https://docs.github.com/en/actions/reference/runners/self-hosted-runners):
     # "If you disable automatic updates, you must update your runner version within 63 days of a newer version being made available."
     # Raising this, or the inventory pin, now upgrades an existing host: deploy.sh compares it
