@@ -34,9 +34,8 @@
 //! `<entry> <citation> # <reason>`. The comparison is a multiset: one ratchet line covers one
 //! occurrence. The old file may only shrink; a port adds its lines in its own `ratchet.d` file,
 //! each naming the replacing test as `suite/<module>.rs::<fn>`, and edits no ledger file (plan 24,
-//! D10). In the same pull request it appends an "Enforcement moved" note to each citing entry
-//! naming those tests (docs/MISTAKES.md 5.29), which
-//! `every_ratchet_line_for_a_deleted_test_has_an_enforcement_moved_note` requires. A Rust citation cannot be ratcheted while the Python
+//! D10). In the same pull request it appends an "Enforcement moved" note naming those tests to
+//! each citing entry (docs/MISTAKES.md 5.29). A Rust citation cannot be ratcheted while the Python
 //! checker runs: it does not read `.rs` spans, so it reads such a ratchet line as stale. Until
 //! the Python checker goes (Phase 5), a cited Rust test that is renamed gets a dated note in the
 //! ledger entry naming its new name, as 10.15's "Enforcement moved" note does.
@@ -454,12 +453,13 @@ fn parse_ratchet(text: &str) -> Vec<(String, String)> {
 /// Ratchet entries under `root`: the old file, then every `*.txt` in the ratchet directory by
 /// name. A missing file or directory adds nothing.
 fn load_ratchet(root: &Path) -> Vec<(String, String)> {
-    let mut text = fs::read_to_string(root.join(RATCHET)).unwrap_or_default();
-    for file in ratchet_dir_files(root) {
-        text.push('\n');
-        text.push_str(&fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file:?}: {e}")));
-    }
-    parse_ratchet(&text)
+    let mut ratchet = parse_ratchet(&fs::read_to_string(root.join(RATCHET)).unwrap_or_default());
+    ratchet.extend(
+        ratchet_dir_lines(root)
+            .into_iter()
+            .map(|(_, key, reason)| (key, reason)),
+    );
+    ratchet
 }
 
 /// Every `*.txt` in the ratchet directory under `root`, by name; none when it is missing.
@@ -477,7 +477,7 @@ fn ratchet_dir_files(root: &Path) -> Vec<PathBuf> {
 /// A replacing test named in a ratchet reason: `[platform/tests/]suite/<module>.rs::<fn>`, the
 /// form a ledger citation of a Rust test takes.
 static REPLACING_TEST: LazyLock<Regex> =
-    LazyLock::new(|| re(r"(?P<path>(?:platform/tests/)?suite/[\w-]+\.rs)::(?P<name>\w+)"));
+    LazyLock::new(|| re(r"(?:platform/tests/)?(?P<path>suite/[\w-]+\.rs)::(?P<name>\w+)"));
 
 /// Old-file ratchet lines for a test that was renamed, not deleted: their entries need no
 /// "Enforcement moved" note. Every other line does, so a line added here is a reviewed choice.
@@ -528,15 +528,12 @@ fn ratchet_dir_problems(root: &Path) -> Vec<String> {
 /// this phrase, so a sentence that quotes the phrase does not count.
 const NOTE_OPENING: &str = "**Enforcement moved";
 
-/// The replacing tests a text names, as `(suite/<module>.rs, fn)` without any `platform/tests/`
-/// prefix, so a ratchet reason and a note compare on one spelling.
+/// The replacing tests a text names, as `(suite/<module>.rs, fn)`: a ratchet reason and a note
+/// compare on one spelling, with or without the `platform/tests/` prefix.
 fn replacing_tests(text: &str) -> BTreeSet<(String, String)> {
     REPLACING_TEST
         .captures_iter(text)
-        .map(|caps| {
-            let path = caps["path"].trim_start_matches("platform/tests/");
-            (path.to_owned(), caps["name"].to_owned())
-        })
+        .map(|caps| (caps["path"].to_owned(), caps["name"].to_owned()))
         .collect()
 }
 
