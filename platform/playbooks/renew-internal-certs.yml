@@ -566,52 +566,51 @@
     # after the listener has refused and closed meets a reset (Linux) or a broken pipe (macOS),
     # which says nothing about why (docs/LESSONS.md L-018). The two alerts were captured from a
     # Python ssl server with CERT_REQUIRED on macOS and Linux; rustls sends the same
-    # certificate_required alert. The set is narrower than _renew_o11y_tls_prover's auth_alerts,
-    # which also counts the alerts for a certificate the listener rejects; here none is presented.
+    # certificate_required alert. The set differs from _renew_o11y_tls_prover's auth_alerts, which
+    # pins TLS 1.3 and also counts the alerts for a certificate the listener rejects; here none is
+    # presented, and a TLS 1.2 listener refuses inside the handshake with handshake_failure.
     _renew_nocert_prover: |
       import http.client, socket, ssl, sys, urllib.parse
       CERT_REQUIRED_ALERTS = {"TLSV13_ALERT_CERTIFICATE_REQUIRED", "SSLV3_ALERT_HANDSHAKE_FAILURE"}
       READ_FIRST_SECONDS = 3
+      def error(msg):
+          print("ERROR " + msg)
+          sys.exit(1)
       def fail(e, where):
           reason = getattr(e, "reason", None)
           if reason in CERT_REQUIRED_ALERTS:
               print("REFUSED " + reason)
               sys.exit(0)
-          print(" ".join(filter(None, ["ERROR " + where + ":", type(e).__name__, reason])))
-          sys.exit(1)
+          error(" ".join(filter(None, [where + ":", type(e).__name__, reason])))
       u = urllib.parse.urlsplit(sys.argv[1])
       if u.scheme != "https":
-          print("ERROR not an https URL")
-          sys.exit(1)
+          error("not an https URL")
+      port = u.port or 443
       try:
           ctx = ssl.create_default_context(cafile=sys.argv[2])
       except OSError as e:
-          print("ERROR no CA bundle: " + type(e).__name__)
-          sys.exit(1)
+          error("no CA bundle: " + type(e).__name__)
       try:
-          raw = socket.create_connection((u.hostname, u.port or 443), timeout=10)
+          raw = socket.create_connection((u.hostname, port), timeout=10)
       except OSError as e:
-          print("ERROR no connection: " + type(e).__name__)
-          sys.exit(1)
+          error("no connection: " + type(e).__name__)
       try:
           tls = ctx.wrap_socket(raw, server_hostname=u.hostname)
       except ssl.SSLCertVerificationError as e:
-          print("ERROR server not verified: " + type(e).__name__)
-          sys.exit(1)
+          error("server not verified: " + type(e).__name__)
       except OSError as e:
           fail(e, "handshake")
       tls.settimeout(READ_FIRST_SECONDS)
       try:
           early = tls.recv(1)
-          print("ERROR after handshake: " + ("data before any request" if early else "closed without an alert"))
-          sys.exit(1)
-      except TimeoutError:
+          error("after handshake: " + ("data before any request" if early else "closed without an alert"))
+      except socket.timeout:
           pass  # nothing sent: the listener is waiting for a request, so it gets one
       except OSError as e:
           fail(e, "after handshake")
       try:
           tls.settimeout(10)
-          conn = http.client.HTTPConnection(u.hostname, u.port or 443, timeout=10)
+          conn = http.client.HTTPConnection(u.hostname, port)
           conn.sock = tls
           conn.request("GET", "/v1/models")
           print("SERVED %d" % conn.getresponse().status)

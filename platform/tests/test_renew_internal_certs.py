@@ -1404,8 +1404,8 @@ def _nocert_script():
     return playbook_yaml.plays(PLAYBOOK)[1]["vars"]["_renew_nocert_prover"]
 
 
-def _run_nocert(script, url, bundle, timeout=30):
-    return subprocess.run([sys.executable, "-c", script, url, str(bundle)],
+def _run_nocert(port, bundle, script=None, timeout=30):
+    return subprocess.run([sys.executable, "-c", script or _nocert_script(), f"https://localhost:{port}", str(bundle)],
                           check=False, capture_output=True, text=True, timeout=timeout)
 
 
@@ -1416,7 +1416,7 @@ def _localhost_leaf(ca, tmp: Path) -> dict:
 
 
 def _server_ctx(leaf, maximum=ssl.TLSVersion.TLSv1_3):
-    """A TLS listener serving the leaf that asks for no client certificate."""
+    """A TLS listener serving the leaf; it demands no client certificate unless the caller sets one."""
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.maximum_version = maximum
@@ -1428,7 +1428,7 @@ def test_a_refusal_from_a_client_certificate_listener_is_refused(tmp_path):
     ca = _ca(tmp_path)
     leaf = _localhost_leaf(ca, tmp_path)
     with _thread(_gateway(ca, leaf, [], tmp_path)) as server:
-        result = _run_nocert(_nocert_script(), f"https://localhost:{server.server_port}", ca["dir"] / "bundle.crt")
+        result = _run_nocert(server.server_port, ca["dir"] / "bundle.crt")
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.startswith("REFUSED "), result.stdout
 
@@ -1436,29 +1436,29 @@ def test_a_refusal_from_a_client_certificate_listener_is_refused(tmp_path):
 def test_a_plain_http_port_is_an_error_not_a_refusal(tmp_path):
     ca = _ca(tmp_path)
     with serve(_PlainHTTP) as url:
-        result = _run_nocert(_nocert_script(), f"https://localhost:{urlsplit(url).port}", ca["dir"] / "bundle.crt")
+        result = _run_nocert(urlsplit(url).port, ca["dir"] / "bundle.crt")
     assert result.returncode == 1, result.stdout + result.stderr
     assert result.stdout.startswith("ERROR "), result.stdout
 
 
 def test_a_missing_ca_bundle_is_an_error_not_a_refusal(tmp_path):
     # The bundle is read before any connection, so no listener is needed.
-    result = _run_nocert(_nocert_script(), f"https://localhost:{refused_port()}", tmp_path / "absent.crt")
+    result = _run_nocert(refused_port(), tmp_path / "absent.crt")
     assert result.returncode == 1, result.stdout + result.stderr
     assert result.stdout.startswith("ERROR no CA bundle"), result.stdout
 
 
 def test_a_port_that_never_answers_is_an_error_not_a_refusal(tmp_path):
     ca = _ca(tmp_path)
-    # Both timeouts cut from 10 s to 1 s; the child's own deadline (10 s) is ten times that window.
+    # The connect timeout, which also bounds the handshake, cut from 10 s to 1 s; the child's own
+    # deadline (10 s) is ten times that window.
     one_second = _nocert_script().replace("timeout=10", "timeout=1")
-    assert one_second.count("timeout=1)") == 2
+    assert one_second.count("timeout=1)") == 1
     silent = socket.socket()
     silent.bind(("127.0.0.1", 0))
     silent.listen(1)  # the kernel accepts the connection; nothing ever answers it
     try:
-        result = _run_nocert(one_second, f"https://localhost:{silent.getsockname()[1]}",
-                             ca["dir"] / "bundle.crt", timeout=10)
+        result = _run_nocert(silent.getsockname()[1], ca["dir"] / "bundle.crt", one_second, timeout=10)
     finally:
         silent.close()
     assert result.returncode == 1, result.stdout + result.stderr
@@ -1477,7 +1477,7 @@ def test_a_listener_that_closes_after_the_handshake_is_an_error_not_a_refusal(tm
                 pass
 
     with serve(Closes, ssl_context=_server_ctx(leaf)) as url:
-        result = _run_nocert(_nocert_script(), f"https://localhost:{urlsplit(url).port}", ca["dir"] / "bundle.crt")
+        result = _run_nocert(urlsplit(url).port, ca["dir"] / "bundle.crt")
     assert result.returncode == 1, result.stdout + result.stderr
     assert result.stdout.strip() == "ERROR after request: RemoteDisconnected", result.stdout
 
@@ -1500,7 +1500,7 @@ def test_a_reset_after_the_handshake_is_an_error_not_a_refusal(tmp_path, version
     server_ctx.verify_mode = ssl.CERT_OPTIONAL
     server_ctx.load_verify_locations(cadata=ca["bundle"])
     with serve(ResetsAtOnce, ssl_context=server_ctx) as url:
-        result = _run_nocert(_nocert_script(), f"https://localhost:{urlsplit(url).port}", ca["dir"] / "bundle.crt")
+        result = _run_nocert(urlsplit(url).port, ca["dir"] / "bundle.crt")
     assert result.returncode == 1, result.stdout + result.stderr
     assert result.stdout.startswith("ERROR after handshake: "), result.stdout
 
