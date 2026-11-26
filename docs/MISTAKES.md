@@ -5693,7 +5693,7 @@ entry naming at least one `#[test]` fn. Entry 6.9 gains its missing note in this
 
 ### 5.30 Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14)
 
-**Occurrences: 7** — 2026-11-13, 2026-11-18, 2026-11-19, 2026-11-19, 2026-11-20, 2026-11-18, 2026-11-18
+**Occurrences: 7** — 2026-11-13, 2026-11-18, 2026-11-19, 2026-11-19, 2026-11-20, 2026-11-18 (recorded late), 2026-11-18 (recorded late)
 
 **What happened.** During wave 1 of the BATS port, five `pr-reviewer` agents ran at once, each told
 only to use "scratch" under the session's scratchpad. Two reviewers (AC-874, AC-875) both created
@@ -5721,9 +5721,9 @@ delta reviews on.
 
 **Occurrence 5 — 2026-11-20.** In the return pass on S9 head `6b3f0ea2`, the altitude agent's brief again said "NO DELETES of any kind". It ran `rm -rf` on a scratch subdirectory of its own before creating it; the directory did not exist, so nothing was removed, and it reported the form. Why the rule did not fire: as in occurrence 4, a brief line does not bind the agent.
 
-**Occurrence 6 — 2026-11-18.** In remediation chunk M1 (brief 28) the closing owner's `/simplify` efficiency agent cloned the repository into the owner's session scratchpad, built and ran tests there, and left about 3.3 GB of clone and cargo build directories behind. Brief 28 said read-only and said nothing on whether a review agent may build, or who removes its scratch. The owner left it in place (no recursive deletes) and reported it. Why the rule did not fire: the rule names a per-agent directory and forbids recursive deletes; it says nothing about building or clean-up, so nobody was assigned to remove what the agent made. A brief that dispatches review agents says whether they may build, and who removes their scratch afterwards.
+**Occurrence 6 — 2026-11-18 (recorded late).** In remediation chunk M1 (brief 28) the closing owner's `/simplify` efficiency agent cloned the repository into the owner's session scratchpad, built and ran tests there, and left about 3.3 GB of clone and cargo build directories behind. Brief 28 said read-only and said nothing on whether a review agent may build, or who removes its scratch. The owner left it in place (no recursive deletes) and reported it. Why the rule did not fire: the rule names a per-agent directory and forbids recursive deletes; it says nothing about building or clean-up, so nobody was assigned to remove what the agent made. A brief that dispatches review agents says whether they may build, and who removes their scratch afterwards.
 
-**Occurrence 7 — 2026-11-18.** In chunk M2 the P1 owner's efficiency agent did the same before the 14:17 EST stop: cargo builds and timings in three scratch directories of about 2.1 GB, 745 MB and 363 MB (the owner's chunk report, read-only breach reported 19:48 EST). The two chunks left about 6.4 GB. Same cause as occurrence 6, in the same brief.
+**Occurrence 7 — 2026-11-18 (recorded late).** In chunk M2 the P1 owner's efficiency agent did the same before the 14:17 EST stop: cargo builds and timings in three scratch directories of about 2.1 GB, 745 MB and 363 MB (the owner's chunk report, read-only breach reported 19:48 EST). The two chunks left about 6.5 GB. Same cause as occurrence 6, in the same brief.
 
 ### 5.31 A peer session allowed a guard skip, and two denied compound commands were retried as a standalone push
 
