@@ -5938,7 +5938,7 @@ batch's later briefs; that is a brief convention, not a check.
 - After stocking, the playbook runs the Linux supervisor's `status`, `systemctl` and `journalctl` on every host and requires it `active` (`stock-github-runner-jit.yml:76-108`).
 - The stock task reads the stock with GNU `find -printf` and writes each file `root:root` (`platform/playbooks/tasks/github-runner-jit-stock.yml:51-52`, `:192-193`).
 
-Windows task 6.6, written on this pull request (`ec34e46d`), had the same one-line "extend the stock template". Fixed in `ae2955ab`.
+Windows task 6.6's one-line "Extend the scheduled stock template" came from `346b9b37` (2026-10-29), a commit of this pull request's branch. Fixed in `ae2955ab` and `79661192`.
 
 **Root cause.** In the plan. The plan named an existing mechanism as serving a new operating system on the strength of its name and its header. Nobody read the steps it runs on the host, or the entry point the rollback relied on.
 

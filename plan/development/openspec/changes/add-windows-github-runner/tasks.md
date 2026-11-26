@@ -25,7 +25,10 @@ under the decision it settles.
       or later (D4). If it is not, the fix is an orchestrator image upgrade, sequenced
       before phase 2; WinRM is not the fallback.
 - [ ] 1.2 Unattended install: write the first draft of the task 2.1 template branch and
-      the `autounattend.xml.j2` on this branch, and run it from Semaphore's Dev variant
+      the `autounattend.xml.j2`, land the draft on `dev` through its own pull request,
+      declaring its template in `platform/semaphore/templates.yml` with `dev_variant: true`
+      (`platform/semaphore/templates.yml:16-19`), then run it from that template's `(Dev)`
+      variant, which runs the `dev` record (`platform/semaphore/repositories.yml:45-47`),
       against a throwaway vmid (UEFI, TPM state disk, VirtIO SCSI and network, the three
       ISOs from `SharedISOs`), so the spike is itself re-runnable and its output is a
       Semaphore task log. Record whether setup loads the VirtIO drivers,
@@ -217,10 +220,12 @@ under the decision it settles.
       with access for `SYSTEM` and `Administrators` only; the reset (kill the account's
       processes, unload its hive, remove its profile, work directory, declared build
       roots and every scheduled task whose principal is the account, verify, rebuild from
-      the seed) before every runner start; the runner started
-      as `ghrunner` with `ACTIONS_RUNNER_INPUT_JITCONFIG`, using the mechanism task 1.6 kept;
-      quarantine on an unverifiable reset or on `github_runner_max_start_failures` empty
-      runs.
+      the seed) before every runner start; the runner started as `ghrunner` with
+      `ACTIONS_RUNNER_INPUT_JITCONFIG`, using the mechanism task 1.6 kept; the supervisor
+      writes the name of the runner it starts to
+      `C:\ProgramData\github-runner\current`, the file the stock task reads as the running
+      runner (`platform/playbooks/tasks/github-runner-jit-stock.yml:54-55`); quarantine on
+      an unverifiable reset or on `github_runner_max_start_failures` empty runs.
 - [ ] 6.6 Stock the Windows host from the scheduled stock template
       (`stock-github-runner-jit.yml`, `add-ephemeral-github-runners` D3) with a play of its
       own, `hosts: github_runner_win_svc`, beside the Linux play, so no play selects a
@@ -229,7 +234,11 @@ under the decision it settles.
       (`platform/playbooks/tasks/github-runner-jit-stock.yml:44-60`, `:186-194`): give them
       a Windows branch, `ansible.windows.win_find` for the read and `win_copy` with
       `win_acl` for the write, under `C:\ProgramData\github-runner\jit\` with the access
-      6.5 gives it. The Linux play's supervisor check runs `systemctl` and requires
+      6.5 gives it. The Windows read branch also reads
+      `C:\ProgramData\github-runner\current` (the name 6.5 records), so the prune keeps the
+      running runner: the stock task reads that file as the running runner at
+      `github-runner-jit-stock.yml:54-55`, and the prune keeps it at `:112`. The Linux
+      play's supervisor check runs `systemctl` and requires
       `active` and `quarantine=no` (`stock-github-runner-jit.yml:76-108`); the Windows play
       instead requires the supervisor service running (`win_service`) and no quarantine
       record under `C:\ProgramData\github-runner\state\`, failing the run otherwise.
@@ -342,16 +351,18 @@ under the decision it settles.
 - [ ] 9.2 Run the mandatory pre-push audit as its own step (staged-diff greps, then
       `trufflehog git file://. --since-commit HEAD --only-verified --fail`).
 - [ ] 9.3 Run `/simplify` and `/security-review` over the branch diff.
-- [ ] 9.4 Commit; ask before pushing (user-gated), then push.
-- [ ] 9.5 Ask before opening the PR into `dev` (user-gated). On approval, open it, wait for
-      CodeRabbit and every check, and address findings.
-- [ ] 9.6 Ask before merging it (a separate approval: opening a PR does not authorize its
-      merge). On approval, and only with every required check passing on the final PR head
-      (after the last fix), merge with a merge commit through `scripts/merge-when-green.py`.
-- [ ] 9.7 Ask before the `dev` to `main` promotion (user-gated). On approval, open it, wait
-      for CodeRabbit and every required check to complete and pass, and address findings.
-- [ ] 9.8 Ask before merging the promotion (a separate approval). On approval, and only with
-      every required check passing on the final PR head, merge with a merge commit.
+- [ ] 9.4 Commit and push the feature branch (the standing authorization in root
+      `AGENTS.md`, Branch Workflow).
+- [ ] 9.5 Open the PR into `dev`, wait for the review round and every check, and fix or
+      answer every finding.
+- [ ] 9.6 Merge it through `scripts/merge-when-green.py --feedback-addressed --merge` once
+      every gate under "Feature-to-Dev pull-request merges" in root `AGENTS.md` holds on
+      the final head.
+- [ ] 9.7 Open the `dev` to `main` promotion, wait for every required check, and fix or
+      answer every finding.
+- [ ] 9.8 Merge the promotion with `gh pr merge --merge --match-head-commit <sha>` after
+      two completed review rounds of its final head, every finding fixed or answered, and
+      the `Promotion source (dev -> main)` check passing.
 - [ ] 9.9 Archive the change and retain one Hindsight memory into `agent-cloud-750a33b9`:
       the outcome labelled worked / dead end / corrected, which clone-identity path won in
       1.3, the measured release time, and any constraint found the hard way.

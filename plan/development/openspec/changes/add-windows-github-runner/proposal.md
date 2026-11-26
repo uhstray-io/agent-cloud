@@ -66,8 +66,9 @@ something each job re-does.
 
 This is one of three changes that together form the build-fleet plan:
 `add-github-actions-runners` (Linux x64, in place), this change (Windows x64), and
-`add-macos-github-runner` (macOS arm64, on Apple hardware). They share one runner group,
-one credential chain, one label vocabulary and one egress-denial declaration.
+`add-macos-github-runner` (macOS arm64, on Apple hardware; planned separately on branch
+`docs/add-macos-github-runner`, not merged). They share one runner group, one credential
+chain, one label vocabulary and one egress-denial declaration.
 
 ## Capabilities
 

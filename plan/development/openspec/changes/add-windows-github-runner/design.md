@@ -138,7 +138,8 @@ storage (`SharedISOs`) that every node can read.
 
 **Non-Goals**
 
-- **macOS.** Covered by `add-macos-github-runner`, which needs Apple hardware.
+- **macOS.** Covered by `add-macos-github-runner`, planned separately on branch
+  `docs/add-macos-github-runner` (not merged), which needs Apple hardware.
 - **Windows on ARM.** No `zerds` job targets it.
 - **A GPU in the VM.** The Vulkan build needs the SDK's headers, import library and shader
   compiler, not a GPU; the shipped exe falls back to CPU when no Vulkan driver is present.
@@ -618,10 +619,11 @@ administrative rights; the platform interior is unreachable from the host.
 
 **The strongest lifecycle** is a fresh VM cloned from the template per job,
 registered with a just-in-time configuration and destroyed afterwards. That is what
-`add-macos-github-runner` builds on Apple hardware, where clones are cheap. On this
-cluster a full clone of a 400 G Windows VM per job is too slow to be practical until
-linked clones are available on the chosen storage, so it is recorded as follow-up, with
-the template work in D3 as its foundation.
+`add-macos-github-runner` (planned separately on branch `docs/add-macos-github-runner`,
+not merged) builds on Apple hardware, where clones are cheap. On this cluster a full clone
+of a 400 G Windows VM per job is too slow to be practical until linked clones are
+available on the chosen storage, so it is recorded as follow-up, with the template work
+in D3 as its foundation.
 
 ### D11: The contract the `zerds` workflows target
 
@@ -683,7 +685,8 @@ an `ubuntu:22.04` container on both.
   (2026-10-06). → The plane-wide `github_runner_version` is bumped within 14 days of every
   runner release, a deadline independent of the monthly template rebuild (D3), and
   verification (task 8.3) reports a pending release and any runner within a week of the
-  window closing. The rule is shared with `add-macos-github-runner`.
+  window closing. The rule is shared with `add-macos-github-runner` (planned separately
+  on branch `docs/add-macos-github-runner`, not merged).
 - **GitHub could start charging for self-hosted minutes.** It announced a per-minute
   charge on self-hosted runners in private repositories for 2026-03-01, then postponed
   it without cancelling. → Outside this platform's control; recorded so that "no GitHub
@@ -784,28 +787,39 @@ Each check is a scenario of this change's spec delta, verified where the last co
 Each has a recommendation. None changes the specs; each is a parameter of a task that
 exists either way.
 
+Decided 2026-11-26 outside this list: the `ansible.windows` collection is added with a
+pinned minimum version, proven on the orchestrator by the spike first (task 2.8).
+
 1. **Licence.** Windows Server 2025 Standard for crabnebula's 20 cores (a 16-core pack plus
    two 2-core packs; list price is about 1,176 US dollars per 16 cores, so roughly 1,470
    US dollars at list, less through resellers), versus Windows 11 Pro on an unsupported
    CPU, versus staying on evaluation. **Recommendation: Server 2025 Standard**, bought
    after phase 6 proves the path on the evaluation edition. Also for the owner: whether
    client access licences apply to a build host with no interactive users.
+   **Decided 2026-11-26:** stay on the evaluation edition for now. The licence is not
+   decided, so task 7.6 and the licence conversion stay blocked on the owner.
 2. **Node.** crabnebula (failure-domain separation, most headroom, 20 core licences)
    versus alphacentauri (16 core licences, shares the Linux pool's node). **Recommendation:
    crabnebula.**
+   **Decided 2026-11-26:** crabnebula, as recommended.
 3. **Sizing.** 16 vCPU / 32 GB / 150 G + 250 G. **Recommendation: start there**, record the
    release dry run's wall time, peak memory and peak `D:` use (task 7.5), and adjust by
    declaration. The figure to watch is memory: if peak use is under 20 GB, 24 GB frees room
    on the node; if the build pages, 48 GB is the next step.
+   **Decided 2026-11-26:** as recommended: start at 16 vCPU / 32 GB / 150 G + 250 G and
+   adjust by declaration after the release dry run (task 7.5).
 4. **One runner or two.** **Recommendation: one**, revisited when queue time is measured.
    A second runner on crabnebula costs no further licence (Standard covers two VMs on a
    fully licensed host); one on any other node needs that node licensed as well.
+   **Decided 2026-11-26:** one runner, as recommended.
 5. **Release signing on this host.** The Authenticode certificate is a repository secret
    today and is only used when configured. **Recommendation: not on this host until the
    reset lifecycle (D7) has passed its acceptance** (task 8.7): until then the signing step
    runs only on hosted runners (`if: runner.environment == 'github-hosted'`, the D11
    pattern), so self-hosted release builds are unsigned. After acceptance, allow it, knowing
    that a self-hosted signer is a host the certificate's private key passes through.
+   **Decided 2026-11-26:** as recommended: the Windows runner signs release builds only
+   after the reset lifecycle passes its acceptance (task 8.7).
 
 ## Cross-references
 
@@ -816,7 +830,7 @@ exists either way.
 | [specs/platform/github-actions-runners/spec.md](specs/platform/github-actions-runners/spec.md) | The requirements and scenarios the Validation Criteria table checks |
 | [add-github-actions-runners/design.md](../add-github-actions-runners/design.md) | The Linux plane this change extends |
 | [add-ephemeral-github-runners/design.md](../add-ephemeral-github-runners/design.md) | The just-in-time lifecycle D7 adopts |
-| [add-macos-github-runner/design.md](../add-macos-github-runner/design.md) | The macOS member planned beside this one |
+| `add-macos-github-runner` (branch `docs/add-macos-github-runner`, not merged) | The macOS member planned beside this one |
 | [platform/services/github-runner/CLAUDE.md](../../../../../platform/services/github-runner/CLAUDE.md) | The runner service's operating notes and isolation table |
 | [plan/architecture/00-foundation-standards.md](../../../../architecture/00-foundation-standards.md) | The plan-document standard this file follows |
 | [Root AGENTS.md](../../../../../AGENTS.md) | Platform rules and the workflow table |
@@ -828,3 +842,4 @@ exists either way.
 | 2026-10-11 | Initial draft, then the first review round |
 | 2026-10-29 | The account reset before every job (D7) and the second and third review rounds |
 | 2026-11-26 | Owner review: the patch playbook's drain follows D9, every Windows job declares a timeout, the reset is timed in the spike, and this file takes the numbered-plan structure |
+| 2026-11-26 | Split from the macOS plan, which moved to branch `docs/add-macos-github-runner`; the owner's decisions recorded under Open Questions; the fourth review round's fixes to tasks 1.2, 6.5, 6.6 and 9.4 to 9.8 |
