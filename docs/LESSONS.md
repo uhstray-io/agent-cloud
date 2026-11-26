@@ -103,5 +103,5 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 ### L-017 · 2026-11-26 · playbooks
 
 - **ACCEPTED:** #1221 (AC-924).
-- **DERIVED:** A guard that reads a fact set by another play of the same playbook (`hostvars[...]._fact`) asserts the fact's full shape as its first task, with no `when` the fact's own value can skip. A `--limit` that leaves the setting play with no host skips that play without an error, so the fact arrives empty; a guard gated on `_fact | length > 0` then skips itself and every write after it runs. Inventory variables are not affected: they exist whatever `--limit` says.
+- **DERIVED:** A guard that reads a fact set by another play of the same playbook (`hostvars[...]._fact`) asserts the fact's full shape as its first task, with no `when` the fact's own value can skip. A `--limit` that leaves the setting play with no host skips that play without an error, so the fact arrives empty; a guard gated on `_fact | length > 0` then skips itself, and the writes in the plays that still run go ahead unchecked.
 - **APPLIES TO:** multi-play playbooks under `platform/playbooks/` whose checks read a fact another play sets, before any write.

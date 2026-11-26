@@ -487,10 +487,9 @@ def test_the_drift_check_verifies_the_pin_exists_before_it_compares():
 
 
 def test_the_drift_refusal_is_visible_names_the_short_pin_and_says_nothing_was_minted():
-    assertion = next(
-        t
-        for t in _tasks_of(_play(DRIFT))
-        if "ansible.builtin.assert" in t and "_drift_diff.rc == 0" in t["ansible.builtin.assert"]["that"]
+    assertion, _ = _find_leaf(
+        _play(DRIFT),
+        lambda t: "ansible.builtin.assert" in t and "_drift_diff.rc == 0" in t["ansible.builtin.assert"]["that"],
     )
     assert "no_log" not in assertion, "an assert with no_log hides its own fail_msg"
     assert set(assertion["ansible.builtin.assert"]["that"]) == {"_drift_present.rc == 0", "_drift_diff.rc == 0"}
@@ -518,83 +517,67 @@ def test_the_drift_play_refuses_an_unpinned_run_first_and_gates_on_local_dev_onl
 
 # The drift gate on a PRODUCTION inventory with local_mode forged (AC-726, plan 24). The pin and the drift check are
 # skipped on a local-dev inventory only, so a forged local_mode must not skip them. The fake git answers the three
-# commands the pin and the drift check run: a commit for HEAD, the pin exists, and the console's inputs differ.
+# commands the pin and the drift check run: a commit for HEAD, the pin exists, and the console's inputs differ or not.
 CONSOLE_PROD_INI = (
     "localhost ansible_connection=local\n"
     "console-prod ansible_connection=local\n\n"
     "[console_svc]\nconsole-prod ansible_connection=local\n"
 )
-FAKE_GIT_DRIFT = (
-    'case "$*" in\n'
-    '  *"rev-parse HEAD"*) echo 0123456789abcdef0123456789abcdef01234567 ;;\n'
-    '  *"cat-file"*) exit 0 ;;\n'
-    '  *"diff --quiet"*) exit 1 ;;\n'
-    "  *) exit 1 ;;\n"
-    "esac\n"
-)
+PINNED_SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+def _fake_git(diff_exit: int) -> str:
+    return (
+        'case "$*" in\n'
+        f'  *"rev-parse HEAD"*) echo {PINNED_SHA} ;;\n'
+        '  *"cat-file"*) exit 0 ;;\n'
+        f'  *"diff --quiet"*) exit {diff_exit} ;;\n'
+        "  *) exit 1 ;;\n"
+        "esac\n"
+    )
+
+
+# The console's inputs differ from the pin (drift), or match it: with the second no drift refusal can fire, so a run
+# that skipped the pin check would reach the mint.
+FAKE_GIT_DRIFT = _fake_git(1)
+FAKE_GIT_CLEAN = _fake_git(0)
 DRIFT_REFUSAL = "the controller's console deploy inputs differ from what the console runs"
+# --limit localhost leaves the pin play with no host, so the pin is never set; the drift play's first task refuses it.
+PIN_REFUSAL = "the console's deployed commit was not pinned this run"
+# The mint play reads its OpenBao address and AppRole from the environment. A run that reaches it must not reach a real
+# OpenBao from the developer's shell or CI: an empty address fails the transport guard before any request is sent.
+NO_OPENBAO_ENV = {"OPENBAO_ADDR": "", "BAO_ROLE_ID": "", "BAO_SECRET_ID": ""}
+
+
+def _run_rotate(tmp_path, *args, git: str):
+    """The rotation on the production-shaped inventory with a fake git; returns (returncode, joined output)."""
+    inventory = tmp_path / "inventory.ini"
+    inventory.write_text(CONSOLE_PROD_INI)
+    proc = harness_sandbox.run_playbook(
+        ROTATE, tmp_path, *args, inventory=inventory,
+        env={**harness_sandbox.fake_bin(tmp_path, {"git": git}), **NO_OPENBAO_ENV},
+    )
+    return proc.returncode, " ".join((proc.stdout + proc.stderr).split())
 
 
 # Coverage of the two spellings in rotate-console-credentials.yml. [context] renders the honest value while the play's
 # name says "Refuse" (forgeries.templated_forgeries matches `(?i)refuse`). The drift gate is the play named "Refuse a
-# rotation the controller cannot reproduce..." (line 122), so [context] exercises only the pin play (lines 73-121,
-# its `when`s at 102, 113, 119). [plain] forges every play, and is the spelling that reaches the drift tasks (`when`s
-# at 143, 153, 179, 190: the first is the pin refusal, the others the drift tasks).
+# rotation the controller cannot reproduce...", so [context] exercises only the pin play's `when`s. [plain] forges every
+# play, and is the spelling that reaches the drift play's `when`s (its pin refusal and the drift tasks).
 @needs_ansible
 @pytest.mark.parametrize("forge", forgeries.templated_forgeries("local_mode", honest=False, forged=True)[:2])
 def test_the_drift_gate_refuses_before_a_mint_on_production_whatever_local_mode_says(tmp_path, forge):
-    inventory = tmp_path / "inventory.ini"
-    inventory.write_text(CONSOLE_PROD_INI)
-    proc = harness_sandbox.run_playbook(
-        ROTATE, tmp_path, "-e", forge(tmp_path), "--check", inventory=inventory,
-        env=harness_sandbox.fake_bin(tmp_path, {"git": FAKE_GIT_DRIFT}),
-    )
-    output = " ".join((proc.stdout + proc.stderr).split())
-    assert proc.returncode != 0, output
+    rc, output = _run_rotate(tmp_path, "-e", forge(tmp_path), "--check", git=FAKE_GIT_DRIFT)
+    assert rc != 0, output
     assert DRIFT_REFUSAL in output, output
     assert MINT not in output, "the run reached the mint"
-
-
-# A run that reaches the drift play with no pinned commit: --limit localhost leaves the pin play with no host, so
-# the pin is never set, and the drift play's first task refuses it before the mint (production inventory only).
-PIN_REFUSAL = "the console's deployed commit was not pinned this run"
-# A controller whose pinned commit exists and whose console inputs match it. With this double no drift refusal can fire,
-# so a run that skipped the pin check would reach the mint: the new refusal is what stops it.
-FAKE_GIT_CLEAN = (
-    'case "$*" in\n'
-    '  *"rev-parse HEAD"*) echo 0123456789abcdef0123456789abcdef01234567 ;;\n'
-    '  *"cat-file"*) exit 0 ;;\n'
-    '  *"diff --quiet"*) exit 0 ;;\n'
-    "  *) exit 1 ;;\n"
-    "esac\n"
-)
-# The mint play reads its OpenBao address and AppRole from the environment. A run that reaches it must not reach a real
-# OpenBao from the developer's shell or CI: an empty address fails the transport guard before any request is sent.
-NO_OPENBAO_ENV = {"OPENBAO_ADDR": "", "BAO_ROLE_ID": "", "BAO_SECRET_ID": ""}
-# refuse-internal-extra-vars.yml refuses an underscore extra var by name, before any play runs.
-EXTRA_VAR_REFUSAL = "set from outside the playbook"
-FORGED_PIN = "0123456789abcdef0123456789abcdef01234567"
-
-
-def _joined(proc) -> str:
-    return " ".join((proc.stdout + proc.stderr).split())
 
 
 @needs_ansible
 @pytest.mark.parametrize("check", [False, True], ids=["real", "check"])
 def test_a_run_limited_past_the_pin_is_refused_before_the_mint(tmp_path, check):
-    inventory = tmp_path / "inventory.ini"
-    inventory.write_text(CONSOLE_PROD_INI)
-    args = ["--limit", "localhost", *(["--check"] if check else [])]
-    proc = harness_sandbox.run_playbook(
-        ROTATE,
-        tmp_path,
-        *args,
-        inventory=inventory,
-        env={**harness_sandbox.fake_bin(tmp_path, {"git": FAKE_GIT_CLEAN}), **NO_OPENBAO_ENV},
-    )
-    output = _joined(proc)
-    assert proc.returncode != 0, output
+    rc, output = _run_rotate(tmp_path, "--limit", "localhost", *(["--check"] if check else []), git=FAKE_GIT_CLEAN)
+    assert rc != 0, output
     assert PIN_REFUSAL in output, output
     assert MINT not in output, "the run reached the mint"
 
@@ -602,44 +585,20 @@ def test_a_run_limited_past_the_pin_is_refused_before_the_mint(tmp_path, check):
 @needs_ansible
 @pytest.mark.parametrize("check", [False, True], ids=["real", "check"])
 def test_a_pinned_run_with_no_drift_is_not_refused_and_reaches_the_mint(tmp_path, check):
-    inventory = tmp_path / "inventory.ini"
-    inventory.write_text(CONSOLE_PROD_INI)
-    proc = harness_sandbox.run_playbook(
-        ROTATE,
-        tmp_path,
-        *(["--check"] if check else []),
-        inventory=inventory,
-        env={**harness_sandbox.fake_bin(tmp_path, {"git": FAKE_GIT_CLEAN}), **NO_OPENBAO_ENV},
-    )
-    output = _joined(proc)
+    _, output = _run_rotate(tmp_path, *(["--check"] if check else []), git=FAKE_GIT_CLEAN)
     assert PIN_REFUSAL not in output, output
     # The run ends at the empty OpenBao address, after the mint's header: every refusal before the mint passed.
     assert MINT in output, "the run did not reach the mint"
 
 
 @needs_ansible
-@pytest.mark.parametrize(
-    "forge",
-    forgeries.templated_forgeries("_console_pinned_branch", honest="", forged=FORGED_PIN),
-)
+@pytest.mark.parametrize("forge", forgeries.by_name("_console_pinned_branch", honest="", forged=PINNED_SHA))
 def test_a_forged_pin_is_refused_by_name_before_any_play_reads_it(tmp_path, forge):
-    inventory = tmp_path / "inventory.ini"
-    inventory.write_text(CONSOLE_PROD_INI)
-    proc = harness_sandbox.run_playbook(
-        ROTATE,
-        tmp_path,
-        "--limit",
-        "localhost",
-        "-e",
-        forge(tmp_path),
-        inventory=inventory,
-        env={**harness_sandbox.fake_bin(tmp_path, {"git": FAKE_GIT_CLEAN}), **NO_OPENBAO_ENV},
-    )
-    output = _joined(proc)
-    assert proc.returncode != 0, output
-    # The forged pin is a valid SHA that would pass the new refusal and every drift check. The run-start guard refuses
-    # it by name, so the refusal seen here is the guard's, and no play reads the value.
-    assert EXTRA_VAR_REFUSAL in output, output
+    # The forged pin is a valid SHA that would pass the pin refusal and every drift check. The run-start guard refuses
+    # it by name and never renders it, so the plain spelling is the one that matters (forgeries.by_name).
+    rc, output = _run_rotate(tmp_path, "--limit", "localhost", "-e", forge(tmp_path), git=FAKE_GIT_CLEAN)
+    assert rc != 0, output
+    assert "Refusing to run: _console_pinned_branch set from outside the playbook" in output, output
     assert MINT not in output, "the run reached the mint"
 
 
