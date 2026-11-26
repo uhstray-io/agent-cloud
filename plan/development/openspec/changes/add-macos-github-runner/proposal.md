@@ -40,11 +40,11 @@ active one before bundling: the disk does not otherwise fit the build.
   the host from Apple's own restore image, with Xcode (latest stable, the Xcode 26 SDK the
   ScreenCaptureKit bridge needs), the Command Line Tools, Homebrew, CMake, rustup and the
   pinned runner preinstalled. Rebuilt on a cadence and on every Xcode bump.
-- **Reused: the runner group, the label vocabulary and the application credential.** The
+- **Reused: the runner group, the label vocabulary and the credential chain's shape.** The
   VMs join `uhstray-selfhosted` with labels `self-hosted`, `macOS`, `ARM64`, `uhstray-lan`.
-  The credential chain is the existing one with its last link swapped: an installation
-  token is exchanged for a single-job just-in-time configuration instead of a
-  registration token.
+  The credential chain is the existing one, signed with a separate macOS App (D4) and with
+  its last link swapped: an installation token is exchanged for a single-job just-in-time
+  configuration instead of a registration token.
 - **Reused: the egress-denial declaration.** VM traffic is confined by the host's virtual
   network (no route to private addresses), and the host's packet filter enforces the same
   `firewall_deny_egress` list as a second layer.

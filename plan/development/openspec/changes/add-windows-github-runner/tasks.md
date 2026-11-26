@@ -52,7 +52,7 @@ under the decision it settles.
       it). Time each step of the reset
       (kill, hive unload, the owned-path sweep of `C:` and `D:`, the seed digest check, the
       seed copy) with stand-in files of the expected sizes (a seed of a few gigabytes, a
-      `D:\z` of a full build's file count), and time it again on the real host at task 7.5. Acceptance: the whole reset finishes in under 5 minutes; if it does not, the
+      `D:\z` of a full build's file count). Acceptance: the whole reset finishes in under 5 minutes; if it does not, the
       sweep or the digest check is redesigned (for example, a digest of the seed's
       manifest instead of every file) before phase 6 depends on it.
 - [ ] 1.7 Validation gate: every unknown in the design's Risks section that phase 1 owns
@@ -259,7 +259,8 @@ under the decision it settles.
       matches a hosted build of the same commit (the AVX2 risk).
 - [ ] 7.5 Record wall time per step against the hosted figures in the design, peak memory,
       and peak `D:` use, and write them into D2. Time the account reset after the dry run
-      against task 1.6's 5-minute bound. Adjust the declaration if the evidence
+      against task 1.6's 5-minute bound; if it exceeds it, the sweep or the digest check is
+      redesigned before the `zerds` pull request (8.6) makes this host the default. Adjust the declaration if the evidence
       says so, and converge with `resize-vm.yml`.
 - [ ] 7.6 Licence before production use: convert the evaluation to the licensed edition
       the owner chose, with the key from the secret store, and update the declaration's
@@ -286,7 +287,8 @@ under the decision it settles.
       once.
 - [ ] 8.3 Add the monthly template rebuild and host rebuild as scheduled Semaphore
       templates (D3), add the runner-release check (bump `github_runner_version` within
-      14 days of each upstream release, shared with the Linux pool), and record queue time
+      14 days of each upstream release, shared with the Linux pool, reporting a pending
+      release and any runner within a week of the 30-day window closing), and record queue time
       for Windows jobs over the first month.
 - [ ] 8.4 Update `platform/services/github-runner/CLAUDE.md`: the Windows member, its label
       contract, its isolation table (including the three things that do not hold, D10),
