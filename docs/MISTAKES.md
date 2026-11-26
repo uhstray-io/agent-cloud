@@ -2000,7 +2000,7 @@ by measurement); this is the reverse, a capability assumed without the documenta
 
 **Enforced by.** Convention. No hook compares a posted body with the file just written; 1.28's proposed hook checks a body's Evidence lines, not its bytes. Proposed (count 3): a wrapper or hook that refuses `gh pr create` or `gh pr edit` when its body file is missing or empty, with the file write and the command that uses it as separate commands (AC-1084).
 
-**Occurrence 2 — 2026-11-21.** #1219 (AC-1029) opened at 16:36:28Z with an empty body: a hook had refused the command that wrote the body file, and the create ran without it. The body was set at 16:36:45Z (GitHub edit history). Why the rule did not fire: its read-back step was skipped. The write, the read and the post were one command, so a failed write did not stop the post, and an empty body went out.
+**Occurrence 2 — 2026-11-21.** #1219 (AC-1029) opened at 16:36:28Z with an empty body: a hook had refused the command that wrote the body file, and the create ran without it (cause per the owner's report). The body was set at 16:36:45Z (GitHub edit history). Why the rule did not fire: its read-back step was skipped. The write, the read and the post were one command, so a failed write did not stop the post, and an empty body went out.
 
 **Occurrence 3 — 2026-11-26.** #1226 (AC-1034) opened at 13:51:43Z with an empty body; the body was set at 13:51:56Z (GitHub edit history; cause per the owner's report). Why the rule did not fire: same cause as occurrence 2.
 
@@ -7263,7 +7263,7 @@ text being coerced, and never on JSON text assembled with escapes.
 ansible-core, so the old expression fails there (2 failures; the fix passes). Convention for the
 general case.
 
-**Occurrence 2 — 2026-11-21.** Owner 06 (#1217, AC-930, head `305c9456`) reported its new tests green ("109 passed") on macOS only. CI on Linux failed on that head: jobs 136910155728 (`Python (1/8)`) and 136910155804 (`Python (5/8)`) concluded failure. Per the coordinator's record, one failure was a TLS-pinning test at line 1489 of `platform/tests/test_renew_internal_certs.py` in that head, and two prober tests got an `SSLEOFError` after the handshake where a refusal was expected. The coordinator told the owner to continue on the report (the v0.17.1 batch's decision 15). Why the rule did not fire: a local green on another platform was read as the result CI would give.
+**Occurrence 2 — 2026-11-21.** Owner 06 (#1217, AC-930, head `305c9456`) reported its new tests green ("109 passed") on macOS only. CI on Linux failed on that head: jobs 136910155728 (`Python (1/8)`) and 136910155804 (`Python (5/8)`) concluded failure. `platform/tests/test_tls_contexts_pinned.py::test_every_tls_context_pins_a_minimum_version` failed on a server context with no minimum version at line 1489 of `platform/tests/test_renew_internal_certs.py`, and `test_a_missing_certificate_puts_its_host_in_the_window` and `test_a_refusal_from_a_client_certificate_listener_is_refused` in that file got an `SSLEOFError` after the handshake where a refusal was expected (the jobs' failed-step logs). The coordinator told the owner to continue on the report (the v0.17.1 batch's decision 15). Why the rule did not fire: a local green on another platform was read as the result CI would give.
 
 ### 10.17 A guard that could never pass in production, tested only where it is switched off
 
