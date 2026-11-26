@@ -234,8 +234,8 @@ a queued job starts in seconds rather than waiting for a boot.
 job, the slot allows it at most the declared `macos_runner_max_job_minutes` (default 150:
 the longest declared macOS job timeout, 120 minutes for `release.yml` `macos` and
 `ci.yml` "Heavy feature check", plus 30 minutes for the runner's own cancellation grace).
-The bound holds only when every macOS job declares a timeout; D10 makes that part of the
-contract.
+The deadline applies whatever a job declares; D10's contract keeps every macOS job's own
+timeout at or under 120 minutes, so a legitimate job finishes before it.
 At that deadline, or when the runner has exited but the guest still runs any process of
 the job account, the slot force-stops the VM (`tart stop --timeout 0`) and deletes it.
 The VM is the job's whole machine, so destroying it ends every process the job started,
@@ -248,7 +248,8 @@ which force-deletes the slot's VMs and restarts it). The other slot keeps servin
 throughout.
 
 **The idle VM is bounded too.** A warm VM that has taken no job within the declared
-`macos_runner_max_idle_minutes` (default 1200, the Windows stock's age limit) is stopped
+`macos_runner_max_idle_minutes` (default 1200, the value of the Linux and Windows stock's
+age limit `github_runner_jit_max_age_minutes`, `add-ephemeral-github-runners` D3) is stopped
 and deleted, and its runner record removed, and the slot clones a fresh one. That keeps a
 promoted image and a bumped runner version from waiting behind an idle VM indefinitely.
 GitHub does not bound it for us: its documentation says a just-in-time runner that never

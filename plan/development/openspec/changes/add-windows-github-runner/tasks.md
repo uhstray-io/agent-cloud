@@ -270,14 +270,13 @@ under the decision it settles.
       with a remediation mode that reboots the host and clears the quarantine only when the
       supervisor's reset then verifies clean. Prove the quarantine with a test job that
       leaves a process holding a file open, and prove a job cannot clear it.
-- [ ] 8.2 Add the patch playbook (D9): drains first (tells the supervisor to start no
-      further runner, then waits, bounded by the longest Windows job timeout, until the
-      running runner, if any, has exited after its job), then `win_updates`, reboots if
-      needed, lets the supervisor reset the account and resume, and verifies a runner is
-      online with its declared labels. A run that fails after draining leaves the
-      supervisor drained. Labels are not touched: under the just-in-time lifecycle (D7) a
-      stocked configuration already carries them. Test that a stocked configuration is not
-      started while the supervisor is drained. Add its Semaphore template and run it once.
+- [ ] 8.2 Add the patch playbook (D9): drain the supervisor, then `win_updates`, reboot if
+      needed, let the supervisor reset the account and resume, and verify a runner is
+      online with its declared labels. Labels are not touched: under the just-in-time
+      lifecycle (D7) a stocked configuration already carries them. Test that a stocked
+      configuration is not started while the supervisor is drained, and that a drain on an
+      idle host completes without waiting for a job. Add its Semaphore template and run it
+      once.
 - [ ] 8.3 Add the monthly template rebuild and host rebuild as scheduled Semaphore
       templates (D3), add the runner-release check (bump `github_runner_version` within
       14 days of each upstream release, shared with the Linux pool), and record queue time

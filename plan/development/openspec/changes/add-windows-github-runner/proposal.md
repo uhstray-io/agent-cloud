@@ -123,13 +123,13 @@ Staged, each stage independently sufficient, matching the Linux change:
    the workflow's `fromJSON` expects. The admin steps that were gated to
    hosted runners run again there, so the workflow is complete on either surface. No
    platform change.
-2. **Withdraw availability.** Drain the supervisor (design D9: it starts no further
-   runner and the running job, if any, finishes), then stop its service; set the host's
-   declared stock (`github_runner_jit_stock`) to 0 so the stock template mints nothing more
-   for it; delete the stocked configurations under `C:\ProgramData\github-runner\jit\`;
-   and delete the host's `<name>-jit-*` runner records (a configuration whose record is
-   gone cannot start a runner). The Linux pool is untouched, because the runner group is
-   shared but each runner record belongs to one host.
+2. **Withdraw availability.** Drain the supervisor (design D9), then stop its service.
+   Remove `github_runner_lifecycle: ephemeral` from the host's declaration, so the stock
+   template skips the host and mints nothing more for it; delete the stocked
+   configurations under `C:\ProgramData\github-runner\jit\`; and delete the host's runner
+   records with the stock task's prune mode (`grs_prune_only`), since a configuration
+   whose record is gone cannot start a runner. The Linux pool is untouched, because the
+   runner group is shared but each runner record belongs to one host.
 3. **Revoke identity.** Unchanged from the Linux change: revoking the application stops
    every runner in the group. Use stage 2 when only Windows must stop.
 4. **Remove the host.** Destroy the VM and, if it is no longer wanted, the Windows
