@@ -38,11 +38,13 @@
       Cirrus Labs vanilla base (D5).
 - [ ] 1.5 Just-in-time runner: mint one configuration on the orchestrator with the
       command the stock task mints with (`platform/lib/github_app_token.py jit-config`, the
-      App key from the secret store on standard input, never an argument), run by a
-      scratch play on this change's branch through Semaphore, not from a workstation. The
-      stock task itself cannot serve the Mac until task 5.1 gives it a macOS branch. Start
-      the runner in the spike VM with the configuration, dispatch a trivial job, and
-      confirm the runner disappears from the group after the job.
+      App key from the secret store on standard input, never an argument), from a spike
+      play merged to `dev` and launched once through its `(Dev)` template, because
+      production Semaphore runs only the `main` and `dev` records
+      (`platform/semaphore/repositories.yml`). The stock task itself cannot serve the Mac
+      until task 5.1. Start the runner in the spike VM with the configuration, dispatch a
+      trivial job, and confirm the runner disappears from the group after the job; if it
+      never ran a job, delete its record.
 - [ ] 1.6 Confirm the third-VM limit: start a third macOS VM while two run, and record the
       error.
 - [ ] 1.7 Validation gate: every unverified item in the design (headless reboot, Softnet
@@ -128,12 +130,15 @@
       in the slot while the hold is present.
 - [ ] 4.2 Refuse a declaration with more than two slots, naming the licence limit.
 - [ ] 4.3 Log each slot's VM name, runner name, job outcome and lifetime where the verify
-      playbook can read them. No credential in any log.
+      playbook can read them, and keep each slot's running runner name in a per-slot file
+      in the supervisor's state directory for the stock task's macOS read (5.1). No
+      credential in any log.
 - [ ] 4.4 Run tasks 5.1 to 5.3 first: a slot starts a VM only from a stocked
       configuration, and on a fresh installation the host has none until 5.1's stock
-      template runs. Add `platform/playbooks/deploy-macos-runner.yml`: render the
-      supervisor's configuration and launchd service, start it, verify that exactly the declared number
-      of slots (one or two; more is refused by 4.2) register.
+      template runs; until this task starts the supervisor, that run fails on the host by
+      design (5.1's status check). Add `platform/playbooks/deploy-macos-runner.yml`: render
+      the supervisor's configuration and launchd service, start it, verify that exactly
+      the declared number of slots (one or two; more is refused by 4.2) register.
 - [ ] 4.5 Tests: the slot-limit refusal; the JIT configuration never appears in an
       argument position on the host or in the guest (the runner's command line inside the
       VM, read while a job runs), and is gone from the guest runner's environment once it
@@ -153,20 +158,21 @@
 
 ## 5. Stock the host from the orchestrator
 
-- [ ] 5.1 Extend the scheduled stock template (`stock-github-runner-jit.yml`,
-      `add-ephemeral-github-runners` D3) to the macOS host, as Windows task 6.6 does for
-      Windows: add `macos_runner_svc` to its hosts, select the host on its
-      `github_runner_lifecycle: ephemeral` declaration, mint with the plane's existing App
-      key (no new App, D4) for the host's runner group and macOS labels. The stock task's
-      host steps are Linux-only, so give each a macOS branch: read the stock with commands
-      the Mac has (the task uses GNU `find -printf`); write each configuration `0600`,
-      owned by the supervisor account and its own group rather than `root:root`, into a
-      `0700` stock directory it creates if absent; and report the running runner names of
-      both slots, not one `current` file, so the prune keeps both (4.3). The playbook's
-      supervisor-status step runs the Linux supervisor's `status`, `systemctl` and
-      `journalctl` and requires it `active` (`stock-github-runner-jit.yml`); give it a
-      macOS branch that requires the supervisor's launchd service running and fails the
-      run on a slot failed for more than an hour (D2), as a quarantine does on Linux.
+- [ ] 5.1 Stock the macOS host from the scheduled stock template
+      (`stock-github-runner-jit.yml`, `add-ephemeral-github-runners` D3) with a play of its
+      own, `hosts: macos_runner_svc`, beside the Linux play, so no play selects hosts of two
+      operating systems. It selects the host on its `github_runner_lifecycle: ephemeral`
+      declaration and includes the shared stock task, which mints with the plane's existing
+      App key (no new App, D4) for the host's runner group and macOS labels. The task's
+      host steps are Linux-only, so give the read and the write a macOS branch: the read
+      uses GNU `find -printf` and one `current` file
+      (`platform/playbooks/tasks/github-runner-jit-stock.yml:44-60`), so read the stock
+      with commands the Mac has and the running names from 4.3's per-slot files; the write
+      sets `root:root` (`:186-194`), so write as D4 says, creating the directory if absent.
+      The Linux play's supervisor check requires `active` and `quarantine=no`
+      (`stock-github-runner-jit.yml:76-108`); the macOS play instead requires the
+      supervisor's launchd service running, and fails the run when a slot has been failed
+      for more than an hour, the point at which D2 makes it an operator's to clear.
 - [ ] 5.2 Tests for the macOS branch: the stock reaches the declared count and no more;
       each file's mode and owner; the prune deletes an offline, idle macOS record and
       keeps a stocked or running one; nothing the template writes to the host is the App
@@ -174,17 +180,21 @@
 - [ ] 5.3 Converge the runner group with `manage-github-runner-group.yml` (unchanged
       access list) and record the group id the stock template mints with.
 - [ ] 5.4 Give `deploy-macos-runner.yml` a leave path for a host no longer declared
-      `ephemeral`, in the order of `proposal.md` rollback stage 2: stop the supervisor,
-      remove the stocked configurations, then include the stock task with
-      `grs_prune_only: true` to delete the host's runner records, as the Linux leave path
-      does (`tasks/github-runner-lifecycle.yml`). The stock template cannot do it: it ends
-      every host that is not `ephemeral` before the prune (`stock-github-runner-jit.yml`),
-      and passing prune mode to it would prune every other ephemeral host instead. Prove
-      it once on this host before it serves any repository's work, then restore the
-      declaration and redeploy.
-- [ ] 5.5 Validation gate: spec scenario **"Withdrawing the macOS host stops only macOS"**
-      (remove the host's ephemeral declaration and run the 5.4 leave path, confirm no
-      macOS runner starts while a Linux job still runs, then restore) verified.
+      `ephemeral`, in the Linux leave path's order (`tasks/github-runner-lifecycle.yml:107-182`):
+      drain first, by setting the D5 hold on every slot and waiting, bounded as the build
+      is, for each acknowledgement, so a running job finishes and every slot's VM is
+      deleted; stop and disable the supervisor; include the stock task with
+      `grs_prune_only: true` to delete the host's runner records, now all offline
+      (`github-runner-lifecycle.yml:166-169`); then remove the stock and the supervisor.
+      Without every acknowledgement in time, it stops before the stop. The playbook
+      defines the OpenBao and App variables the stock task reads, as
+      `deploy-github-runner.yml:56-71` does. The stock template cannot do this: it ends
+      every host that is not `ephemeral` before its prune (`stock-github-runner-jit.yml:50-52`).
+- [ ] 5.5 Validation gate, and the one proof of the 5.4 leave path, before the host
+      serves any repository's work: spec scenario **"Withdrawing the macOS host stops only
+      macOS"** (remove the host's ephemeral declaration and run the leave path, confirm no
+      macOS runner starts while a Linux job still runs, then restore the declaration and
+      redeploy) verified.
 
 ## 6. Prove it with real work
 
@@ -248,8 +258,8 @@
       via `vars.MACOS_RUNNER`.
 - [ ] 7.7 Validation gate: spec scenarios **"Verification confirms a healthy plane"**,
       **"Verification detects a runner that is registered but not online"** (stop the
-      supervisor) and **"A job cannot read the application key"** (searched from inside a
-      job, 6.1, and on the host, 7.1) hold for the macOS member.
+      supervisor) and **"A job cannot read the application key"** hold for the macOS
+      member, the last verified with the recorded output of 6.1 and 7.1.
 
 ## 8. Review and promotion
 

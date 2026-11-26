@@ -221,15 +221,18 @@ under the decision it settles.
       as `ghrunner` with `ACTIONS_RUNNER_INPUT_JITCONFIG`, using the mechanism task 1.6 kept;
       quarantine on an unverifiable reset or on `github_runner_max_start_failures` empty
       runs.
-- [ ] 6.6 Extend the scheduled stock template (`add-ephemeral-github-runners`, D3) to stock
-      the Windows host's configurations, with the same age limit and record pruning. Its
-      host steps are Linux-only (GNU `find -printf`, `root:root` files, and a supervisor
-      check that runs the Linux supervisor's `status`, `systemctl` and `journalctl` and
-      requires it `active`), so give each a Windows branch: read and write the stock under
-      `C:\ProgramData\github-runner\jit\`, each file owned by `SYSTEM` with access for
-      `SYSTEM` and `Administrators` only; and require the supervisor service running and
-      no quarantine record under `C:\ProgramData\github-runner\state\`, failing the run
-      otherwise, as on Linux.
+- [ ] 6.6 Stock the Windows host from the scheduled stock template
+      (`stock-github-runner-jit.yml`, `add-ephemeral-github-runners` D3) with a play of its
+      own, `hosts: github_runner_win_svc`, beside the Linux play, so no play selects a
+      Linux and a Windows runner (3.2), with the same age limit and record pruning. The
+      shared stock task's host read and write are bash and `root:root`
+      (`platform/playbooks/tasks/github-runner-jit-stock.yml:44-60`, `:186-194`): give them
+      a Windows branch, `ansible.windows.win_find` for the read and `win_copy` with
+      `win_acl` for the write, under `C:\ProgramData\github-runner\jit\` with the access
+      6.5 gives it. The Linux play's supervisor check runs `systemctl` and requires
+      `active` and `quarantine=no` (`stock-github-runner-jit.yml:76-108`); the Windows play
+      instead requires the supervisor service running (`win_service`) and no quarantine
+      record under `C:\ProgramData\github-runner\state\`, failing the run otherwise.
 - [ ] 6.7 Tests: the configuration never appears in an argument position or in a file the
       account can read after start; the reset removes a planted profile file, a planted
       build-root file and a planted process, and verifies; an unverifiable reset writes the
@@ -258,10 +261,9 @@ under the decision it settles.
       plane) with a Windows job naming `[self-hosted, windows, x64, uhstray-lan]` that:
       prints the runner name; asserts the job is not elevated; asserts the secret store,
       a hypervisor and the orchestrator are unreachable; attempts a machine-wide install,
-      an `HKLM` write and `Add-MpPreference`, asserting each fails; attempts to remove and
-      to disable a firewall rule the deploy tagged as an egress denial, asserting both
-      fail; writes a marker into
-      the workspace and into `D:\z`; registers a scheduled task, as the runner account,
+      an `HKLM` write and `Add-MpPreference`, asserting each fails; attempts to delete or
+      disable a firewall rule the deploy tagged as an egress denial, asserting each fails;
+      writes a marker into the workspace and into `D:\z`; registers a scheduled task, as the runner account,
       that writes a third marker a minute later.
 - [ ] 7.2 Run it twice; the second run asserts both markers are absent, that no
       scheduled task whose principal is the runner account exists and the third marker

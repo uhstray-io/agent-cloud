@@ -132,8 +132,8 @@ the declared maximum age.
 #### Scenario: Withdrawing the macOS host stops only macOS
 
 - **GIVEN** a macOS host stocked with configurations by the orchestrator
-- **WHEN** its stock declaration is removed, its stocked configurations are deleted and its
-  runner records are pruned
+- **WHEN** its stock declaration is removed and its leave path drains every slot, stops
+  the supervisor, prunes its runner records and deletes its stocked configurations
 - **THEN** no macOS runner can start, and the Linux and Windows members keep serving work
 
 ### Requirement: The macOS member has a one-variable hosted fallback

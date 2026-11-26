@@ -107,11 +107,9 @@ Staged, each stage independently sufficient:
    back to the JSON array `["macos-15"]`. Every macOS job runs hosted again, unchanged. No platform change.
 2. **Withdraw availability.** Remove `github_runner_lifecycle: ephemeral` from the host's
    declaration so the stock template skips it, and run the macOS deploy's leave path
-   (task 5.4). In order: stop the supervisor service, remove the stocked configurations,
-   then delete the host's runner records with the stock task's prune mode
-   (`grs_prune_only`). No new VM registers,
-   any running job finishes, and the just-in-time runners vanish from the group on their
-   own after their one job.
+   (task 5.4): it drains every slot, so any running job finishes, then stops the
+   supervisor, deletes the host's runner records and removes the stock. No new VM
+   registers.
 3. **Revoke identity.** Unchanged from the Linux change: revoking the App stops every
    runner in the group. Use stage 2 when only macOS must stop.
 4. **Retire the host.** Wipe the Mac mini and remove its declaration. The hardware is a

@@ -587,7 +587,7 @@ acceptance criterion.
 | 2. Bring the host under automation | Declared, key-only, hardened and firewalled; the bootstrap repeatable | task 2.9 |
 | 3. Build the golden image as code | The image built from pinned inputs | task 3.5 |
 | 4. Deploy the supervisor | The slot loop, its limits and its teardown | task 4.6 |
-| 5. Stock the host from the orchestrator | The stock template extended to the macOS host, and its leave path | task 5.5 |
+| 5. Stock the host from the orchestrator | The stock template extended to the macOS host, and the host's leave path | task 5.5 |
 | 6. Prove it with real work | Smoke, the CI jobs and a release dry run; the hosted fallback | task 6.6 |
 | 7. Verification, operations and documentation | Verification, the image rebuild schedule, documentation | task 7.7 |
 | 8. Review and promotion | The change on `main` with the slots serving work | task 8.10 |
