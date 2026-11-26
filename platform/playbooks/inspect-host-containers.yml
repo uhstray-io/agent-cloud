@@ -6,8 +6,9 @@
 # container owned by any other account is not seen (a rootful probe cannot list another
 # user's rootless containers). For each container: name, image, state, restart policy and the
 # compose working directory, which is how tasks/list-service-containers.yml selects a
-# service's containers. Names and metadata only: no environment, no mounts, no labels beyond
-# that one.
+# service's containers. Each podman probe also prints the store's graph driver name and graph
+# options (from `podman info`), and nothing else from it. Names and metadata only: no
+# environment, no mounts, no labels beyond that one.
 #
 # Exists to onboard a host that carries no service group (devlog) from what
 # actually runs there, and to see which engine and account own a service's containers:
@@ -38,11 +39,20 @@
       - .HostConfig.RestartPolicy.Name
       - index .Config.Labels "com.docker.compose.project.working_dir"
     _fmt: "{{ _fields | map('regex_replace', '^', '{{') | map('regex_replace', '$', '}}') | join('|') }}"
-    # $1 = engine, $2 = inspect format (the argv on each probe below).
+    # The podman store's graph driver name and graph options, from `podman info` (the podman
+    # probes only). Built the way _fmt is, and passed the same way, as an argv element.
+    _store_fields:
+      - .Store.GraphDriverName
+      - .Store.GraphOptions
+    _store_fmt: "{{ _store_fields | map('regex_replace', '^', '{{') | map('regex_replace', '$', '}}') | join('|') }}"
+    # $1 = engine, $2 = inspect format, $3 = the store's podman info format (the argv on each probe below).
     _script: |
-      ENGINE=$1 FMT=$2
+      ENGINE=$1 FMT=$2 STORE_FMT=$3
       command -v "$ENGINE" >/dev/null 2>&1 || { echo "(no $ENGINE)"; exit 0; }
       "$ENGINE" --version 2>/dev/null
+      if [ "$ENGINE" = podman ]; then
+        if store=$("$ENGINE" info --format "$STORE_FMT" 2>/dev/null); then echo "store: $store"; else echo "(podman info failed)"; fi
+      fi
       ids=$("$ENGINE" ps -aq 2>/dev/null) || { echo "($ENGINE not usable here)"; exit 0; }
       [ -n "$ids" ] || { echo "(no containers)"; exit 0; }
       # shellcheck disable=SC2086
@@ -59,7 +69,7 @@
   tasks:
     - name: "Rootless podman (the connecting user)"
       ansible.builtin.command:
-        argv: "{{ ['/bin/sh', '-c', _script, 'inspect', 'podman', _fmt] }}"
+        argv: "{{ ['/bin/sh', '-c', _script, 'inspect', 'podman', _fmt, _store_fmt] }}"
       register: _rootless
       changed_when: false
       failed_when: false
@@ -67,7 +77,7 @@
 
     - name: "Rootless podman (the host's dedicated service account)"
       ansible.builtin.command:
-        argv: "{{ ['/bin/sh', '-c', _script, 'inspect', 'podman', _fmt] }}"
+        argv: "{{ ['/bin/sh', '-c', _script, 'inspect', 'podman', _fmt, _store_fmt] }}"
       become: true
       become_user: "{{ linger_user }}"
       register: _dedicated
@@ -80,7 +90,7 @@
 
     - name: "Rootful podman"
       ansible.builtin.command:
-        argv: "{{ ['/bin/sh', '-c', _script, 'inspect', 'podman', _fmt] }}"
+        argv: "{{ ['/bin/sh', '-c', _script, 'inspect', 'podman', _fmt, _store_fmt] }}"
       become: true
       register: _rootful
       changed_when: false
@@ -89,7 +99,7 @@
 
     - name: "Docker"
       ansible.builtin.command:
-        argv: "{{ ['/bin/sh', '-c', _script, 'inspect', 'docker', _fmt] }}"
+        argv: "{{ ['/bin/sh', '-c', _script, 'inspect', 'docker', _fmt, _store_fmt] }}"
       become: true
       register: _docker
       changed_when: false

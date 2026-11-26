@@ -394,11 +394,7 @@ Host lifecycle reuses the platform's existing playbooks unchanged: `provision-vm
 ## Upgrading the runner
 
 The runners are registered with `--disableupdate`, so the declared version is the running
-version and two hosts never drift apart. The cost: GitHub requires a runner with updates
-disabled to be updated "within 30 days of a new version being made available", and "if you
-do not perform a software update within 30 days, the GitHub Actions service will not queue
-jobs to your runner" ([Self-hosted runners reference, "Runner software updates on
-self-hosted runners"](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)).
+version and two hosts never drift apart. The cost: GitHub's docs say "If you disable automatic updates, you must update your runner version within 63 days of a newer version being made available." and "If you do not update your runner within 63 days of a new major, minor, or patch version becoming available, the GitHub Actions service will not assign jobs to it." ([Self-hosted runners reference, "Runner software updates on self-hosted runners"](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)).
 Watch [actions/runner releases](https://github.com/actions/runner/releases) and move the pin
 within that window.
 
