@@ -45,7 +45,7 @@
       - .Store.GraphDriverName
       - .Store.GraphOptions
     _store_fmt: "{{ _store_fields | map('regex_replace', '^', '{{') | map('regex_replace', '$', '}}') | join('|') }}"
-    # $1 = engine, $2 = inspect format, $3 = the store's podman info format (the argv on each probe below).
+    # $1 = engine, $2 = inspect format, $3 = the store's podman info format (the argv on each podman probe below).
     _script: |
       ENGINE=$1 FMT=$2 STORE_FMT=$3
       command -v "$ENGINE" >/dev/null 2>&1 || { echo "(no $ENGINE)"; exit 0; }
@@ -99,7 +99,7 @@
 
     - name: "Docker"
       ansible.builtin.command:
-        argv: "{{ ['/bin/sh', '-c', _script, 'inspect', 'docker', _fmt, _store_fmt] }}"
+        argv: "{{ ['/bin/sh', '-c', _script, 'inspect', 'docker', _fmt] }}"
       become: true
       register: _docker
       changed_when: false
