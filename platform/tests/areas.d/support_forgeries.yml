@@ -1,7 +1,10 @@
 # The forged extra-var helpers (src/forgeries.rs, AC-951), the Rust mirror of forgeries.py. A
-# change under platform/tests/ hits `full`, so this area names no paths: it only gives the
-# modules their one listing.
-paths: []
+# change under platform/tests/ hits `full`, so this area names only what its playbook run loads
+# from outside it, the filter plugins.
+paths:
+  # ansible.cfg loads every filter plugin into every playbook run (lanes test
+  # every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes).
+  - "platform/playbooks/filter_plugins/**"
 tiers:
   static: [support_forgeries]
   playbook: [support_forgeries_playbook]

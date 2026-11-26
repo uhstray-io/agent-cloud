@@ -26,7 +26,9 @@ import json
 import os
 import shutil
 import socket
+import socketserver
 import ssl
+import struct
 import subprocess
 import sys
 import threading
@@ -951,7 +953,8 @@ def test_the_template_runs_daily_from_dev_right_after_issue_internal_leaf():
 
 def test_the_proof_scripts_never_print_a_key():
     play = playbook_yaml.plays(PLAYBOOK)[1]
-    for name in ("_renew_reader", "_renew_server_prover", "_renew_o11y_tls_prover", "_renew_route_prover"):
+    for name in ("_renew_reader", "_renew_server_prover", "_renew_o11y_tls_prover", "_renew_route_prover",
+                 "_renew_nocert_prover"):
         script = play["vars"][name]
         assert "key.pem" not in script and "PRIVATE" not in script, name
     # No task in the renewal itself is hidden: secrets live only inside the issuance task.
@@ -1385,6 +1388,121 @@ def test_o11y_receiver_leaves_are_proved_in_verify_mode_when_gateway_tls_is_off(
     assert world.signed() == [] and world.reloads() == []
     assert int(server_serial) == _current_serial(server_leaf)
     assert _current_serial(o11y_leaves[1]) == int(serials["o11y-journal"], 16)
+
+
+# ── The no-certificate probe: REFUSED only for a client-certificate refusal ───────
+
+class _PlainHTTP(socketserver.StreamRequestHandler):
+    """A listener without TLS: it reads what arrives and answers with an HTTP status line."""
+
+    def handle(self):
+        self.connection.recv(4096)
+        self.wfile.write(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+
+
+def _nocert_script():
+    return playbook_yaml.plays(PLAYBOOK)[1]["vars"]["_renew_nocert_prover"]
+
+
+def _run_nocert(port, bundle, script=None, timeout=30):
+    return subprocess.run([sys.executable, "-c", script or _nocert_script(), f"https://localhost:{port}", str(bundle)],
+                          check=False, capture_output=True, text=True, timeout=timeout)
+
+
+def _localhost_leaf(ca, tmp: Path) -> dict:
+    leaf = {"dir": str(tmp / "gw"), "sans": ["localhost"], "profile": "server"}
+    _place(ca, leaf, FRESH)
+    return leaf
+
+
+def _server_ctx(leaf, maximum=ssl.TLSVersion.TLSv1_3):
+    """A TLS listener serving the leaf; it demands no client certificate unless the caller sets one."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.maximum_version = maximum
+    ctx.load_cert_chain(Path(leaf["dir"]) / "current/cert.pem", Path(leaf["dir"]) / "current/key.pem")
+    return ctx
+
+
+def test_a_refusal_from_a_client_certificate_listener_is_refused(tmp_path):
+    ca = _ca(tmp_path)
+    leaf = _localhost_leaf(ca, tmp_path)
+    with _thread(_gateway(ca, leaf, [], tmp_path)) as server:
+        result = _run_nocert(server.server_port, ca["dir"] / "bundle.crt")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.startswith("REFUSED "), result.stdout
+
+
+def test_a_plain_http_port_is_an_error_not_a_refusal(tmp_path):
+    ca = _ca(tmp_path)
+    with serve(_PlainHTTP) as url:
+        result = _run_nocert(urlsplit(url).port, ca["dir"] / "bundle.crt")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stdout.startswith("ERROR "), result.stdout
+
+
+def test_a_missing_ca_bundle_is_an_error_not_a_refusal(tmp_path):
+    # The bundle is read before any connection, so no listener is needed.
+    result = _run_nocert(refused_port(), tmp_path / "absent.crt")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stdout.startswith("ERROR no CA bundle"), result.stdout
+
+
+def test_a_port_that_never_answers_is_an_error_not_a_refusal(tmp_path):
+    ca = _ca(tmp_path)
+    # The connect timeout, which also bounds the handshake, cut from 10 s to 1 s; the child's own
+    # deadline (10 s) is ten times that window.
+    one_second = _nocert_script().replace("timeout=10", "timeout=1")
+    assert one_second.count("timeout=1)") == 1
+    silent = socket.socket()
+    silent.bind(("127.0.0.1", 0))
+    silent.listen(1)  # the kernel accepts the connection; nothing ever answers it
+    try:
+        result = _run_nocert(silent.getsockname()[1], ca["dir"] / "bundle.crt", one_second, timeout=10)
+    finally:
+        silent.close()
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stdout.startswith("ERROR "), result.stdout
+
+
+def test_a_listener_that_closes_after_the_handshake_is_an_error_not_a_refusal(tmp_path):
+    ca = _ca(tmp_path)
+    leaf = _localhost_leaf(ca, tmp_path)
+
+    class Closes(socketserver.StreamRequestHandler):
+        """Reads the whole request, then closes with no status line: no certificate was demanded."""
+
+        def handle(self):
+            while self.rfile.readline() not in (b"\r\n", b""):
+                pass
+
+    with serve(Closes, ssl_context=_server_ctx(leaf)) as url:
+        result = _run_nocert(urlsplit(url).port, ca["dir"] / "bundle.crt")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stdout.strip() == "ERROR after request: RemoteDisconnected", result.stdout
+
+
+@pytest.mark.parametrize("version", [ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_3])
+def test_a_reset_after_the_handshake_is_an_error_not_a_refusal(tmp_path, version):
+    ca = _ca(tmp_path)
+    leaf = _localhost_leaf(ca, tmp_path)
+
+    class ResetsAtOnce(socketserver.BaseRequestHandler):
+        """Resets the connection (an RST, not a FIN) as soon as the handshake is done."""
+
+        def handle(self):
+            self.request.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            self.request.close()
+
+    # No client certificate demanded: the handshake completes, then the listener resets with no
+    # alert. A reset says nothing about why, under either version, so it is never a refusal.
+    server_ctx = _server_ctx(leaf, version)
+    server_ctx.verify_mode = ssl.CERT_OPTIONAL
+    server_ctx.load_verify_locations(cadata=ca["bundle"])
+    with serve(ResetsAtOnce, ssl_context=server_ctx) as url:
+        result = _run_nocert(urlsplit(url).port, ca["dir"] / "bundle.crt")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stdout.startswith("ERROR after handshake: "), result.stdout
 
 
 def test_the_serial_python_reports_is_the_serial_openssl_prints(tmp_path):

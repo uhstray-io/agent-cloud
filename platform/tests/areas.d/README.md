@@ -38,10 +38,31 @@ The `lanes` test `every_repo_wide_scan_runs_when_a_file_it_reads_changes` checks
 `repo::grep` and `repo::ls_files` call outside `always`. It reads the pathspecs from the module's
 source: string literals and constants of the same file. A pathspec built at run time is refused.
 It sees those two calls written out, nothing else: not `repo::grep_in` or `repo::ls_files_in`
-given the repository root, a call through a function value, or a directory walk. Reads of named
-files (`text::read`, `repo::tasks`, `yaml::load_one`) and the configuration a playbook run loads
-(the root `ansible.cfg` loads `platform/playbooks/filter_plugins/`) are not checked mechanically
-either: list those files in the area's `paths`.
+given the repository root, a call through a function value, or a directory walk. Three more
+`lanes` tests check named files:
+
+- `every_fixed_path_read_runs_when_its_file_changes`: a string literal, or a constant of the same
+  file, that is a whole argument of a call and names a tracked file. A method argument (`.name(`)
+  and a macro argument are needles, not reads.
+- `every_file_a_playbook_chain_loads_selects_its_module`: for each playbook-tier module, the files
+  each playbook it reads loads: `import_playbook` targets followed recursively,
+  `include_tasks`/`import_tasks` targets (each action under its short, `ansible.builtin.` and
+  `ansible.legacy.` spellings), and `{{ playbook_dir }}/<path>` strings (a directory
+  stands for every tracked file under it). A target it cannot resolve fails the test unless its
+  exception table lists it. It reads the real file, so it also asks for the extra-var guard import
+  that the test harness drops; that over-selection is accepted.
+- `every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes`: `ansible.cfg` and every
+  tracked file in the directories it loads (the filter and callback plugins) select every
+  playbook-tier module. The config is pinned, not parsed: `CFG_SETTINGS` holds its setting lines
+  whole (an indented line counts as a change), so any change to a setting line other than trailing
+  whitespace fails the test; blank lines and lines starting with `#` are ignored. `CFG_KEYS` declares, for every key the pin may hold, whether
+  its value is a plugin directory; a key it does not list, or a directory value other than one
+  `./` path, fails the test too.
+
+Still not checked: a path built at run time, a read through a variable or a function value, a
+constant defined twice, `repo::playbook_files()`, a directory walk other than `repo::grep` and
+`repo::ls_files`, a playbook's `vars_files` and `include_vars` targets, roles (`roles:`,
+`include_role`, `import_role`), and plugin directories beside a playbook. List those files in the area's `paths`.
 
 ```yaml
 # areas.d/netbox_prefix.yml
