@@ -84,6 +84,6 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 
 ### L-014 · 2026-11-26 · process
 
-- **ACCEPTED:** the pull request for AC-1034 (fixed review-pass rounds).
-- **DERIVED:** A review pass costs about the same whatever the size of the diff, because each pass agent starts with about 130k tokens of context before it reads the change. A two-line docs pull request took 1,524,367 reported tokens for two `/simplify` rounds, one `/security-review` and one review (coordinator's sum). Estimate pass cost as rounds × agents × that starting context, and give each pull request a fixed number of rounds in its plan. Never budget it as "repeat until a round finds nothing".
+- **ACCEPTED:** #1226 (AC-1034).
+- **DERIVED:** A review pass costs about the same whatever the size of the diff, because each pass agent starts with about 130k tokens of context before it reads the change. A two-line docs pull request took 1,524,367 reported tokens for two `/simplify` rounds, one `/security-review` and one review (coordinator's sum; `docs/MISTAKES.md` 5.25). Estimate pass cost as rounds × agents × that starting context, with the round counts of `AGENTS.md` Branch Workflow step 4.
 - **APPLIES TO:** briefs and batch plans that estimate or cap review-pass tokens; any rule that sets how many `/simplify` or `/security-review` rounds a pull request runs.

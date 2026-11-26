@@ -5466,6 +5466,19 @@ what it found and what was fixed or deferred: the command is in `AGENTS.md`, Bra
 5. Every later push, review fixes or a `dev` merge included, needs both passes again on the new head. A status can
 be posted only on a commit GitHub already holds.
 
+**Rule changed (2026-11-21).** The operator replaced "run both again until a round changes nothing" with a fixed
+number of rounds (batch v0.17.1, AC-1034): a docs-only pull request runs one round of each pass, on its first head;
+any other pull request runs `/simplify` at most twice and `/security-review` once on its first head, then one round
+of each on every later head made by a reviewer's fix or a `dev` merge. A fix made from a pass's own findings starts
+no round beyond those. Every pushed head still carries both statuses; one that no round read says `covered by the
+round on <sha>: <what changed since>`, which the guard accepts unchanged. The full wording, deferred findings
+included, is `AGENTS.md`, Branch Workflow steps 4 and 5. Why: each round's fixes made a new head, and the old rule
+sent every new head back through both passes, so the loop ended only when a round found nothing. Measured in that
+batch (owners' and the coordinator's figures): #1220, a two-line docs change, took 1,524,367 reported tokens of
+passes (two `/simplify` rounds of four agents, one `/security-review`, one review); #1218 took 3.25M over four
+rounds without settling; #1214 about 3.63M over four. Each pass agent on #1220 started at about 130k tokens of
+context.
+
 **Enforced by.** `scripts/merge-when-green.py`: `check_commit_statuses` refuses a feature-to-`dev` head without
 both statuses (`REVIEW_PASS_STATUSES`), or with one whose description is empty or the unfilled placeholder, and
 names the command that posts each missing one; tested in `platform/tests/test_merge_when_green.py`
@@ -5473,21 +5486,6 @@ names the command that posts each missing one; tested in `platform/tests/test_me
 Limits: the status is self-attested, so the gate proves a pass was claimed for the head, not that it ran or what it
 found (a skipped pass posted as run goes green); and it binds only merges that go through the script (a plain
 `gh pr merge --merge` skips it).
-
-**Rule changed (2026-11-21).** The operator replaced "run both again until a round changes nothing" with a fixed
-number of rounds (batch v0.17.1, AC-1034). A docs-only pull request (every changed path ends in `.md`) runs one
-round of each pass, once for the pull request, on its first head. Any other pull request runs `/simplify` at most
-twice on its first head (the second only when the first made a fix) and `/security-review` once, then one round of
-each on every later head made by a review fix or a `dev` merge. A fix made from a pass's own findings starts no new
-round. A finding left unfixed is listed in a pull request comment starting `simplify: deferred` or
-`security-review: deferred` and filed as a Plane sub-item. Every pushed head still carries both statuses: one that
-no round read says `covered by the round on <sha>: <what changed since>`. Why: each round's fixes made a new head,
-and the old rule sent every new head back through both passes, so the loop ended only when a round found nothing.
-Measured in that batch (owners' and the coordinator's figures): #1220, a two-line docs change, took 1,524,367
-reported tokens of passes (two `/simplify` rounds of four agents, one `/security-review`, one review); #1218 took
-3.25M over four rounds without settling; #1214 about 3.63M over four. Each pass agent on #1220 started at about
-130k tokens of context. The guard is unchanged: it still requires both statuses on the exact head, and a "covered
-by" status passes it. The current wording is `AGENTS.md`, Branch Workflow steps 4 and 5.
 
 **Occurrence 1 — 2026-11-12.** On this rule's own PR (#1107), `/simplify` reviewed `74ac3ba0` and its fixes made
 `e58f113c`; `/security-review` then ran on `e58f113c`, and both statuses were posted there, the `simplify` one
