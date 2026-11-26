@@ -76,7 +76,19 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **DERIVED:** `cargo fmt --check` does not check the modules under `platform/tests/suite/`: `build.rs` writes their `mod` lines to `$OUT_DIR/suite_modules.rs`, which `suite/main.rs` pulls in with `include!`, and `cargo fmt` does not follow an `include!` (`platform/tests/build.rs:3-9`), so it passes a misformatted one. A brief or DONE WHEN that proves a suite module's formatting names `rustfmt --check --edition 2024 platform/tests/suite/<module>.rs`, the check `suite/rust_format.rs` runs.
 - **APPLIES TO:** briefs, DONE WHEN lines and local checks for any change under `platform/tests/suite/`.
 
-### L-013 · 2026-11-21 · platform
+### L-013 · 2026-11-21 · process
+
+- **ACCEPTED:** #1214 (AC-1026).
+- **DERIVED:** A ledger candidate is written down with the source that proves it (a PR comment or review id, a Plane comment's item and time, or a batch-index decision number). The ledger writer checks every fact at its source, and a chat message or a session's memory cannot be checked later.
+- **APPLIES TO:** batch coordinators and owners keeping a ledger candidate list for a closing ledger pass.
+
+### L-014 · 2026-11-26 · process
+
+- **ACCEPTED:** #1226 (AC-1034).
+- **DERIVED:** A review pass costs about the same whatever the size of the diff, because each pass agent starts with about 130k tokens of context before it reads the change. A two-line docs pull request took 1,524,367 reported tokens for two `/simplify` rounds, one `/security-review` and one review (coordinator's sum; `docs/MISTAKES.md` 5.25). Estimate pass cost as rounds × agents × that starting context, with the round counts of `AGENTS.md` Branch Workflow step 4.
+- **APPLIES TO:** briefs and batch plans that estimate or cap review-pass tokens; any rule that sets how many `/simplify` or `/security-review` rounds a pull request runs.
+
+### L-015 · 2026-11-26 · platform
 
 - **ACCEPTED:** #1218 (AC-1025).
 - **DERIVED:** An internal-CA leaf for a listener that another repository starts must exist, and stay current, before that listener serves TLS, because its launcher refuses to start TLS without the files. The renewal's "not in use, left alone" rule for a leaf nothing uses yet (`platform/playbooks/renew-internal-certs.yml:70-72`) would let such a leaf expire before the other side switches. A plan for such a leaf gives it an inventory switch meaning "the listener serves TLS now", and renews it with its host while the switch is off (`production-internal-ca` design, decision 2 of 2026-11-21).
