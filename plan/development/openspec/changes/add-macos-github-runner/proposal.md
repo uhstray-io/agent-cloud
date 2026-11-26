@@ -106,9 +106,10 @@ Staged, each stage independently sufficient:
 1. **Stop routing work.** Set the `zerds` repository variable that selects the macOS runner
    back to the JSON array `["macos-15"]`. Every macOS job runs hosted again, unchanged. No platform change.
 2. **Withdraw availability.** Remove `github_runner_lifecycle: ephemeral` from the host's
-   declaration so the stock template skips it, remove the stocked configurations, then
-   delete the host's runner records with the stock task's prune mode (`grs_prune_only`).
-   Stop the supervisor service on the host. No new VM registers,
+   declaration so the stock template skips it, and run the macOS deploy's leave path
+   (task 5.4). In order: stop the supervisor service, remove the stocked configurations,
+   then delete the host's runner records with the stock task's prune mode
+   (`grs_prune_only`). No new VM registers,
    any running job finishes, and the just-in-time runners vanish from the group on their
    own after their one job.
 3. **Revoke identity.** Unchanged from the Linux change: revoking the App stops every

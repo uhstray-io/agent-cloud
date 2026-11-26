@@ -222,7 +222,14 @@ under the decision it settles.
       quarantine on an unverifiable reset or on `github_runner_max_start_failures` empty
       runs.
 - [ ] 6.6 Extend the scheduled stock template (`add-ephemeral-github-runners`, D3) to stock
-      the Windows host's configurations, with the same age limit and record pruning.
+      the Windows host's configurations, with the same age limit and record pruning. Its
+      host steps are Linux-only (GNU `find -printf`, `root:root` files, and a supervisor
+      check that runs the Linux supervisor's `status`, `systemctl` and `journalctl` and
+      requires it `active`), so give each a Windows branch: read and write the stock under
+      `C:\ProgramData\github-runner\jit\`, each file owned by `SYSTEM` with access for
+      `SYSTEM` and `Administrators` only; and require the supervisor service running and
+      no quarantine record under `C:\ProgramData\github-runner\state\`, failing the run
+      otherwise, as on Linux.
 - [ ] 6.7 Tests: the configuration never appears in an argument position or in a file the
       account can read after start; the reset removes a planted profile file, a planted
       build-root file and a planted process, and verifies; an unverifiable reset writes the
@@ -251,7 +258,9 @@ under the decision it settles.
       plane) with a Windows job naming `[self-hosted, windows, x64, uhstray-lan]` that:
       prints the runner name; asserts the job is not elevated; asserts the secret store,
       a hypervisor and the orchestrator are unreachable; attempts a machine-wide install,
-      an `HKLM` write and `Add-MpPreference`, asserting each fails; writes a marker into
+      an `HKLM` write and `Add-MpPreference`, asserting each fails; attempts to remove and
+      to disable a firewall rule the deploy tagged as an egress denial, asserting both
+      fail; writes a marker into
       the workspace and into `D:\z`; registers a scheduled task, as the runner account,
       that writes a third marker a minute later.
 - [ ] 7.2 Run it twice; the second run asserts both markers are absent, that no
@@ -283,7 +292,7 @@ under the decision it settles.
       **"A release's target directory does not survive into the next job"** (7.2),
       **"A scheduled task a job registers does not run in the next job"** (7.2),
       **"A Windows job lands only on a Windows runner"** (7.2) and **"A Windows job cannot
-      remove the denial"** verified with recorded run output.
+      remove the denial"** (7.1) verified with recorded run output.
 
 ## 8. Verification, operations and documentation
 

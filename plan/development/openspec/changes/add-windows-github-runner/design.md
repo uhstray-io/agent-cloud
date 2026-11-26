@@ -747,7 +747,7 @@ Each check is a scenario of this change's spec delta, verified where the last co
 | Key access is proven before password access is withdrawn on Windows | Key-only login verified first; a failed check disables nothing | task 4.7 |
 | Only SSH is reachable on the Windows host | SSH from the declared ranges only; no remote desktop, file sharing or remote management | task 4.7 |
 | The platform interior is unreachable from a Windows job | The connection is blocked whatever credential the job holds | tasks 4.6, 4.7 |
-| A Windows job cannot remove the denial | The attempt fails for lack of administrative rights | task 7.7 |
+| A Windows job cannot remove the denial | The attempt fails for lack of administrative rights | tasks 7.1, 7.7 |
 | A release's target directory does not survive into the next job | The build root is empty at the next job's start | task 7.2 |
 | A tool replaced by one job is not run by the next | The next job runs the seed's copy | task 7.2 |
 | A scheduled task a job registers does not run in the next job | No task registered to the account remains and its marker is not written | task 7.2 |

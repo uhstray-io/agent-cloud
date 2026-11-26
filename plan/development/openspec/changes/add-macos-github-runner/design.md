@@ -587,7 +587,7 @@ acceptance criterion.
 | 2. Bring the host under automation | Declared, key-only, hardened and firewalled; the bootstrap repeatable | task 2.9 |
 | 3. Build the golden image as code | The image built from pinned inputs | task 3.5 |
 | 4. Deploy the supervisor | The slot loop, its limits and its teardown | task 4.6 |
-| 5. Stock the host from the orchestrator | The stock template extended to the macOS host | task 5.4 |
+| 5. Stock the host from the orchestrator | The stock template extended to the macOS host, and its leave path | task 5.5 |
 | 6. Prove it with real work | Smoke, the CI jobs and a release dry run; the hosted fallback | task 6.6 |
 | 7. Verification, operations and documentation | Verification, the image rebuild schedule, documentation | task 7.7 |
 | 8. Review and promotion | The change on `main` with the slots serving work | task 8.10 |
@@ -609,8 +609,8 @@ Each check is a scenario of this change's spec delta, verified where the last co
 | An Xcode archive with the wrong digest aborts the build | The build fails before installing it; the current image is unchanged | task 3.4 |
 | The platform interior is unreachable from a macOS job | The connection fails | tasks 1.3, 6.1 |
 | Build egress from a macOS job still works | The connection succeeds | tasks 6.2, 6.3 |
-| A job cannot read the application key | It is not present in the VM or on the host | tasks 6.1, 7.1 |
-| Withdrawing the macOS host stops only macOS | No macOS runner starts while Linux and Windows keep serving | task 5.4 |
+| A job cannot read the application key | It is not present in the VM or on the host | tasks 6.1, 7.1, 7.7 |
+| Withdrawing the macOS host stops only macOS | No macOS runner starts while Linux and Windows keep serving | tasks 5.4, 5.5 |
 | Switching to hosted runners is one change | The next run completes on a hosted runner with no workflow edit | task 6.5 |
 
 ## Security Considerations
