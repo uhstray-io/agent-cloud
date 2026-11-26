@@ -45,7 +45,9 @@ jobs no access of any kind, and a job SHALL NOT be able to reach the host over t
 
 A macOS host SHALL run at most two macOS virtual machines at the same time, the number
 Apple's licence permits per Apple-branded computer. The limit SHALL be enforced by the
-supervisor's declared slot count, which MUST NOT be declarable above two.
+supervisor's declared slot count, which MUST NOT be declarable above two, and an image
+build, which runs a macOS virtual machine of its own on the host, SHALL first hold one
+slot empty so that the build and the slots together stay within the limit.
 
 #### Scenario: A third job queues
 
@@ -57,6 +59,18 @@ supervisor's declared slot count, which MUST NOT be declarable above two.
 
 - **WHEN** a macOS host is declared with more than two slots
 - **THEN** the supervisor deploy refuses, naming the limit
+
+#### Scenario: An image build holds a slot for its own machine
+
+- **GIVEN** a host declared with two slots
+- **WHEN** an image build starts
+- **THEN** the supervisor deletes the held slot's idle machine, or lets its running job
+  finish within the job deadline and then deletes the machine, and clones nothing into
+  that slot until the build releases the hold
+- **AND** a build whose held slot still has a machine when that wait ends is refused
+  before it starts a machine, and releases the hold
+- **AND** the hold is released when the build ends, whether it succeeded or failed, and
+  the slot clones a fresh machine
 
 ### Requirement: The macOS golden image is built by code from pinned inputs
 

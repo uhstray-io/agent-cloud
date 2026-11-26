@@ -94,8 +94,11 @@
       disables automatic updates.
 - [ ] 3.3 Add `platform/playbooks/build-macos-runner-image.yml`: verifies the Xcode
       archive's digest on the host first, runs `packer build` on the host, names the image
-      by its inputs, and leaves the current image untouched on failure. Add its Semaphore
-      template.
+      by its inputs, and leaves the current image untouched on failure. With two slots
+      declared, it first holds the second slot (D5): it sets the hold, waits at most
+      `macos_runner_max_job_minutes` plus 10 minutes for the slot to hold no VM, refuses
+      the build if one remains, and releases the hold in an `always` block. Add its
+      Semaphore template.
 - [ ] 3.4 Run the build against a test fixture declaration with a wrong Xcode digest
       (never by editing the real declaration), confirm it aborts before installing Xcode
       and the current image is unchanged. Keep the fixture as a regression test.
@@ -111,11 +114,16 @@
       delete the VM, repeat. Delete the VM on every exit path, including a supervisor
       restart (on start, delete any VM it owns that is not in a live slot). Recycle a warm
       VM that has taken no job within `macos_runner_max_idle_minutes` (default 1200, D2):
-      stop and delete it, remove its runner record, clone a fresh one.
+      stop and delete it, remove its runner record, clone a fresh one. Read the build hold
+      (D5) before every clone: a held slot clones nothing, deletes its idle VM with its
+      runner record at once, and deletes a VM that holds a job once the job ends or reaches
+      its deadline.
 - [ ] 4.2 Refuse a declaration with more than two slots, naming the licence limit.
 - [ ] 4.3 Log each slot's VM name, runner name, job outcome and lifetime where the verify
       playbook can read them. No credential in any log.
-- [ ] 4.4 Add `platform/playbooks/deploy-macos-runner.yml`: place the App key (`0400`,
+- [ ] 4.4 Run tasks 5.1 to 5.3 first: this task reads the App key 5.1 stores and the
+      group id 5.3 records, and on a fresh installation neither exists yet.
+      Add `platform/playbooks/deploy-macos-runner.yml`: place the App key (`0400`,
       owned by the supervisor account) from the secret store, render the supervisor's
       configuration and launchd service, start it, verify that exactly the declared number
       of slots (one or two; more is refused by 4.2) register.
@@ -128,7 +136,8 @@
       a failed slot recovers once its VM deletion succeeds; a listener update exit (code 3
       or 4) is relaunched with the same configuration and its job completes; an idle VM
       older than the idle bound (set low for the test) is deleted with its runner record
-      and replaced.
+      and replaced; a held slot (D5) deletes its idle VM with its runner record, clones
+      nothing while held, and clones a fresh VM once the hold is released.
 - [ ] 4.6 Validation gate: spec scenarios **"An over-limit declaration is refused"** and
       **"A cancelled job's machine is destroyed"** verified (4.5 plus a live cancellation).
 
@@ -158,7 +167,13 @@
       `[self-hosted, macos, arm64, uhstray-lan]` that: prints the runner and VM names;
       asserts the platform interior and the host are unreachable; searches the VM for the
       App key; writes a file, starts a background process, creates a keychain and deletes
-      an application. Run it twice; the second run asserts all four are gone or restored.
+      an application. Run it twice with one slot declared (the other disabled by
+      declaration, D2), so that both runs use the same slot; the second run asserts all
+      four are gone or restored, and that its VM name differs from the first run's, and
+      the verify step confirms the first run's VM no longer exists on the host. Before
+      relying on the check, run the same pair in the 4.5 test harness with the slot's VM
+      deletion stubbed out, so the second job reuses the first job's VM, and confirm the
+      check fails.
 - [ ] 6.2 On a `zerds` branch, set `runs-on` to the `MACOS_RUNNER` pattern (D10) with the
       self-hosted default, and run `ci.yml` (lint and test, release feature set) and
       `warm-cache.yml` `macos`.
@@ -166,19 +181,26 @@
       included if the secrets are configured. Record each step's time against hosted, and
       the VM's peak memory and disk.
 - [ ] 6.4 Build a second image with a changed input, smoke it in one slot, promote it by
-      declaration, and confirm the other slot picks it up on its next VM.
+      declaration, and confirm the other slot picks it up on its next VM. Run that build
+      with both slots serving and confirm the hold (D5): the second slot's VM is deleted
+      before Packer starts, the slot clones nothing during the build, and it clones a fresh
+      VM after it. Then start a build while the held slot runs a job that outlasts the
+      wait (the wait set low for the test) and confirm the build is refused before Packer
+      starts and the hold is released.
 - [ ] 6.5 Set `MACOS_RUNNER` to `["macos-15"]` on the branch and confirm the same jobs pass
       hosted with no other edit.
 - [ ] 6.6 Validation gate: spec scenarios **"A macOS job cannot see the previous job's
       machine"** (6.1), **"Administration inside the VM does not reach the host"** (6.1),
       **"The platform interior is unreachable from a macOS job"**, **"Build egress from a
       macOS job still works"** (6.2, 6.3), **"A third job queues"** (three jobs dispatched
-      at once) and **"Switching to hosted runners is one change"** (6.5) verified with
+      at once), **"An image build holds a slot for its own machine"** (6.4) and
+      **"Switching to hosted runners is one change"** (6.5) verified with
       recorded run output.
 
 ## 7. Verification, operations and documentation
 
-- [ ] 7.1 Add `verify-macos-runner.yml`: both slots registered and idle or busy, image
+- [ ] 7.1 Add `verify-macos-runner.yml`: exactly the declared number of slots registered,
+      each idle or busy, image
       age and inputs, runner version against the 30-day window and any upstream release older than 14 days
       that the image does not carry yet, Tart licence core total
       against the free tier (warn at 80, D9), FileVault and power settings as declared.

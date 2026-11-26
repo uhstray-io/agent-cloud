@@ -46,8 +46,10 @@ active one before bundling: the disk does not otherwise fit the build.
   its last link swapped: an installation token is exchanged for a single-job just-in-time
   configuration instead of a registration token.
 - **Reused: the egress-denial declaration.** VM traffic is confined by the host's virtual
-  network (no route to private addresses), and the host's packet filter enforces the same
-  `firewall_deny_egress` list as a second layer.
+  network (no route to private addresses), which is the only control on it: the host's
+  packet filter enforces the same `firewall_deny_egress` list for the host's own traffic,
+  not for the VMs' (D6). A globally routable entry in that list is therefore not denied
+  to a VM.
 - **Changed posture, stated plainly:** inside the ephemeral VM the job's account has
   passwordless administrative rights, as it does on a hosted runner, because the release
   workflow selects Xcode, deletes extra Xcode installs and creates and sets a default
