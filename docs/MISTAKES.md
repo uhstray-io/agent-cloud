@@ -1549,7 +1549,7 @@ check this rule asks for. The v0.16.0 handoffs now state the quirk and the remov
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 18** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10, 2026-11-11, 2026-11-12, 2026-11-12, 2026-11-16, 2026-11-16, 2026-11-16, 2026-11-20, 2026-11-19 (recorded late)
+**Occurrences: 19** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10, 2026-11-11, 2026-11-12, 2026-11-12, 2026-11-16, 2026-11-16, 2026-11-16, 2026-11-20, 2026-11-19 (recorded late)
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -2000,7 +2000,7 @@ by measurement); this is the reverse, a capability assumed without the documenta
 
 **Occurrences: 2** — 2026-11-18, 2026-11-19
 
-**What happened.** On 2026-11-18, after the five-hour usage limit reset at 16:00 EST, Orca accepted the coordinator's sends to three limited owners at 16:02 and 16:25 EST and returned a message id for each, but by 16:26 EST none had reached the owners' transcripts; `orca orchestration worker-show` read state ready, liveness live and activity idle (the coordinator's record). The batch skill's monitor table had no row for a send that is accepted and never delivered; its relaunch row assumes a send that fails. On 2026-11-19 at 22:24 EST, after an Orca restart, the coordinator sent resume messages to three owners and told the operator "all three owner sessions are resumed". Two of the three dispatches read `liveness=exited` in `orca orchestration worker-show`; the send had printed a message id for each and nobody received it. The monitor tick two minutes later found it (their transcripts had not moved), and both were relaunched at 22:28 EST.
+**What happened.** On 2026-11-18, after the five-hour usage limit reset at 16:00 EST, Orca accepted the coordinator's sends to three limited owners at 16:02 and 16:25 EST and returned a message id for each, but by 16:26 EST none had reached the owners' transcripts; `orca orchestration worker-show` read state ready, liveness live and activity idle (the coordinator's record). The batch skill's monitor table had no row for a send that is accepted and never delivered; its relaunch row assumes a send that fails (coordinator's record). On 2026-11-19 at 22:24 EST, after an Orca restart, the coordinator sent resume messages to three owners and told the operator "all three owner sessions are resumed". Two of the three dispatches read `liveness=exited` in `orca orchestration worker-show`; the send had printed a message id for each and nobody received it. The monitor tick two minutes later found it (their transcripts had not moved), and both were relaunched at 22:28 EST.
 
 **Root cause.** A message id says Orca accepted the message, not that a session read it. Both times the coordinator took the id as the end of the send and read nothing on the recipient's side.
 
@@ -2024,7 +2024,7 @@ by measurement); this is the reverse, a capability assumed without the documenta
 
 **Occurrences: 1** — 2026-11-20
 
-**What happened.** For S9's second cut (#1213, AC-977), the coordinator sent its owner a wording line for what the lane guard covers. The reviewer returned the pull request on it (return 1 of cut 2, 2026-11-20): no test in the pull request exercised the form the line said was covered.
+**What happened.** For S9's second cut (#1213, AC-977), the coordinator sent its owner a wording line for what the lane guard covers. The reviewer returned the pull request on it (return 1 of cut 2, 2026-11-20): no test in the pull request exercised the form the line said was covered (coordinator's record; the return's text was not re-read for this entry).
 
 **Root cause.** The sentence was written from what the guard was meant to do, with no fixture behind it that would go red if the coverage were missing. 1.15's rule states a security guarantee only for the inputs its tests exercise; this was a coverage sentence about a test guard, outside that rule's security framing, and it was written by the coordinator, not by the author of the check.
 
@@ -5913,7 +5913,7 @@ batch's later briefs; that is a brief convention, not a check.
 
 **Occurrence 5 — 2026-11-19 (recorded late).** At 07:28 EST the closing owner (two `pr-reviewer` rounds planned), the S9 owner and the row 419 owner were started within ten minutes of each other, and all three stopped on the account's seven-day limit with the promotion's round 1 unfinished. The coordinator had not read the remaining weekly allowance before the dispatch, and two of the units could not merge before the promotion anyway (coordinator's record). Why the rule did not fire: the rule totals one unit's spend against its own stop; nothing in it compares the batch's planned spend with the account's remaining allowance.
 
-**Occurrence 6 — 2026-11-19 (recorded late).** Row 419's 350k stop (brief 32, AC-997) counted a Haiku executor's 310,111 tokens like Opus tokens and stopped the unit after one executor run (coordinator's record). Why the rule did not fire: the brief was written after the rule asked for a stop per model class, and its stop named no model. Kept apart from occurrence 5: the same day, but a different cause (a stop that ignores the model, not an allowance left unread).
+**Occurrence 6 — 2026-11-19 (recorded late).** Row 419's 350k stop (brief 32, AC-997) counted a Haiku executor's 310,111 tokens like Opus tokens and stopped the unit after one executor run (coordinator's record). Why the rule did not fire: the brief's stop named no model, and the rule that asks for a stop per model class was committed the same night (`b4af7d2b`, 23:14 EST). Kept apart from occurrence 5: the same day, but a different cause (a stop that ignores the model, not an allowance left unread).
 
 ### 5.38 Three returns on one check because no plan said where "which setting loads a directory" was declared
 
