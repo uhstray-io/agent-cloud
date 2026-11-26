@@ -501,6 +501,176 @@ refuse as a declared SAN) refused all three and survived both. So with no leaf d
 the production CA now carries that one-name policy, and Phase 3 refuses a CA without it.
 Local-dev still carries none.
 
+## Decisions recorded 2026-11-21: certificates-only consumers on the DGX Spark nodes
+
+AC-1022 and gateway task 6.3. This supersedes decision 1 of 2026-09-28 and open question 1's answer:
+dgx-spark's ADR-0017 (accepted 2026-10-16) made each node a certificates-only consumer of this
+repository's issuance, so the key and request are made on the node by `Issue Internal Leaf (Dev)`
+like every other leaf, and no signing template is built (task 2.4a). No leaf is issued by this
+record.
+
+The four leaves:
+
+| Leaf | Host | Profile | SANs | Reload | Used by |
+|---|---|---|---|---|---|
+| `vllm-server` | the head node | server | `vllm-primary.<site>.<zone>`, `dgx01.vllm-primary.<site>.<zone>` | none (`--enable-ssl-refresh`) | vLLM's API listener |
+| `vllm-lifecycle` | the head node | client | `lifecycle.vllm-primary.<site>.<zone>` | none | dgx-spark's lifecycle coordinator, Phase B only |
+| `image-server` | the second node | server | `image-primary.<site>.<zone>`, `dgx02.image-primary.<site>.<zone>` | none (`--enable-ssl-refresh`) | the image server's listener |
+| `agw-upstream` | gateway host | client | `upstream.gateway.<site>.<zone>` | none until Phase B, then restart unless 5.4a's drill says none | the gateway's model `tls.cert`/`tls.key` towards vLLM |
+
+The first three SANs were agreed with dgx-spark on 2026-10-26 (gateway task 6.3 note) and by the
+operator on 2026-11-20 (image server). `upstream.gateway` follows the shape of the gateway's
+existing client leaf (`verifier.gateway`); vLLM checks only that a client leaf chains to the root
+(decision 3 of 2026-09-28), so the name serves the CA's name policy and operators. It is a new name,
+open to review.
+
+1. **(a) One machine holds its instance name under two services.** Decided here, as a rule the
+   naming scheme does not yet state: the ordinal names the machine within its class, so the same
+   ordinal appears under every service the machine is a member of. The second node is `dgx02.vllm-primary`
+   (`serves: false`, naming decision 6) and `dgx02.image-primary` (serving). Both are declared on
+   the second node's inventory host entry (`dns_instances`, a list per host in naming decision 9; decision 3
+   below), so no shape changes; retiring the machine later takes one `dns_retired_instances` entry
+   per service (the list is keyed by service and instance). The naming change records the rule through a follow-up. The image-server leaf
+   carries only the `image-primary` names. Alternatives rejected: *a new ordinal for the image
+   instance* (`dgx03.image-primary`), because the ordinal would no longer identify the machine, and
+   naming decision 5 exists so that a name carries one machine's history; *one second-node leaf carrying
+   `dgx02.vllm-primary` too*, because the second node serves no vLLM API (naming decision 6), and a client
+   verifying a `vllm-primary` name could then be answered by the image port.
+
+2. **(b) The renewal proof per leaf.** Decision 8 proves each leaf in use after its host's reload.
+   The renewal header (`renew-internal-certs.yml:70-72`) adds that a gateway leaf whose use cannot
+   be proven is left alone, unrenewed; these classes take a different rule. Here a leaf whose
+   listener or caller does not use it yet is still renewed with its host, and checked only on its
+   files (`issue-internal-leaf.yml -e leaf_action=inspect`), which shows the files are valid, not
+   that anything loaded them. Which leaves are in use is not read from the nodes: it is chosen by
+   switches the operator declares in site-config, described below. Once a switch says a leaf is in
+   use, the proof named in that leaf's bullet below applies, and each bullet says what it reads
+   and what it does not: for `vllm-server` and `image-server`, the serial the listener serves; for
+   `vllm-lifecycle` and `agw-upstream`, that vLLM accepts the new files, not that the process
+   holding the leaf loaded them.
+   - Three states this decision does not read are an open build decision (AC-1041): whether a
+     listener really serves what its switch declares; where agent-cloud reads
+     `vllm_tls_require_client`, the name dgx-spark gives its switch for requiring client
+     certificates (its Phase B); and which `agw-upstream` leaf the gateway process presents after
+     a restart. agent-cloud does not read `vllm_tls_require_client` today; below, "with
+     `vllm_tls_require_client` on" means the state agent-cloud will read once AC-1041 settles where.
+   - `vllm-server` and `image-server` get one row each in `vars/renew-listener-servers.yml`, the
+     class OPA, the launch gate and skynet already use: the leaf's own host connects to its listener
+     and the served serial must equal the one issued. The rows differ from the existing ones in
+     three ways, each a field of the row, so the existing rows keep their behaviour. Their leaf
+     directory is `<certificates directory>/<leaf>` under the consumer account, not
+     `<deploy>/certs/<leaf>`. Their switch (`vllm_tls`, `image_server_tls`) is an inventory value
+     the operator declares in site-config, off by default, meaning "the listener serves TLS now";
+     dgx-spark controls the listener, and nothing reads the node to set or check the switch. While
+     the switch is off, the leaf is renewed with its host and checked on its files only: the run
+     does not see what the listener serves, so a listener that serves TLS while its switch is still
+     off is never compared with `current` (AC-1041). Once the switch is on, the served serial is
+     read and compared. And, with `vllm_tls_require_client` on, the `vllm-server` proof presents
+     the host's own `vllm-lifecycle` leaf, where today's listener proof presents no client
+     certificate (`renew-internal-certs.yml:22-26`). Reload stays `none`: agent-cloud's account has
+     no right to restart a dgx-spark service. With the switch on, the served-serial proof in the run
+     that renewed the leaf fails that run if `--enable-ssl-refresh` does not follow the swap, which
+     the rotation drill (dgx-spark task 3.4) tests before anything relies on it; dgx-spark owns the
+     fallback (a restart or a fixed-name copy). The existing rows that have a switch (OPA, skynet)
+     keep refusing a leaf whose switch is off; the launch gate's row has none
+     (`platform/playbooks/vars/renew-listener-servers.yml:42`).
+   - `vllm-lifecycle` gets a node client class: with `vllm_tls_require_client` off, nothing presents
+     it, so it is renewed with its host and checked on its files only. With it on, the leaf's host
+     completes a handshake with its own vLLM listener presenting the new files, and the same
+     connection without a client certificate must be refused, or the handshake proved nothing about
+     the leaf. That shows vLLM accepts the new files, not that dgx-spark's coordinator holds them:
+     whether the coordinator re-reads the files on each connection is dgx-spark's to establish.
+   - `agw-upstream` gets a gateway upstream class. With `vllm_tls_require_client` off, vLLM asks for
+     no client certificate, so the gateway never sends the leaf and an old copy held in memory costs
+     nothing: reload `none`, checked on its files only. Its directory is under the gateway
+     deploy's `certs/`, which the deploy's change check hashes
+     (`platform/services/agentgateway/deployment/deploy.sh:22`, `:102-125`), so a real run of Phase B's gateway
+     deploy recreates the gateway when those files differ from the ones it started with (a dry run
+     skips that check, so whether Phase B's launch may skip the real run is part of AC-1041). From then on its reload is the gateway
+     container's restart, run once per host per decision 8, after the swap in the same run. The
+     proof reads the gateway's readiness after the restart and makes a handshake from the gateway
+     host to vLLM presenting the new files and verifying `vllm-primary.<site>.<zone>`, which shows
+     vLLM accepts them. It does not read which leaf the restarted process presents, and nothing yet
+     shows that the gateway loads its model-side files when it starts (task 5.4a's drill covers a
+     reload on change): how the build proves that is an open build decision (AC-1041). Reload `none` replaces the restart only when the drill in task
+     5.4a shows agentgateway reloads model-side TLS files and the renewal also checks the leaf the
+     gateway process itself presents to vLLM; a handshake from another client on the host does not
+     show which leaf the process holds. Accepted cost: from
+     Phase B, unless the gateway server leaf already restarts the gateway or the drill shows a
+     reload, each renewal of the gateway host (about every 20 days) restarts it and drops open
+     streams. Alternatives rejected: *the gateway's rule, "not in use, left alone", while a listener
+     does not serve TLS*, because dgx-spark's launcher refuses to start TLS without the files (declared by
+     dgx-spark, not checked by this repository), so
+     the leaf must exist and stay current for an unknown time before anything serves it; *proving
+     `vllm-server` from the gateway host with `agw-upstream`* (dgx-spark's proposal), because it
+     ties a head-node renewal to a second host and a second leaf, where the listener class proves from
+     the leaf's own host; *reload `restart` from agent-cloud*, because it would need a privilege on
+     dgx-spark's machines that the boundary withholds.
+
+3. **(c) How issuance, renewal and the bundle reach the nodes.** This amends naming decision 9
+   (the operator, 2026-11-21). Decision 9 keeps machines this repository does not manage, GPU nodes
+   among them, out of the inventory as records-only entries, so that no play can target them. A
+   machine reached only through its certificates-only account may now be an inventory host: its DNS
+   records move to that host entry, and the protection is the account's key boundary, not absence
+   from the inventory. The render's refusal of a hostname declared both ways needs a build change,
+   and the naming change records the amendment through its own item. Each node is an inventory host
+   of its own group in site-config, under its own inventory name (the head node's existing inventory name is the drill
+   host's), with `ansible_user` the certificates-only account (`vllm-tls`, the same account and key on
+   both nodes) and `service_conformance_tracked: false`. A host var names the OpenBao key it
+   connects with (`secret/services/ssh/vllm-tls`); `issue-internal-leaf.yml`,
+   `renew-internal-certs.yml` and the bundle step connect to such a host with that key through one
+   shared task, as the fault drill does: `tasks/materialise-ssh-key.yml`, then
+   `ansible_ssh_private_key_file` for those hosts only, then `tasks/remove-ssh-key.yml` in `always:`. The key is set per
+   host, never in play or block `vars:`, and the signing step delegated to the CA host is meant to
+   connect with the CA host's own credentials; nothing shows that yet, and the build's test of how
+   Ansible resolves a delegated task's connection variables is an open build decision (AC-1042). Every play runs `become: false` there already. Any
+   other play that targets these groups connects with Semaphore's own key, which the account does
+   not admit, so it fails to connect: that is the boundary dgx-spark built, declared by dgx-spark (the
+   account admits only its own key) and not checked by this repository. The bundle is placed by
+   the issuance itself: for a certificates-only host, `Issue Internal Leaf (Dev)` and the renewal
+   write `step-ca-bundle.crt` into the certificates directory through `tasks/distribute-ca-root.yml`
+   (`_ca_bundle_dest`) in the same run. Alternatives rejected: *Semaphore's inventory key admitted
+   on the account*, because dgx-spark admits only the account's own key; *a separate bundle
+   placement template*, because these hosts have no deploy that places it, and a separate launch is
+   one more step to forget after a root change; *the signing template of task 2.4a*, superseded
+   above.
+
+4. **(d) Where clients find the bundle.** On each node, `step-ca-bundle.crt` in the account's
+   certificates directory, beside the leaf directories (where the renewal proof already reads it,
+   `renew-internal-certs.yml:73-76`). dgx-spark points `--ssl-ca-certs` and its lifecycle opener at
+   it. agent-cloud's own clients keep the bundles their deploys place: the gateway
+   `<deploy>/certs/step-ca-bundle.crt`, Caddy `<caddy_certs_dir>/step-ca-bundle.crt`, o11y its own.
+   Alternative rejected: *a copy of the root committed to this public repository*, which decision
+   9 forbids; the site-config copy decision 9 keeps is a recovery backup, not a client's bundle.
+
+5. **(e) Name resolution while production internal DNS is not deployed.** No client needs a DNS
+   record: each one dials the node's address from inventory and sets the name it verifies
+   explicitly, which the scheme already relies on (the gateway's model `tls.hostname`, Caddy's
+   `tls_server_name`, Prometheus `tls_config.server_name`, the prover's `server_hostname`). The
+   image server's declared client is the gateway (plan 27's image path). When production internal
+   DNS deploys, `image-primary` and `dgx02.image-primary` are declared on the second node's inventory host
+   entry (decision 3's amendment of naming decision 9). Alternatives rejected: *a managed hosts-file line on each
+   agent-cloud client*, rejected for the same reason in naming decision 15's 2026-09-29 amendment;
+   *waiting for production internal DNS*, which would hold the build on a deploy nothing has
+   scheduled. A hosts-file line on a node for dgx-spark's own local callers (as `tls-access.yml`
+   writes on the head node) is dgx-spark's choice.
+
+6. **(f) Order against dgx-spark's tasks.** Three constraints set the order; the build's first pull
+   request carries the sequence. The leaves exist before dgx-spark's TLS switch, because its
+   launchers refuse to start without the files (declared by dgx-spark, not checked by this
+   repository). The inference-path callers (the gateway's
+   `https://` upstream, Caddy's `/health` transport, Rollback Inference Route's `direct` mode
+   transport, the o11y scrape) change in dgx-spark's Phase A window (its task 3.3), because a
+   plain-HTTP caller fails the moment vLLM serves TLS only. Phase B (dgx-spark 4.1 to 4.3) follows
+   only after every caller holds its leaf.
+
+7. **(g) Every production launch the build needs.** Each is lane C: the operator approves that exact
+   run, dry run included, in the acting session's chat, and manual launches follow ledger 3.20 and
+   3.22. `Deploy step-ca (Dev)` renders the CA's name policy with every new name before any issuance
+   (ledger 10.20). Every site-config change is followed by the operator-side inventory sync
+   (`scripts/semaphore-sync-inventory.py`) before the run that reads it. The numbered launch list
+   goes with the build's first pull request.
+
 ## Open Questions
 
 All four questions below were answered on 2026-09-28; see "Decisions recorded
