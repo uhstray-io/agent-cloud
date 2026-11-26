@@ -34,9 +34,9 @@
 //! `<entry> <citation> # <reason>`. The comparison is a multiset: one ratchet line covers one
 //! occurrence. The old file may only shrink; a port adds its lines in its own `ratchet.d` file,
 //! each naming the replacing test as `suite/<module>.rs::<fn>`, and edits no ledger file (plan 24,
-//! D10). One later change writes each citing entry's "Enforcement moved" note, which names those
-//! tests; `every_ratchet_line_for_a_deleted_test_has_an_enforcement_moved_note` requires each one.
-//! A Rust citation cannot be ratcheted while the Python
+//! D10). In the same pull request it appends an "Enforcement moved" note to each citing entry
+//! naming those tests (docs/MISTAKES.md 5.29), which
+//! `every_ratchet_line_for_a_deleted_test_has_an_enforcement_moved_note` requires. A Rust citation cannot be ratcheted while the Python
 //! checker runs: it does not read `.rs` spans, so it reads such a ratchet line as stale. Until
 //! the Python checker goes (Phase 5), a cited Rust test that is renamed gets a dated note in the
 //! ledger entry naming its new name, as 10.15's "Enforcement moved" note does.
@@ -479,37 +479,45 @@ fn ratchet_dir_files(root: &Path) -> Vec<PathBuf> {
 static REPLACING_TEST: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?P<path>(?:platform/tests/)?suite/[\w-]+\.rs)::(?P<name>\w+)"));
 
-/// A ratchet reason that names a Rust test module, `suite/<module>.rs`, with or without a fn. A
-/// port names one; the 2.22 rename does not.
-static SUITE_MODULE: LazyLock<Regex> = LazyLock::new(|| re(r"suite/[\w-]+\.rs"));
+/// Old-file ratchet lines for a test that was renamed, not deleted: their entries need no
+/// "Enforcement moved" note. Every other line does, so a line added here is a reviewed choice.
+const RENAMED_NOT_DELETED: [&str; 1] = ["2.22 test_the_clean_environment_rule_checks_the_endpoint"];
 
-/// Each line of a ratchet directory file under `root` whose reason names no replacing Rust test,
-/// or names one that does not resolve. A port deletes a cited test only with its replacement
-/// named. Each entry's "Enforcement moved" note (docs/MISTAKES.md 5.29) takes its names from
-/// these lines, and `enforcement_note_problems` requires that note.
-fn ratchet_dir_problems(root: &Path) -> Vec<String> {
-    let mut problems = Vec::new();
+/// `(file name, key, reason)` for every line of every ratchet directory file under `root`.
+fn ratchet_dir_lines(root: &Path) -> Vec<(String, String, String)> {
+    let mut lines = Vec::new();
     for file in ratchet_dir_files(root) {
         let name = file
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         let text = fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file:?}: {e}"));
         for (key, reason) in parse_ratchet(&text) {
-            let named: Vec<_> = REPLACING_TEST.captures_iter(&reason).collect();
-            if named.is_empty() {
+            lines.push((name.clone(), key, reason));
+        }
+    }
+    lines
+}
+
+/// Each line of a ratchet directory file under `root` whose reason names no replacing Rust test,
+/// or names one that does not resolve. A port deletes a cited test only with its replacement
+/// named.
+fn ratchet_dir_problems(root: &Path) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (name, key, reason) in ratchet_dir_lines(root) {
+        let named: Vec<_> = REPLACING_TEST.captures_iter(&reason).collect();
+        if named.is_empty() {
+            problems.push(format!(
+                "{name}: `{key}` names no replacing test (suite/<module>.rs::<fn>)"
+            ));
+        }
+        for caps in named {
+            // Resolved as a Rust ledger citation is, without the repository walk the
+            // other citation forms need.
+            if !rust_citation_resolves(root, &caps["path"], Some(&caps["name"])) {
                 problems.push(format!(
-                    "{name}: `{key}` names no replacing test (suite/<module>.rs::<fn>)"
+                    "{name}: `{key}` names `{}`, which does not exist",
+                    &caps[0]
                 ));
-            }
-            for caps in named {
-                // Resolved as a Rust ledger citation is, without the repository walk the
-                // other citation forms need.
-                if !rust_citation_resolves(root, &caps["path"], Some(&caps["name"])) {
-                    problems.push(format!(
-                        "{name}: `{key}` names `{}`, which does not exist",
-                        &caps[0]
-                    ));
-                }
             }
         }
     }
@@ -520,36 +528,26 @@ fn ratchet_dir_problems(root: &Path) -> Vec<String> {
 /// this phrase, so a sentence that quotes the phrase does not count.
 const NOTE_OPENING: &str = "**Enforcement moved";
 
-/// The replacing tests a text names, each as `suite/<module>.rs::<fn>` without any
-/// `platform/tests/` prefix, so a ratchet reason and a note compare on one spelling.
-fn replacing_tests(text: &str) -> BTreeSet<String> {
+/// The replacing tests a text names, as `(suite/<module>.rs, fn)` without any `platform/tests/`
+/// prefix, so a ratchet reason and a note compare on one spelling.
+fn replacing_tests(text: &str) -> BTreeSet<(String, String)> {
     REPLACING_TEST
         .captures_iter(text)
         .map(|caps| {
             let path = caps["path"].trim_start_matches("platform/tests/");
-            format!("{path}::{}", &caps["name"])
+            (path.to_owned(), caps["name"].to_owned())
         })
         .collect()
 }
 
-/// Whether a replacing test, as `suite/<module>.rs::<fn>`, resolves in the repository.
-fn replacing_test_resolves(root: &Path, test: &str) -> bool {
-    test.split_once("::")
-        .is_some_and(|(path, name)| rust_citation_resolves(root, path, Some(name)))
-}
-
-/// The "Enforcement moved" note problems in `ledger` (docs/MISTAKES.md), one string each: first
-/// the old file's lines, then each ratchet directory file's, by name.
-///
-/// A ratchet line covers a citation of a deleted test, so its entry must say where the rule is
-/// enforced now. A directory line needs a note on its entry, and the entry's notes together must
-/// name every replacing test the line's reason names. An old-file line needs one only when its
-/// reason names a `suite/<module>.rs` (a port; the 2.22 rename names none), and then the entry's
-/// notes must name at least one replacing test that resolves. `Index` lines are skipped: `Index`
-/// is a table row, and the numbered entry the row indexes carries the note.
+/// The "Enforcement moved" note problems in `ledger` (docs/MISTAKES.md), one string each: the
+/// old file's lines, then each ratchet directory file's. A directory line's entry needs notes
+/// naming every replacing test its reason names; an old-file line's entry (renames in
+/// `RENAMED_NOT_DELETED` excepted) needs a note naming one that resolves. `Index` lines are
+/// skipped: the numbered entry a table row indexes carries the note.
 fn enforcement_note_problems(root: &Path, ledger: &str) -> Vec<String> {
     // Per entry, the replacing tests its notes name. An entry with a note is a key of the map.
-    let mut notes: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut notes: BTreeMap<String, BTreeSet<(String, String)>> = BTreeMap::new();
     for (entry, paragraph) in claims(ledger) {
         if paragraph.trim_start().starts_with(NOTE_OPENING) {
             notes
@@ -560,16 +558,23 @@ fn enforcement_note_problems(root: &Path, ledger: &str) -> Vec<String> {
     }
 
     let mut problems = Vec::new();
-    let old_name = RATCHET.rsplit('/').next().unwrap_or(RATCHET);
+    let entry_of = |key: &str| {
+        key.split_once(' ')
+            .map_or(key, |(entry, _)| entry)
+            .to_owned()
+    };
+    let old_name = RATCHET.rsplit_once('/').map_or(RATCHET, |(_, name)| name);
     let old = fs::read_to_string(root.join(RATCHET)).unwrap_or_default();
-    for (key, reason) in parse_ratchet(&old) {
-        let entry = key.split(' ').next().unwrap_or_default();
-        if entry == "Index" || !SUITE_MODULE.is_match(&reason) {
+    for (key, _) in parse_ratchet(&old) {
+        let entry = entry_of(&key);
+        if entry == "Index" || RENAMED_NOT_DELETED.contains(&key.as_str()) {
             continue;
         }
-        let resolves = notes
-            .get(entry)
-            .is_some_and(|named| named.iter().any(|test| replacing_test_resolves(root, test)));
+        let resolves = notes.get(&entry).is_some_and(|named| {
+            named
+                .iter()
+                .any(|(path, name)| rust_citation_resolves(root, path, Some(name)))
+        });
         if !resolves {
             problems.push(format!(
                 "{old_name}: `{key}` has no \"Enforcement moved\" note naming an existing suite/<module>.rs::<fn>"
@@ -577,25 +582,19 @@ fn enforcement_note_problems(root: &Path, ledger: &str) -> Vec<String> {
         }
     }
 
-    for file in ratchet_dir_files(root) {
-        let name = file
-            .file_name()
-            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-        let text = fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file:?}: {e}"));
-        for (key, reason) in parse_ratchet(&text) {
-            let entry = key.split(' ').next().unwrap_or_default();
-            if entry == "Index" {
-                continue;
-            }
-            let Some(have) = notes.get(entry) else {
-                problems.push(format!("{name}: `{key}` has no \"Enforcement moved\" note"));
-                continue;
-            };
-            for test in replacing_tests(&reason).difference(have) {
-                problems.push(format!(
-                    "{name}: `{key}` names `platform/tests/{test}`, which no \"Enforcement moved\" note of its entry names"
-                ));
-            }
+    for (name, key, reason) in ratchet_dir_lines(root) {
+        let entry = entry_of(&key);
+        if entry == "Index" {
+            continue;
+        }
+        let Some(have) = notes.get(&entry) else {
+            problems.push(format!("{name}: `{key}` has no \"Enforcement moved\" note"));
+            continue;
+        };
+        for (path, test) in replacing_tests(&reason).difference(have) {
+            problems.push(format!(
+                "{name}: `{key}` names `platform/tests/{path}::{test}`, which no \"Enforcement moved\" note of its entry names"
+            ));
         }
     }
     problems
@@ -745,7 +744,10 @@ fn a_ratchet_line_without_its_enforcement_moved_note_is_refused() {
         root.path().join(RATCHET),
         "1.5 test_old_gone # ported to platform/tests/suite/ported.rs (plan 24), BATS file deleted\n\
          1.6 test_old_stale # ported to platform/tests/suite/ported.rs (plan 24), BATS file deleted\n\
-         1.7 test_old_ok # ported to platform/tests/suite/ported.rs (plan 24), BATS file deleted\n",
+         1.7 test_old_ok # ported to platform/tests/suite/ported.rs (plan 24), BATS file deleted\n\
+         1.8 test_old_no_module # BATS file deleted, its replacement not named\n\
+         2.22 test_the_clean_environment_rule_checks_the_endpoint # renamed\n\
+         Index test_old_gone # the table row; 1.5 carries the note\n",
     )
     .expect("old ratchet file");
     let dir = root.path().join(RATCHET_DIR);
@@ -779,6 +781,7 @@ fn a_ratchet_line_without_its_enforcement_moved_note_is_refused() {
         strings(&[
             "ledger_citation_ratchet.txt: `1.5 test_old_gone` has no \"Enforcement moved\" note naming an existing suite/<module>.rs::<fn>",
             "ledger_citation_ratchet.txt: `1.6 test_old_stale` has no \"Enforcement moved\" note naming an existing suite/<module>.rs::<fn>",
+            "ledger_citation_ratchet.txt: `1.8 test_old_no_module` has no \"Enforcement moved\" note naming an existing suite/<module>.rs::<fn>",
             "port.txt: `1.1 test_a` names `platform/tests/suite/ported.rs::other_fn`, which no \"Enforcement moved\" note of its entry names",
             "port.txt: `1.2 test_b` has no \"Enforcement moved\" note",
         ])
