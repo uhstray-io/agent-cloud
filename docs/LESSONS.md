@@ -93,3 +93,9 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1218 (AC-1025).
 - **DERIVED:** An internal-CA leaf for a listener that another repository starts must exist, and stay current, before that listener serves TLS, because its launcher refuses to start TLS without the files (declared by that repository, not checked by this one). The renewal's "not in use, left alone" rule for a leaf nothing uses yet (`platform/playbooks/renew-internal-certs.yml:70-72`) would let such a leaf expire before the other side switches. A plan for such a leaf gives it an inventory switch meaning "the listener serves TLS now", and renews it with its host while the switch is off. The switch is declared, not read from the node, so the plan says that while it is off nothing compares the served leaf with the issued one, and how the build will close that gap (`production-internal-ca` design, decision 2 of 2026-11-21).
 - **APPLIES TO:** planning any leaf in `internal_leaves` whose user is not deployed by this repository (the DGX Spark nodes today), and any change to the renewal's proof classes.
+
+### L-016 · 2026-11-26 · tests
+
+- **ACCEPTED:** #1219 (AC-1029).
+- **DERIVED:** An "Enforcement moved" note names only the replacing Rust tests in code spans, as `platform/tests/suite/<module>.rs::<fn>`, and refers to the deleted file in plain words ("the BATS file this entry cites"). The ledger citation check reads every code span shaped like a test path or a `test_` name as a citation (`platform/tests/suite/ledger.rs`, parse rule in its module comment) and compares the unresolved ones against the ratchet as a multiset, so a deleted file's name put in a code span again is one more unresolved citation, and the check fails.
+- **APPLIES TO:** any edit to `docs/MISTAKES.md` that mentions a deleted or renamed test, notes written by a port pull request included.
