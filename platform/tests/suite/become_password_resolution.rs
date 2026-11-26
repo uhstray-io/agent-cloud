@@ -1046,16 +1046,16 @@ fn guard_then_resolver(name: &str, from: &str, to: &str) -> String {
 }
 
 /// harden-ssh.yml's pinned opening block as a case play, with the guard task (from [`guard_at`] at
-/// indent 8) and the password value given. Built unchanged it is an `ok` row of the test, so a
+/// indent 8) and the template value given. Built unchanged it is an `ok` row of the test, so a
 /// broken template cannot refuse the rows built from it for the wrong reason.
-fn pinned_play(name: &str, guard: &str, password: &str) -> String {
+fn pinned_play(name: &str, guard: &str, value: &str) -> String {
     format!(
         r#"
 - name: {name}
   tasks:
     - block:
 {guard}        - ansible.builtin.set_fact:
-            ansible_become_password: "{password}"
+            ansible_become_password: "{value}"
           become: false
           no_log: true
       rescue:

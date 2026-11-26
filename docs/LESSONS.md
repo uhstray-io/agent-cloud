@@ -87,3 +87,33 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1226 (AC-1034).
 - **DERIVED:** A review pass costs about the same whatever the size of the diff, because each pass agent starts with about 130k tokens of context before it reads the change. A two-line docs pull request took 1,524,367 reported tokens for two `/simplify` rounds, one `/security-review` and one review (coordinator's sum; `docs/MISTAKES.md` 5.25). Estimate pass cost as rounds × agents × that starting context, with the round counts of `AGENTS.md` Branch Workflow step 4.
 - **APPLIES TO:** briefs and batch plans that estimate or cap review-pass tokens; any rule that sets how many `/simplify` or `/security-review` rounds a pull request runs.
+
+### L-015 · 2026-11-26 · platform
+
+- **ACCEPTED:** #1218 (AC-1025).
+- **DERIVED:** An internal-CA leaf for a listener that another repository starts must exist, and stay current, before that listener serves TLS, because its launcher refuses to start TLS without the files (declared by that repository, not checked by this one). The renewal's "not in use, left alone" rule for a leaf nothing uses yet (`platform/playbooks/renew-internal-certs.yml:70-72`) would let such a leaf expire before the other side switches. A plan for such a leaf gives it an inventory switch meaning "the listener serves TLS now", and renews it with its host while the switch is off. The switch is declared, not read from the node, so the plan says that while it is off nothing compares the served leaf with the issued one, and how the build will close that gap (`production-internal-ca` design, decision 2 of 2026-11-21).
+- **APPLIES TO:** planning any leaf in `internal_leaves` whose user is not deployed by this repository (the DGX Spark nodes today), and any change to the renewal's proof classes.
+
+### L-016 · 2026-11-26 · tests
+
+- **ACCEPTED:** #1219 (AC-1029).
+- **DERIVED:** An "Enforcement moved" note names only the replacing Rust tests in code spans, as `platform/tests/suite/<module>.rs::<fn>`, and refers to the deleted file in plain words ("the BATS file this entry cites"). The ledger citation check reads every code span shaped like a test path or a `test_` name as a citation (`platform/tests/suite/ledger.rs`, parse rule in its module comment) and compares the unresolved ones against the ratchet as a multiset, so a deleted file's name put in a code span again is one more unresolved citation, and the check fails.
+- **APPLIES TO:** any edit to `docs/MISTAKES.md` that mentions a deleted or renamed test, notes written by a port pull request included.
+
+### L-017 · 2026-11-26 · playbooks
+
+- **ACCEPTED:** #1221 (AC-924).
+- **DERIVED:** A guard that reads a fact set by another play of the same playbook (`hostvars[...]._fact`) asserts the fact's full shape as its first task, with no `when` the fact's own value can skip. A `--limit` that leaves the setting play with no host, or a `--start-at-task` past it, skips that play without an error, so the fact arrives empty; a guard gated on `_fact | length > 0` then skips itself, and the writes in the plays that still run go ahead unchecked.
+- **APPLIES TO:** multi-play playbooks under `platform/playbooks/` whose checks read a fact another play sets, before any write.
+
+### L-018 · 2026-11-26 · playbooks
+
+- **ACCEPTED:** #1217 (AC-930).
+- **DERIVED:** A probe that must prove a TLS listener refuses a client without a certificate reads from the socket right after the handshake, before it writes anything, and counts only the alert itself (`certificate_required` under TLS 1.3, `handshake_failure` in a TLS 1.2 handshake) as the refusal. A request written after the listener has sent its alert and closed meets a closed socket, and the client then sees a reset, an EOF or a broken pipe, which one depending on the platform and on timing (a broken pipe on macOS, a reset or EOF on Linux, for the same Python `ssl` server). None of these says why the connection closed, and a listener that does not ask for a certificate can close the same way, so neither "count it as a refusal" nor "count it as an error" is right.
+- **APPLIES TO:** any playbook or test under `platform/playbooks/` or `platform/tests/` that classifies a TLS failure as a client-certificate refusal.
+
+### L-019 · 2026-11-26 · ci
+
+- **ACCEPTED:** #1233 (AC-1095).
+- **DERIVED:** Prove a fix for a CodeQL finding against CodeQL before the `dev` → `main` promotion. CodeQL runs here as GitHub's default setup, which analyses pull requests into `main` and not into `dev`, so a feature pull request gets no analysis of its own, and a finding first appears on the promotion as a review thread that must be resolved before the merge. A green CodeQL check on a pull request into `dev` is no proof: it can be the result of another pull request's analysis of the same head commit. To prove the fix, open a draft pull request into `main` from the branch (a pull request into `main` that is not a promotion needs the operator's OK), read its CodeQL check and the open alerts for `refs/pull/<n>/head` once every `Analyze` job has finished (the check can conclude early as neutral, "configurations not found", while an analysis still runs), then close it unmerged.
+- **APPLIES TO:** a fix for a CodeQL finding, and a change that adds credential-like literals or names (a parameter or constant named like a password, secret or token), test fixtures included.
