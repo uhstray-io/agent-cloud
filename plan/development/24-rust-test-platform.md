@@ -156,10 +156,10 @@ other edit.
 | A deleted test that the ledger cites | The Python citation check (`test_every_cited_test_exists`) fails, naming each citing entry, the Index row included; it passed again with the port's ratchet file, and so did the Rust `ledger` module in `lane.sh push` | Adds `ledger_citation_ratchet.d/<group>.txt`, one line per occurrence, and the "Enforcement moved" note on each citing entry (D10) |
 | A deleted Python test still in `test_durations.json` | No failure: the shard split weighs only the files on disk (`shards.py`, `file_weights`); a stale entry only feeds the median used for unrecorded files | Nothing. The file is rebuilt with `scripts/test-durations.py` when the shards drift (plan 21) |
 | A Markdown link to a test file | `test_doc_references.py` fails on the link | The only one, in `O11Y-WORKFLOW-AGE-DIAGNOSTICS.md`, was made plain text in the same change, so no port has to touch it |
-| A test path named in prose or a code span (`AGENTS.md`, plans) | No check reads it; the text goes stale | Updates each mention of a test it deletes to name the replacing test, in the same pull request. Mentions left by the v0.17.0 ports are AC-1070 |
+| A test path named in prose or a code span (`AGENTS.md`, plans) | No check reads it; the text goes stale | Nothing in the port: `AGENTS.md` and the plans are shared files. Such mentions are repointed by a separate sweep; those left by the v0.17.0 ports are AC-1070 |
 | An allowlist beside its test (`known_*.txt`, `check_mode_allowlist.txt`, `local_mode_reads_allowlist.txt`) | Each names only its own test | Moves with that test's group, never shared |
 
-Shared files a port still touches: none. The `bats` workflow job and the pytest configuration go in
+Shared files a port still touches: `docs/MISTAKES.md`, only to append the "Enforcement moved" note on each entry that cites a test it deletes (D10). The `bats` workflow job and the pytest configuration go in
 Phases 4 and 10, which are operator merges.
 
 ### Lanes
