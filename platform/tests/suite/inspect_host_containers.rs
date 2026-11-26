@@ -82,13 +82,9 @@ fn run_probe(engine: &str, fakes: &[(&str, &str)]) -> (TempDir, String) {
         .args(["-c", script.as_str(), "inspect", engine, INSPECT_FMT])
         .args(store);
     let out = process::run_for(&mut cmd, Duration::from_secs(30));
-    let stdout = stdout_of(&out);
+    let stdout = String::from_utf8(out.stdout).expect("utf-8 stdout");
     assert!(out.status.success(), "{stdout}");
     (home, stdout)
-}
-
-fn stdout_of(out: &std::process::Output) -> String {
-    String::from_utf8(out.stdout.clone()).expect("utf-8 stdout")
 }
 
 /// A fake engine's log under `home`, which the fake writes to as `$HOME/<name>`.
