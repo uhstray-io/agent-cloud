@@ -80,39 +80,31 @@ const GOLDEN: &[(&str, &str, &str)] = &[
     ("GET", "/api2/json/nodes/alphacentauri/qemu/9000/config", ""),
 ];
 
-/// A fake `genisoimage` for the Ubuntu seed builder, which names each input file: writes each
-/// file operand, after a `==> <name>` line, to the path after `-output`.
-const FAKE_GENISOIMAGE_FILES: &str = r#"out=""; files=()
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -output) out="$2"; shift 2 ;;
-    -volid) shift 2 ;;
-    -*) shift ;;
-    *) files+=("$1"); shift ;;
-  esac
+/// A fake `genisoimage` in POSIX sh: writes each operand to the path after `-output`, a file
+/// as itself and a directory as each file it holds, each file after a `==> <name>` line, so the
+/// uploaded seed is plain text.
+const FAKE_GENISOIMAGE: &str = r#"out=""; prev=""
+for arg in "$@"; do
+  [ "$prev" = "-output" ] && out="$arg"
+  prev="$arg"
 done
 : > "$out"
-for f in "${files[@]}"; do
-  printf '==> %s\n' "$(basename "$f")" >> "$out"
-  cat "$f" >> "$out"
-done
-"#;
-
-/// A fake `genisoimage`: writes every file of its source directory, each after a `==> <name>`
-/// line, to the path after `-output`, so the uploaded seed is plain text.
-const FAKE_GENISOIMAGE: &str = r#"out=""; src=""
+emit() {
+  printf '==> %s\n' "$(basename "$1")" >> "$out"
+  cat "$1" >> "$out"
+}
 while [ $# -gt 0 ]; do
   case "$1" in
-    -output) out="$2"; shift 2 ;;
-    -volid) shift 2 ;;
+    -output|-volid) shift 2 ;;
     -*) shift ;;
-    *) src="$1"; shift ;;
+    *)
+      if [ -d "$1" ]; then
+        for f in "$1"/*; do emit "$f"; done
+      else
+        emit "$1"
+      fi
+      shift ;;
   esac
-done
-: > "$out"
-for f in "$src"/*; do
-  printf '==> %s\n' "$(basename "$f")" >> "$out"
-  cat "$f" >> "$out"
 done
 "#;
 
@@ -331,7 +323,7 @@ fn assert_ubuntu_golden(template_os: Option<&str>) {
         )
         .unwrap();
     }
-    let path = process::fake_bin(dir.path(), &[("genisoimage", FAKE_GENISOIMAGE_FILES)]);
+    let path = process::fake_bin(dir.path(), &[("genisoimage", FAKE_GENISOIMAGE)]);
     let server = Server::start();
     mount_build(&server, "9000", 200);
     let mut extra = vec![
@@ -839,19 +831,20 @@ fn first_logon_opens_ssh_on_every_profile_and_drops_host_keys_before_sysprep() {
     let logon = text::read("platform/hypervisor/proxmox/windows/first-logon.ps1");
     let lines: Vec<&str> = logon.lines().collect();
     let mut problems = vec![];
-    let rule_lines: Vec<&&str> = lines
+    let rule = "-Name 'OpenSSH-Server-In-TCP'";
+    let create = lines.iter().position(|l| {
+        l.trim_start().starts_with("New-NetFirewallRule")
+            && l.contains(rule)
+            && l.contains("-Profile Any")
+    });
+    let drop = lines
         .iter()
-        .filter(|l| l.contains("-Name 'OpenSSH-Server-In-TCP'") && l.contains("NetFirewallRule"))
-        .collect();
-    for verb in ["New-NetFirewallRule", "Set-NetFirewallRule"] {
-        if !rule_lines
-            .iter()
-            .any(|l| l.contains(verb) && l.contains("-Profile Any"))
-        {
-            problems.push(format!(
-                "no {verb} of OpenSSH-Server-In-TCP with -Profile Any"
-            ));
-        }
+        .position(|l| l.trim_start().starts_with("Remove-NetFirewallRule") && l.contains(rule));
+    match (drop, create) {
+        (Some(d), Some(c)) if d < c => {}
+        _ => problems.push(format!(
+            "no Remove-NetFirewallRule (line {drop:?}) before a New-NetFirewallRule of OpenSSH-Server-In-TCP with -Profile Any (line {create:?})"
+        )),
     }
     let remove = lines
         .iter()

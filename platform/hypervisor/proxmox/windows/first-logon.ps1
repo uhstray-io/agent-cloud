@@ -44,13 +44,11 @@ if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) {
 }
 Set-Service sshd -StartupType Automatic
 Start-Service sshd
-# The template opens port 22 on every profile with the firewall on; each clone's source range is
-# applied by apply-firewall.yml's Windows branch (OpenSpec task 2.7).
-if (-not (Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue)) {
-    New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -Profile Any | Out-Null
-} else {
-    Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -Enabled True -Profile Any
-}
+# The template opens port 22 on every profile with the firewall on. Each clone's source range is
+# to come from apply-firewall.yml's Windows branch (OpenSpec task 2.7), not built yet; until then
+# the management key is the only login.
+Remove-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
+New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -Profile Any | Out-Null
 New-Item -Path HKLM:\SOFTWARE\OpenSSH -Force | Out-Null
 New-ItemProperty -Path HKLM:\SOFTWARE\OpenSSH -Name DefaultShell -Value "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -PropertyType String -Force | Out-Null
 
