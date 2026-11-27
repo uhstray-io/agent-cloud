@@ -45,8 +45,7 @@ if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) {
 Set-Service sshd -StartupType Automatic
 Start-Service sshd
 # The template opens port 22 on every profile with the firewall on. Each clone's source range is
-# to come from apply-firewall.yml's Windows branch (OpenSpec task 2.7), not built yet; until then
-# the management key is the only login.
+# to come from apply-firewall.yml's Windows branch (OpenSpec task 2.7), which is not built yet.
 Remove-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
 New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -Profile Any | Out-Null
 New-Item -Path HKLM:\SOFTWARE\OpenSSH -Force | Out-Null
