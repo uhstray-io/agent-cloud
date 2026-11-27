@@ -858,8 +858,9 @@ batch report ("row green", a return, a hold).
 skipping" on #535's head `4bb91eee`, read from `gh pr checks`. The check run on that head has conclusion
 `neutral` and the title "Review rate limited"
 (`gh api repos/uhstray-io/agent-cloud/commits/4bb91eeecdede6680abcf3c0052ad321a2c2f535/check-runs`), and
-CodeRabbit's last CHANGES_REQUESTED review on the pull request was on `6cc03fc7`, the head before
-(`gh api --paginate repos/uhstray-io/agent-cloud/pulls/535/reviews`). The rule did not fire: occurrences 2 and 3 say to read
+CodeRabbit's last CHANGES_REQUESTED review on the pull request at that time was on `6cc03fc7`, the head
+before (`gh api --paginate repos/uhstray-io/agent-cloud/pulls/535/reviews`; its later review of `55e2be5a`,
+submitted 2026-11-26T14:48Z, was dismissed). The rule did not fire: occurrences 2 and 3 say to read
 the check run's title and list the reviews, again after every push, but that rule lives in prose a session has to
 recall, and the proposed `--reviews` mode, which would have been the one source to quote, is still unbuilt.
 
@@ -1885,7 +1886,7 @@ The alert outcome was also unchecked when I offered it. Traced afterwards, it ho
 
 **Enforced by.** Convention.
 
-**Occurrence 2 — 2026-11-26.** The brief 01 owner of the mac-win-runners batch listed #535's reviews with `gh api repos/uhstray-io/agent-cloud/pulls/535/reviews`, which returns only the first page of 30, and told the coordinator that CodeRabbit's undismissed CHANGES_REQUESTED reviews were on `ec34e46d` and `298d3e60`. With `--paginate` there are four: those two plus `346b9b37` and `6cc03fc7` (2026-10-29). In the first simplify round of the final refresh, the owner then "corrected" this ledger's 1.10 occurrence 6, which rightly named `6cc03fc7` as the last one, to `298d3e60`, citing the same unpaginated read. A reviewer in the second round found it, and the clause was put back. The coordinator's next instruction to the owner repeated the two-review list. Why the rule did not fire: the rule names a grep filter and a line limit, and an API page limit truncates a read the same way without showing it. The rule covers it: a read that can be cut short (a page, a `head`, a filter) is not evidence that something is absent, and a list read from an API is read with every page.
+**Occurrence 2 — 2026-11-26.** The brief 01 owner of the mac-win-runners batch listed #535's reviews with `gh api repos/uhstray-io/agent-cloud/pulls/535/reviews`, which returns only the first page of 30, and told the coordinator that CodeRabbit's undismissed CHANGES_REQUESTED reviews were on `ec34e46d` and `298d3e60`. With `--paginate` there are four: those two plus `346b9b37` and `6cc03fc7` (2026-10-29). The owner then "corrected" this ledger's 1.10 occurrence 6, which rightly named `6cc03fc7` as the last one at the time it describes, to `298d3e60`, citing the same unpaginated read. A review pass found it, and the clause was put back. The coordinator's next instruction to the owner repeated the two-review list. Why the rule did not fire: the entry names a grep filter and a line limit as the ways a read was cut short, and an API page limit cuts a read the same way without showing it. The claim was that no other changes request existed, which the rule says needs an exhaustive search, and a list read from an API is exhaustive only when every page is read.
 
 ### 1.36 Briefed a fix's guarantee from a comment's citation, without reading the cited code (widens 1.29)
 
