@@ -1,0 +1,390 @@
+---
+# fetch-proxmox-isos.yml — put every ISO the inventory declares onto Proxmox ISO storage, each with its sha256
+# checked by Proxmox itself.
+#
+# Why: the Windows template build (task 4.1 of add-windows-github-runner) boots installer ISOs that are not on
+# the cluster yet. Getting them there by hand leaves no record of which bytes were fetched, so this playbook
+# makes the fetch code: the inventory names each ISO with its URL and its digest, and Proxmox downloads it with
+# `download-url`, which compares the file's sha256 with the declared one and keeps the file only when they match.
+#
+# Input: the inventory variable proxmox_isos (site-config; never an extra var). A non-empty list of entries, each
+# with EXACTLY these six keys:
+#   - name:     a label for logs and refusals, 1-63 characters: letters, digits, space, '.', '_', '-'
+#   - node:     the Proxmox node the storage is reached through (download-url is per node)
+#   - storage:  the ISO storage's name (an ISO-capable storage; the volume id is <storage>:iso/<filename>)
+#   - filename: the file's name on that storage: letters, digits, '_', '.', '-', ending in a lowercase .iso
+#   - url:      an https:// URL the file is downloaded from
+#   - sha256:   the file's 64-character lowercase hex sha256
+# A placeholder entry, with every value a placeholder:
+#   proxmox_isos:
+#     - name: Example installer
+#       node: <node>
+#       storage: <iso-storage>
+#       filename: example-installer.iso
+#       url: https://<publisher-host>/example-installer.iso
+#       sha256: <64 lowercase hex characters>
+# The digest is the operator's own measurement of the file when the publisher gives none: a download from a URL
+# the operator has checked, hashed once. Any other entry, or a duplicate name, or a duplicate storage and filename
+# pair, refuses the run before any request is sent.
+#
+# Privileges: the token needs Datastore.AllocateTemplate on /storage/<storage> for each storage in the list, and
+# either Sys.AccessNetwork on /nodes/<node> for each node or both Sys.Audit and Sys.Modify on /. The run reads the
+# token's own privileges (GET /access/permissions) and refuses before any write when one is missing, naming each
+# with its path. A privilege is held when its key is present, whatever its value (L-007).
+#
+# Existing files: an ISO already on the storage is not deleted or overwritten by this playbook (there is no
+# DELETE in it). Every declared ISO is sent to download-url, so Proxmox hashes a present file against the declared
+# sha256. A match ends the task OK with no download. A mismatch ends the task with an error and keeps the file. That
+# behaviour is read from pve-common's download_file_from_url, and it is UNPROVEN on this cluster until the first real
+# run shows it: check the first run's task output before trusting a re-verify.
+#
+# Storage: the run prints each declared storage's free space before any write. The API gives no size for a remote
+# file, so the run cannot tell whether a download fits; it does not check the restore target's headroom either.
+# Free space is reported, never gated.
+#
+# Checks before a write: the list's shape, every node online, every storage active and accepting ISO content, and
+# the privileges above. After the downloads the run re-reads each storage and asserts every declared volid is there.
+#
+# Check mode (a dry run) sends only GET requests. It prints the same report with "would fetch" for an absent ISO and
+# "would re-verify" for a present one, and writes nothing.
+#
+# The first write waits, one ISO at a time, up to an hour per ISO (720 polls of 5 s): a multi-GB download or a
+# re-hash of a present file can take that long. The download request and its task status are no_log, because the
+# request carries the token; the report and every refusal are printed.
+#
+# TLS: the Proxmox API requests verify the certificate only when proxmox_validate_certs is true. The default is
+# false until plan 19 Phase 2 pins the Proxmox CA (the same switch the backup-storage playbooks use). The
+# download-url call asks Proxmox to verify the ISO's own URL (verify-certificates), a separate check.
+#
+# Not checked: whether the restore target storage has the headroom for these ISOs. This playbook takes no
+# restore-target guard and no isolated environment, because it writes only to ISO storage and names no guest.
+#
+# Stub runs (platform/tests/suite/fetch_proxmox_isos_playbook.rs) prove the Jinja and the requests this play makes,
+# not privilege: a fake API grants whatever the test sets, and the play has no `become` (L-021).
+
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# The run downloads from the URLs the inventory declares and drives the Proxmox token, so it runs only at the exact
+# commit a review approved (expected_repository_sha).
+- name: Require the exact reviewed checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/fetch-proxmox-isos.yml
+      - platform/playbooks/tasks/fetch-proxmox-iso.yml
+      - platform/semaphore/templates.yml
+
+- name: Fetch declared ISOs onto Proxmox storage
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+      follow_redirects: none
+  vars:
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _iso_keys: [name, node, storage, filename, url, sha256]
+    # Every pattern ends in \Z, not $: Python's $ also matches before a final newline, so "x.iso\n" would pass
+    # a $-anchored pattern and Proxmox would rewrite that name into a different volume id.
+    _re_name: '^[A-Za-z0-9][A-Za-z0-9 ._-]{0,62}\Z'
+    _re_node: '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z'
+    _re_storage: '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z'
+    _re_filename: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,250}\.iso\Z'
+    _re_url: '^https://[^\s]+\Z'
+    _re_sha256: '^[0-9a-f]{64}\Z'
+  tasks:
+    - name: Require the declared ISO list
+      ansible.builtin.assert:
+        that: >-
+          (proxmox_isos | default(none)) is sequence
+          and (proxmox_isos | default(none)) is not string
+          and (proxmox_isos | default(none)) is not mapping
+          and (proxmox_isos | default([])) | length > 0
+        fail_msg: "proxmox_isos must be a non-empty list of ISO entries (name, node, storage, filename, url, sha256)."
+
+    - name: Refuse the ISO list as an extra var
+      ansible.builtin.assert:
+        that: "'proxmox_isos' not in ('' | extra_var_names)"
+        fail_msg: "proxmox_isos is declared in inventory only (site-config), never as an extra var."
+
+    # Every malformed entry is named by its index, before any request is sent. Each rule is one `if` line, so a
+    # reader can see what each entry must satisfy. An entry that is not a mapping with exactly the six keys gets
+    # no field check, because its fields do not exist.
+    - name: Collect every malformed ISO entry before any request
+      ansible.builtin.set_fact:
+        _iso_problems: >-
+          {%- set ns = namespace(out=[], names=[], pairs=[]) -%}
+          {%- for e in proxmox_isos -%}
+          {%- set at = 'entry ' ~ loop.index0 -%}
+          {%- set shaped = (e is mapping and (e.keys() | list | sort) == (_iso_keys | sort)) -%}
+          {%- if not shaped -%}
+          {%- set ns.out = ns.out + [at ~ ' must have exactly the keys ' ~ (_iso_keys | join(', '))] -%}
+          {%- endif -%}
+          {%- if shaped and not ((e.name is string) and ((e.name) is match(_re_name))) -%}
+          {%- set ns.out = ns.out + [at ~ ' name must be 1-63 letters, digits, spaces, dots, underscores or hyphens, starting with a letter or digit'] -%}
+          {%- endif -%}
+          {%- if shaped and not ((e.node is string) and ((e.node) is match(_re_node))) -%}
+          {%- set ns.out = ns.out + [at ~ ' node must be 1-63 letters, digits, dots, underscores or hyphens, starting with a letter or digit'] -%}
+          {%- endif -%}
+          {%- if shaped and not ((e.storage is string) and ((e.storage) is match(_re_storage))) -%}
+          {%- set ns.out = ns.out + [at ~ ' storage must be 1-63 letters, digits, dots, underscores or hyphens, starting with a letter or digit'] -%}
+          {%- endif -%}
+          {%- if shaped and not ((e.filename is string) and ((e.filename) is match(_re_filename))) -%}
+          {%- set ns.out = ns.out + [at ~ ' filename must be letters, digits, underscores, dots or hyphens ending in a lowercase .iso'] -%}
+          {%- endif -%}
+          {%- if shaped and not ((e.url is string) and ((e.url) is match(_re_url))) -%}
+          {%- set ns.out = ns.out + [at ~ ' url must be an https:// URL with no whitespace'] -%}
+          {%- endif -%}
+          {%- if shaped and not ((e.sha256 is string) and ((e.sha256) is match(_re_sha256))) -%}
+          {%- set ns.out = ns.out + [at ~ ' sha256 must be 64 lowercase hexadecimal characters'] -%}
+          {%- endif -%}
+          {%- if shaped and ((e.name) in ns.names) -%}
+          {%- set ns.out = ns.out + [at ~ ' repeats a name already declared'] -%}
+          {%- endif -%}
+          {%- if shaped and ((e.storage ~ '/' ~ e.filename) in ns.pairs) -%}
+          {%- set ns.out = ns.out + [at ~ ' repeats a storage and filename pair already declared'] -%}
+          {%- endif -%}
+          {%- if shaped -%}
+          {%- set ns.names = ns.names + [e.name] -%}
+          {%- set ns.pairs = ns.pairs + [e.storage ~ '/' ~ e.filename] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.out | join('; ') }}
+
+    - name: Require every declared ISO entry to be well formed
+      ansible.builtin.assert:
+        that: _iso_problems | length == 0
+        fail_msg: "Refused before any request: {{ _iso_problems }}."
+
+    - name: Refuse public cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Read Proxmox API credentials from OpenBao
+      ansible.builtin.set_fact:
+        _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/proxmox', url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+      no_log: true
+
+    - name: Derive Proxmox API connection values
+      ansible.builtin.set_fact:
+        _pve_host: "{{ _pve_data.url | default('') }}"
+        _pve_token_id: "{{ _pve_data.token_id | default('') }}"
+        _pve_secret: "{{ _pve_data.api_token }}"
+      no_log: true
+
+    - name: Require Proxmox API over HTTPS
+      ansible.builtin.assert:
+        that: _pve_host is match('^https://')
+        fail_msg: "The Proxmox API URL from OpenBao must use HTTPS."
+
+    - name: Require the stored Proxmox token id
+      ansible.builtin.assert:
+        that: _pve_token_id | length > 0
+        fail_msg: >-
+          secret/services/proxmox has no token_id. Store the Proxmox API token id
+          (<user>@<realm>!<token-name>) beside api_token; there is no built-in default.
+
+    - name: Read the Proxmox version
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/version"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _version_read
+      no_log: true
+      check_mode: false
+
+    - name: Report the Proxmox version
+      ansible.builtin.debug:
+        msg: "Proxmox VE {{ _version_read.json.data.version }} (release {{ _version_read.json.data.release }}, repoid {{ _version_read.json.data.repoid }})"
+
+    - name: Read the cluster's nodes
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _nodes_read
+      no_log: true
+      check_mode: false
+
+    - name: Select the online nodes
+      ansible.builtin.set_fact:
+        _online_nodes: "{{ _nodes_read.json.data | selectattr('status', 'defined') | selectattr('status', 'equalto', 'online') | selectattr('node', 'defined') | map(attribute='node') | list }}"
+
+    - name: Require every node that holds a declared ISO to be online
+      ansible.builtin.assert:
+        that: "(proxmox_isos | map(attribute='node') | unique | list) | difference(_online_nodes) | length == 0"
+        fail_msg: "Refused: {{ (proxmox_isos | map(attribute='node') | unique | list) | difference(_online_nodes) | join(', ') }} holds a declared ISO and is not an online Proxmox node."
+
+    # The node and storage pairs are "node/storage" strings: neither name can contain a slash (the patterns above).
+    # The privilege paths are the root, each storage and each node.
+    - name: Derive the node and storage pairs and the privilege paths
+      ansible.builtin.set_fact:
+        _storage_keys: "{{ proxmox_isos | map(attribute='node') | zip(proxmox_isos | map(attribute='storage')) | map('join', '/') | unique | list }}"
+        _acl_paths: >-
+          {{ (['/']
+              + (proxmox_isos | map(attribute='storage') | map('regex_replace', '^', '/storage/') | list)
+              + (proxmox_isos | map(attribute='node') | map('regex_replace', '^', '/nodes/') | list)) | unique | list }}
+
+    - name: Read each declared storage's status on its node
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ item.split('/')[0] | urlencode }}/storage/{{ item.split('/')[1] | urlencode }}/status"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _storage_keys }}"
+      loop_control:
+        label: "{{ item }}"
+      register: _storage_reads
+      no_log: true
+      check_mode: false
+
+    - name: Require each declared storage to be active and to accept ISO content
+      ansible.builtin.assert:
+        that:
+          - _storage_reads.results | selectattr('json.data.active', 'equalto', 1) | list | length == _storage_keys | length
+          - _storage_reads.results | selectattr('json.data.content', 'search', '(^|,)iso(,|$)') | list | length == _storage_keys | length
+        fail_msg: "Refused: a declared storage is not active, or does not accept ISO content (check its content types in Proxmox)."
+
+    # The API gives no size for a remote file, so the free space is shown and never compared with a download.
+    - name: Report each declared storage's free space before any write
+      ansible.builtin.debug:
+        msg: >-
+          {{ item }}: {{ _storage_reads.results[_storage_index].json.data.avail | default(0) }} bytes free
+          of {{ _storage_reads.results[_storage_index].json.data.total | default(0) }} bytes.
+          The API gives no size for a remote ISO, so this run does not compare the two.
+      loop: "{{ _storage_keys }}"
+      loop_control:
+        index_var: _storage_index
+        label: "{{ item }}"
+
+    - name: Read the ISO content on each declared storage
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ item.split('/')[0] | urlencode }}/storage/{{ item.split('/')[1] | urlencode }}/content?content=iso"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _storage_keys }}"
+      loop_control:
+        label: "{{ item }}"
+      register: _content_before
+      no_log: true
+      check_mode: false
+
+    - name: Index the ISO listing before any write by node and storage
+      ansible.builtin.set_fact:
+        _listed_before: "{{ _content_before.results | items2dict(key_name='item', value_name='json') }}"
+
+    - name: Read the token's privileges on the root, each storage and each node
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/access/permissions?path={{ item | urlencode }}"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _acl_paths }}"
+      loop_control:
+        label: "{{ item }}"
+      register: _permission_reads
+      no_log: true
+      check_mode: false
+
+    # A privilege is held when its key is present, whatever its value (a value of 0 is held; L-007). The root
+    # privileges count for a node when both Sys.Audit and Sys.Modify are on /.
+    - name: Collect the Proxmox privileges the token lacks for the declared ISOs
+      ansible.builtin.set_fact:
+        _privileges_missing: >-
+          {%- set ns = namespace(held=[], missing=[]) -%}
+          {%- for r in _permission_reads.results -%}
+          {%- for p in ((r.json.data | default({}, true)).get(r.item) | default({}, true)).keys() -%}
+          {%- set ns.held = ns.held + [r.item ~ ' ' ~ p] -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {%- for s in (proxmox_isos | map(attribute='storage') | unique | list) -%}
+          {%- if ('/storage/' ~ s ~ ' Datastore.AllocateTemplate') not in ns.held -%}
+          {%- set ns.missing = ns.missing + ['Datastore.AllocateTemplate on /storage/' ~ s] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- for n in (proxmox_isos | map(attribute='node') | unique | list) -%}
+          {%- if not (('/nodes/' ~ n ~ ' Sys.AccessNetwork') in ns.held or (('/ Sys.Audit') in ns.held and ('/ Sys.Modify') in ns.held)) -%}
+          {%- set ns.missing = ns.missing + ['Sys.AccessNetwork on /nodes/' ~ n ~ ' (or Sys.Audit and Sys.Modify on /)'] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.missing | join('; ') }}
+
+    - name: Require the token's download privileges on every declared storage and node
+      ansible.builtin.assert:
+        that: _privileges_missing | length == 0
+        fail_msg: "Refused before any download: the Proxmox token lacks {{ _privileges_missing }}."
+
+    # The report reads the listing read before any write: a present ISO is re-verified, an absent one fetched.
+    - name: Report each declared ISO, whether it is present, and the action
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.name }} ({{ item.storage }}:iso/{{ item.filename }} on {{ item.node }}):
+          {{ 'present' if ((item.storage ~ ':iso/' ~ item.filename) in (_listed_before[item.node ~ '/' ~ item.storage].data | map(attribute='volid') | list)) else 'absent' }};
+          action: {{ ('would ' if ansible_check_mode else '')
+          ~ ('re-verify' if ((item.storage ~ ':iso/' ~ item.filename) in (_listed_before[item.node ~ '/' ~ item.storage].data | map(attribute='volid') | list)) else 'fetch') }}
+      loop: "{{ proxmox_isos }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # Every declared ISO is sent, present or not: Proxmox hashes a present file against its sha256 and keeps it on a
+    # match. The writes run one ISO at a time, and none runs in check mode.
+    - name: Fetch each declared ISO onto its storage, one at a time
+      ansible.builtin.include_tasks: tasks/fetch-proxmox-iso.yml
+      loop: "{{ proxmox_isos }}"
+      loop_control:
+        loop_var: _iso
+        label: "{{ _iso.name }}"
+      when: not ansible_check_mode
+
+    - name: Read the ISO content on each declared storage after the downloads
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ item.split('/')[0] | urlencode }}/storage/{{ item.split('/')[1] | urlencode }}/content?content=iso"
+        method: GET
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _storage_keys }}"
+      loop_control:
+        label: "{{ item }}"
+      register: _content_after
+      when: not ansible_check_mode
+      no_log: true
+      check_mode: false
+
+    - name: Index the ISO listing after the downloads by node and storage
+      ansible.builtin.set_fact:
+        _listed_after: "{{ _content_after.results | items2dict(key_name='item', value_name='json') }}"
+      when: not ansible_check_mode
+
+    - name: Name each declared ISO that is not on its storage after the downloads
+      ansible.builtin.set_fact:
+        _isos_missing_after: >-
+          {%- set ns = namespace(out=[]) -%}
+          {%- for e in proxmox_isos -%}
+          {%- if (e.storage ~ ':iso/' ~ e.filename) not in (_listed_after[e.node ~ '/' ~ e.storage].data | map(attribute='volid') | list) -%}
+          {%- set ns.out = ns.out + [e.name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.out | join(', ') }}
+      when: not ansible_check_mode
+
+    - name: Require every declared ISO on its storage after the downloads
+      ansible.builtin.assert:
+        that: _isos_missing_after | length == 0
+        fail_msg: "Fetch incomplete: these declared ISOs are not on their storage after the downloads: {{ _isos_missing_after }}."
+      when: not ansible_check_mode

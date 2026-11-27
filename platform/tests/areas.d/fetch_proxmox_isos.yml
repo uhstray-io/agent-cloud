@@ -1,0 +1,16 @@
+# The Proxmox ISO fetch (fetch-proxmox-isos.yml and its per-ISO task file): the declared-list refusals, the token and
+# privilege checks, and the one-ISO-at-a-time download task. The playbook tier (suite/fetch_proxmox_isos_playbook.rs)
+# runs the play's own guards against a fake Proxmox API. A change to the play, its task file or the imported guards
+# selects this area.
+paths:
+  - "platform/playbooks/fetch-proxmox-isos.yml"
+  - "platform/playbooks/tasks/fetch-proxmox-iso.yml"
+  # Files its playbook chain loads (lanes test every_file_a_playbook_chain_loads_selects_its_module).
+  - "platform/playbooks/refuse-internal-extra-vars.yml"
+  - "platform/playbooks/require-reviewed-checkout.yml"
+  - "platform/playbooks/tasks/assert-bao-transport.yml"
+  # ansible.cfg loads every filter plugin into every playbook run (lanes test
+  # every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes).
+  - "platform/playbooks/filter_plugins/**"
+tiers:
+  playbook: [fetch_proxmox_isos_playbook]

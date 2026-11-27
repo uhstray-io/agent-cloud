@@ -2368,6 +2368,19 @@ templates:
         type: string
         required: false
 
+  # Downloads every ISO the inventory's proxmox_isos declares onto Proxmox ISO storage, each checked against its sha256
+  # by Proxmox. Writes ISO storage only: it deletes nothing, and a dry run (Dry run on) sends no write.
+  - name: Fetch Proxmox ISOs (Dev)
+    playbook: platform/playbooks/fetch-proxmox-isos.yml
+    repository: agent-cloud dev
+    dev_variant: false
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the ISO fetch"
+        type: string
+        required: true
+
   - name: Survey o11y Backup Readiness (Dev)
     playbook: platform/playbooks/survey-o11y-backup-readiness.yml
     repository: agent-cloud dev
