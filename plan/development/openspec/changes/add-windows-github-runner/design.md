@@ -796,8 +796,7 @@ task 2.8.
    after phase 6 proves the path on the evaluation edition. Also for the owner: whether
    client access licences apply to a build host with no interactive users.
    **Open, 2026-11-26:** the owner keeps the evaluation edition through the proof phases
-   and has not picked a licence, so task 7.6 waits on that choice, and no tagged release
-   runs on the evaluation edition (task 7.6).
+   and has not picked a licence, so task 7.6 waits on that choice.
 2. **Node.** crabnebula (failure-domain separation, most headroom, 20 core licences)
    versus alphacentauri (16 core licences, shares the Linux pool's node). **Recommendation:
    crabnebula.**

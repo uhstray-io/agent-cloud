@@ -64,7 +64,7 @@ and why.
 | 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) — **x2** (2026-11-10: called a survey a read-only reproduction of a deploy refusal because the category word matched; it failed at a different step) | Unverified claim | 2 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
 | 1.33 | Called the Plane GitHub integration "working end to end" from webhook deliveries alone; the in-app integration page, the part a person uses, did not list GitHub | Unverified claim | 1 | Test (Phase 3e of Deploy Plane asserts every marketplace application exists, `test_the_marketplace_phase_judges_the_script_summary`); the general rule Convention |
 | 1.34 | Recorded that a PR changed exactly a task's scoped files from one commit's stat; the PR's merge diff carried four more files from another task | Unverified claim | 1 | Convention |
-| 1.35 | Offered an operator a drill option, then recorded it, from a truncated read of a playbook header; the fault drill has three modes and stops Grafana (widens 1.19) | Unverified claim | 1 | Convention |
+| 1.35 | Offered an operator a drill option, then recorded it, from a truncated read of a playbook header; the fault drill has three modes and stops Grafana (widens 1.19) — **x2** (2026-11-26: counted a pull request's undismissed reviews from the first page of an API list, then "corrected" a right ledger line from it) | Unverified claim | 2 | Convention |
 | 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) — **x2** (2026-11-12: wrote "refused before changing anything" from a refusing assert's message; the deploy had already moved the checkout and re-rendered the Alloy config) | Unverified claim | 2 | Instance: tests pin both playbooks' shared derivation; class Convention, no detector |
 | 1.37 | Called a fix impossible ("a wrapper cannot repair" parallel's ignored SIGALRM) from a fact about shells, built a serial fallback on it; a perl job shell fixed it (widens 1.19) | Unverified claim | 1 | Instance: wrapper test with control; class Convention, no detector |
 | 1.38 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
@@ -858,8 +858,8 @@ batch report ("row green", a return, a hold).
 skipping" on #535's head `4bb91eee`, read from `gh pr checks`. The check run on that head has conclusion
 `neutral` and the title "Review rate limited"
 (`gh api repos/uhstray-io/agent-cloud/commits/4bb91eeecdede6680abcf3c0052ad321a2c2f535/check-runs`), and
-CodeRabbit's last CHANGES_REQUESTED review on the pull request was on `298d3e60`, submitted 2026-10-19
-(`gh api repos/uhstray-io/agent-cloud/pulls/535/reviews`). The rule did not fire: occurrences 2 and 3 say to read
+CodeRabbit's last CHANGES_REQUESTED review on the pull request was on `6cc03fc7`, the head before
+(`gh api --paginate repos/uhstray-io/agent-cloud/pulls/535/reviews`). The rule did not fire: occurrences 2 and 3 say to read
 the check run's title and list the reviews, again after every push, but that rule lives in prose a session has to
 recall, and the proposed `--reviews` mode, which would have been the one source to quote, is still unbuilt.
 
@@ -1869,6 +1869,8 @@ the producer identity and Prometheus targets read now have their own words, so t
 
 ### 1.35 Offered an operator a drill option, and then recorded it, from a truncated read (widens 1.19)
 
+**Occurrences: 2** — 2026-11-11, 2026-11-26
+
 **What happened.** On 2026-11-11 I asked Joseph whether to run the endpoint absent-series proof (the open "Endpoint availability live receipt" in 2.3). The recommended option said Alloy would be stopped "through a Semaphore playbook", that the missing-probe alert would fire, and that Alloy would then be restarted. He chose "Run it next slot". I then told him no such mechanism existed, and wrote the first draft of this entry saying `o11y-fault-drill.yml` "only stops DGX node exporters" and that "no template stops the receiver's Alloy". Both were read from a filtered `head -40` of the playbook's header comment. The PR #1087 review found the facts:
 
 - `o11y-fault-drill.yml` has three modes: `exporter`, `probe` and `grafana` (`:10-37`, the mode guard at `:83`). `grafana` stops the `o11y-grafana` container for up to fifteen minutes.
@@ -1882,6 +1884,8 @@ The alert outcome was also unchecked when I offered it. Traced afterwards, it ho
 **The rule.** A claim that a mechanism exists, or does not, needs the whole file or an exhaustive search (for example `git grep` over `platform/playbooks` and `platform/semaphore/templates.yml`), never a truncated header. An option offered to an operator names the playbook that carries it out and the alert expression it will fire. If either is missing, the option is "build X first", with that work named.
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-11-26.** The brief 01 owner of the mac-win-runners batch listed #535's reviews with `gh api repos/uhstray-io/agent-cloud/pulls/535/reviews`, which returns only the first page of 30, and told the coordinator that CodeRabbit's undismissed CHANGES_REQUESTED reviews were on `ec34e46d` and `298d3e60`. With `--paginate` there are four: those two plus `346b9b37` and `6cc03fc7` (2026-10-29). In the first simplify round of the final refresh, the owner then "corrected" this ledger's 1.10 occurrence 6, which rightly named `6cc03fc7` as the last one, to `298d3e60`, citing the same unpaginated read. A reviewer in the second round found it, and the clause was put back. The coordinator's next instruction to the owner repeated the two-review list. Why the rule did not fire: the rule names a grep filter and a line limit, and an API page limit truncates a read the same way without showing it. The rule covers it: a read that can be cut short (a page, a `head`, a filter) is not evidence that something is absent, and a list read from an API is read with every page.
 
 ### 1.36 Briefed a fix's guarantee from a comment's citation, without reading the cited code (widens 1.29)
 

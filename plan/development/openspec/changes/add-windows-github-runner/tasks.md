@@ -29,10 +29,12 @@ under the decision it settles.
       from a branch cut from `dev` (the one exception to 0.1's single pull request; merge
       `dev` into the feature branch once it lands), declaring its template in
       `platform/semaphore/templates.yml` with `dev_variant: true`
-      (documented at `platform/semaphore/templates.yml:16-19`), publish that template with the scoped
-      create (`semaphore_allow_scoped_create=true`, `platform/semaphore/README.md:591-599`),
-      then run it from its `(Dev)` variant, which runs the `dev` record
-      (`platform/semaphore/repositories.yml:45-47`), against a throwaway vmid (UEFI, TPM state disk, VirtIO SCSI and network, the three
+      (documented at `platform/semaphore/templates.yml:16-19`), publish its `(Dev)`
+      copy with the scoped create, using the project, inventory and environment ids of an
+      existing `(Dev)` template on that instance (`platform/semaphore/README.md:286-291`,
+      `:312-318`, `:591-599`), then run that `(Dev)` copy, which runs the `dev` record
+      (`platform/semaphore/repositories.yml:45-47`), against a throwaway vmid (UEFI, TPM
+      state disk, VirtIO SCSI and network, the three
       ISOs from `SharedISOs`), so the spike is itself re-runnable and its output is a
       Semaphore task log. Record whether setup loads the VirtIO drivers,
       completes without interaction, installs the guest agent, enables OpenSSH with
