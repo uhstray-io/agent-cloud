@@ -1,0 +1,7 @@
+# The inspect-host-containers playbook's probe script: the podman store line, the note when `podman info`
+# fails, Docker's probe printing no store line, and the store format the probes pass
+# (suite/inspect_host_containers.rs, cli tier). A change to the playbook selects this area.
+paths:
+  - "platform/playbooks/inspect-host-containers.yml"
+tiers:
+  cli: [inspect_host_containers]

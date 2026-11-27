@@ -394,11 +394,13 @@ Host lifecycle reuses the platform's existing playbooks unchanged: `provision-vm
 ## Upgrading the runner
 
 The runners are registered with `--disableupdate`, so the declared version is the running
-version and two hosts never drift apart. The cost: GitHub requires a runner with updates
-disabled to be updated "within 30 days of a new version being made available", and "if you
-do not perform a software update within 30 days, the GitHub Actions service will not queue
-jobs to your runner" ([Self-hosted runners reference, "Runner software updates on
-self-hosted runners"](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)).
+version and two hosts never drift apart. The cost: GitHub's docs say "If you disable automatic
+updates, you must update your runner version within 63 days of a newer version being made
+available." and "If you do not update your runner within 63 days of a new major, minor, or patch
+version becoming available, the GitHub Actions service will not assign jobs to it." The window can
+end sooner: "If a critical security update is required, the service will not assign jobs until the
+runner is updated." ([Self-hosted runners reference, "Runner software updates on self-hosted
+runners"](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)).
 Watch [actions/runner releases](https://github.com/actions/runner/releases) and move the pin
 within that window.
 
@@ -420,7 +422,7 @@ converges the host on the declared versions:
   "upgraded runner A -> B" logged, with the version the binary reports. A failure mid-swap
   restores the previous files.
 - **Lower version: refused.** A declared version below the installed one is usually a stale
-  declaration, not an intent, and silently acting on it could push a host behind the 30-day
+  declaration, not an intent, and silently acting on it could push a host behind the 63-day
   window. A real rollback passes `-e github_runner_allow_downgrade=true`.
 - **Container hooks** follow the same rules. Their archive carries no readable version, so
   `deploy.sh` writes `_hooks/.hooks-version` beside the files it places; a host without the
