@@ -525,11 +525,8 @@
                 - not ansible_check_mode
                 - _win_seed_volid in (_win_seed_before.json.data | default([], true) | map(attribute='volid') | list)
 
-            # The ISO holds the one-time password. curl, not the uri module: the uri module's
-            # form-multipart sends a file part base64-encoded, which arrives as the ISO only if the
-            # receiver decodes Content-Transfer-Encoding (not verified for Proxmox), or with its line
-            # endings rewritten under 7or8bit (ansible.module_utils.urls.prepare_multipart). The
-            # token reaches curl on stdin (-H @-), never in argv.
+            # The ISO holds the one-time password. curl, not the uri module's form-multipart body
+            # (docs/LESSONS.md L-022). The token reaches curl on stdin (-H @-), never in argv.
             - name: "Upload the Windows seed ISO"
               ansible.builtin.command:
                 argv:
