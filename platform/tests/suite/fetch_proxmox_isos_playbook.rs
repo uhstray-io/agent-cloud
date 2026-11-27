@@ -281,6 +281,14 @@ fn refused_before_any_request(server: &Server, out: &Run, part: &str) {
     );
 }
 
+/// Refused after the reads and before any write: the run is red, names the refusal, and no POST, PUT or DELETE
+/// reached the fake API.
+fn refused_before_any_write(server: &Server, out: &Run, part: &str) {
+    assert!(!out.ok, "{}", out.out);
+    assert!(out.out.contains(part), "missing {part:?}: {}", out.out);
+    assert!(no_writes(server).is_empty(), "{:?}", no_writes(server));
+}
+
 #[test]
 fn an_entry_without_a_sha256_or_with_a_bad_one_is_refused_before_any_request() {
     // Arrange: an entry with no sha256 key, and one whose digest is upper case.
@@ -518,14 +526,7 @@ fn a_missing_allocate_template_privilege_is_refused_before_any_post_and_names_it
     let out = run_declared(&server, two_isos(), false);
 
     // Assert: refused, naming the privilege and its path, and no download was requested.
-    assert!(!out.ok, "{}", out.out);
-    assert!(
-        out.out
-            .contains("Datastore.AllocateTemplate on /storage/s1"),
-        "{}",
-        out.out
-    );
-    assert!(no_writes(&server).is_empty(), "{:?}", no_writes(&server));
+    refused_before_any_write(&server, &out, "Datastore.AllocateTemplate on /storage/s1");
 }
 
 #[test]
@@ -585,43 +586,40 @@ fn a_node_that_is_not_online_refuses_the_run_before_any_download() {
     let out = run_declared(&server, two_isos(), false);
 
     // Assert
-    assert!(!out.ok, "{}", out.out);
-    assert!(
-        out.out.contains("is not an online Proxmox node"),
-        "{}",
-        out.out
-    );
-    assert!(no_writes(&server).is_empty(), "{:?}", no_writes(&server));
+    refused_before_any_write(&server, &out, "is not an online Proxmox node");
 }
 
 #[test]
-fn a_storage_status_reply_without_active_or_content_is_refused_with_the_assert_message() {
-    // Arrange: the declared storage's status reply carries neither `active` nor `content`. The override takes priority
-    // over the status mock that `mount_reads` mounts; the other reads answer as in `mount_reads`.
-    let server = Server::start();
-    server.mount(
-        reply(
-            "GET",
-            "/api2/json/nodes/n1/storage/s1/status",
-            200,
-            json!({"data": {}}),
-        )
-        .with_priority(1),
-    );
-    mount_reads(&server, json!([]), json!([]), &full_grants());
+fn a_storage_status_reply_missing_a_field_is_refused_with_the_assert_message() {
+    // Each reply lacks one thing the storage assert reads: `active` and `content`, `content` alone, or `data` itself.
+    for body in [
+        json!({"data": {}}),
+        json!({"data": {"active": 1, "avail": 1000, "total": 2000}}),
+        json!({}),
+    ] {
+        // Arrange: the override takes priority over the status mock that `mount_reads` mounts.
+        let server = Server::start();
+        server.mount(
+            reply(
+                "GET",
+                "/api2/json/nodes/n1/storage/s1/status",
+                200,
+                body.clone(),
+            )
+            .with_priority(1),
+        );
+        mount_reads(&server, json!([]), json!([]), &full_grants());
 
-    // Act
-    let out = run_declared(&server, two_isos(), false);
+        // Act
+        let out = run_declared(&server, two_isos(), false);
 
-    // Assert: refused with the storage assert's message rather than a template error, and no write was sent.
-    assert!(!out.ok, "{}", out.out);
-    assert!(
-        out.out
-            .contains("is not active, or does not accept ISO content"),
-        "{}",
-        out.out
-    );
-    assert!(no_writes(&server).is_empty(), "{:?}", no_writes(&server));
+        // Assert: the storage assert's message, not a template error, and no write was sent.
+        refused_before_any_write(
+            &server,
+            &out,
+            "is not active, or does not accept ISO content",
+        );
+    }
 }
 
 #[test]

@@ -83,7 +83,6 @@
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _iso_keys: [name, node, storage, filename, url, sha256]
     # Every pattern ends in \Z, not $: Python's $ also matches before a final newline, so "x.iso\n" would pass
     # a $-anchored pattern and Proxmox would rewrite that name into a different volume id.
     _iso_field_rules:
@@ -93,6 +92,8 @@
       - {key: filename, re: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,250}\.iso\Z', msg: 'filename must be letters, digits, underscores, dots or hyphens ending in a lowercase .iso'}
       - {key: url, re: '^https://[^\s]+\Z', msg: 'url must be an https:// URL with no whitespace'}
       - {key: sha256, re: '^[0-9a-f]{64}\Z', msg: 'sha256 must be 64 lowercase hexadecimal characters'}
+    # The six keys every entry has, in the order the refusal names them.
+    _iso_keys: "{{ _iso_field_rules | map(attribute='key') | list }}"
   tasks:
     - name: Require the declared ISO list
       ansible.builtin.assert:
@@ -120,21 +121,18 @@
           {%- set shaped = (e is mapping and (e.keys() | list | sort) == (_iso_keys | sort)) -%}
           {%- if not shaped -%}
           {%- set ns.out = ns.out + [at ~ ' must have exactly the keys ' ~ (_iso_keys | join(', '))] -%}
-          {%- endif -%}
-          {%- if shaped -%}
+          {%- else -%}
           {%- for r in _iso_field_rules -%}
           {%- if not ((e[r.key] is string) and (e[r.key] is match(r.re))) -%}
           {%- set ns.out = ns.out + [at ~ ' ' ~ r.msg] -%}
           {%- endif -%}
           {%- endfor -%}
-          {%- endif -%}
-          {%- if shaped and ((e.name) in ns.names) -%}
+          {%- if e.name in ns.names -%}
           {%- set ns.out = ns.out + [at ~ ' repeats a name already declared'] -%}
           {%- endif -%}
-          {%- if shaped and ((e.storage ~ '/' ~ e.filename) in ns.pairs) -%}
+          {%- if (e.storage ~ '/' ~ e.filename) in ns.pairs -%}
           {%- set ns.out = ns.out + [at ~ ' repeats a storage and filename pair already declared'] -%}
           {%- endif -%}
-          {%- if shaped -%}
           {%- set ns.names = ns.names + [e.name] -%}
           {%- set ns.pairs = ns.pairs + [e.storage ~ '/' ~ e.filename] -%}
           {%- endif -%}
@@ -274,18 +272,6 @@
       ansible.builtin.set_fact:
         _listed_before: "{{ _content_before.results | items2dict(key_name='item', value_name='json') }}"
 
-    # The names of the declared ISOs already on their storage, computed once from that listing for the report below.
-    - name: Name each declared ISO that is on its storage before any write
-      ansible.builtin.set_fact:
-        _present_before: >-
-          {%- set ns = namespace(out=[]) -%}
-          {%- for e in proxmox_isos -%}
-          {%- if (e.storage ~ ':iso/' ~ e.filename) in (_listed_before[e.node ~ '/' ~ e.storage].data | map(attribute='volid') | list) -%}
-          {%- set ns.out = ns.out + [e.name] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.out }}
-
     - name: Read the token's privileges on the root, each storage and each node
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/access/permissions?path={{ item | urlencode }}"
@@ -329,13 +315,15 @@
         fail_msg: "Refused before any download: the Proxmox token lacks {{ _privileges_missing }}."
 
     # The report reads the listing read before any write: a present ISO is re-verified, an absent one fetched.
+    # `present` is set inside the message, once per ISO, so it stays a boolean whatever type a fact would take.
     - name: Report each declared ISO, whether it is present, and the action
       ansible.builtin.debug:
         msg: >-
+          {%- set present = (item.storage ~ ':iso/' ~ item.filename)
+          in (_listed_before[item.node ~ '/' ~ item.storage].data | map(attribute='volid') | list) -%}
           {{ item.name }} ({{ item.storage }}:iso/{{ item.filename }} on {{ item.node }}):
-          {{ 'present' if item.name in _present_before else 'absent' }};
-          action: {{ ('would ' if ansible_check_mode else '')
-          ~ ('re-verify' if item.name in _present_before else 'fetch') }}
+          {{ 'present' if present else 'absent' }};
+          action: {{ ('would ' if ansible_check_mode else '') ~ ('re-verify' if present else 'fetch') }}
       loop: "{{ proxmox_isos }}"
       loop_control:
         label: "{{ item.name }}"
