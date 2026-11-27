@@ -460,25 +460,42 @@
                 _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
               tags: [always]
 
-            # The ISO holds the one-time password.
+            # The ISO holds the one-time password. curl, not the uri module: the uri module's
+            # form-multipart sends a file part base64-encoded, or with its line endings rewritten
+            # under 7or8bit (ansible.module_utils.urls.prepare_multipart), so the ISO would not
+            # arrive byte for byte. The token reaches curl on stdin (-H @-), never in argv.
             - name: "Upload the Windows seed ISO"
-              ansible.builtin.uri:
-                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ _win_seed_storage }}/upload"
-                method: POST
-                body_format: form-multipart
-                body:
-                  content: "iso"
-                  filename:
-                    filename: "{{ _win_seed_tmp.path }}/{{ _win_seed_file }}"
-                    mime_type: "application/octet-stream"
-                status_code: [200]
+              ansible.builtin.command:
+                argv:
+                  - curl
+                  - --silent
+                  - --show-error
+                  - --fail
+                  - --insecure
+                  - --request
+                  - POST
+                  - --header
+                  - "@-"
+                  - --form
+                  - content=iso
+                  - --form
+                  - "filename=@{{ _win_seed_tmp.path }}/{{ _win_seed_file }}"
+                  - "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ _win_seed_storage }}/upload"
+                stdin: "Authorization: PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
               register: _win_upload
+              changed_when: true
               no_log: true
+              when: not ansible_check_mode
+
+            # Proxmox answers {"data": <task id>} when the upload runs as a task.
+            - name: "Read the seed upload task id"
+              ansible.builtin.set_fact:
+                _win_upload_upid: "{{ (_win_upload.stdout | default('{}', true) | from_json).data | default('', true) }}"
               when: not ansible_check_mode
 
             - name: "Wait for the seed upload task"
               ansible.builtin.uri:
-                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/tasks/{{ _win_upload.json.data }}/status"
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/tasks/{{ _win_upload_upid }}/status"
                 method: GET
               register: _win_upload_task
               until: _win_upload_task.json.data.status == "stopped"
@@ -486,7 +503,8 @@
               delay: 5
               when:
                 - not ansible_check_mode
-                - _win_upload.json.data is defined and _win_upload.json.data is string
+                - _win_upload_upid | default('') is string
+                - _win_upload_upid | default('') | length > 0
 
             - name: "Guard template VMID before Windows creation"
               ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml

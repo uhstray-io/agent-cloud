@@ -441,8 +441,33 @@ fn windows_without_a_template_vmid_sends_nothing() {
 }
 
 /// A Windows build at WIN_VMID whose create answers `create_status`, with a fake `genisoimage`.
-fn windows_build(dir: &Path, create_status: u16) -> (Server, Run) {
+/// The seed upload answers `{"data": <upload_upid>}` (null when `None`), and that task's status is
+/// `stopped`. The upload runs the real curl, so a missing curl fails the test.
+fn windows_build(dir: &Path, create_status: u16, upload_upid: Option<&str>) -> (Server, Run) {
+    let curl_found = std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|d| d.join("curl").is_file()));
+    assert!(
+        curl_found,
+        "curl is not on PATH: the Windows seed upload runs curl"
+    );
     let server = Server::start();
+    if let Some(upid) = upload_upid {
+        server.mount(
+            reply(
+                "POST",
+                &api("storage/local/upload"),
+                200,
+                json!({"data": upid}),
+            )
+            .with_priority(1),
+        );
+        server.mount(reply(
+            "GET",
+            &api(&format!("tasks/{upid}/status")),
+            200,
+            json!({"data": {"status": "stopped"}}),
+        ));
+    }
     mount_build(&server, WIN_VMID, create_status);
     let path = process::fake_bin(dir, &[("genisoimage", FAKE_GENISOIMAGE)]);
     let mut extra = windows_extra(Some(WIN_VMID));
@@ -505,15 +530,24 @@ fn urlencoding_decode(text: &str) -> String {
 #[test]
 fn windows_seed_is_deleted_after_a_successful_build() {
     let dir = TempDir::new().unwrap();
-    let (server, run) = windows_build(dir.path(), 200);
+    let (server, run) = windows_build(dir.path(), 200, Some("UPID:seed"));
     assert!(run.ok, "{}", run.output);
     assert_seed_deleted(&server, &run.output);
+    let waited = server
+        .requests()
+        .iter()
+        .any(|r| r.method.as_str() == "GET" && r.url.path() == api("tasks/UPID:seed/status"));
+    assert!(
+        waited,
+        "no wait on the seed upload task UPID:seed\n{}",
+        run.output
+    );
 }
 
 #[test]
 fn windows_seed_is_deleted_after_a_failed_build() {
     let dir = TempDir::new().unwrap();
-    let (server, run) = windows_build(dir.path(), 500);
+    let (server, run) = windows_build(dir.path(), 500, None);
     assert!(!run.ok, "a failed create passed\n{}", run.output);
     assert_seed_deleted(&server, &run.output);
     let status = Regex::new(r#""step":\s*"vm-template"[^}]*?"status":\s*"(\w+)"|"status":\s*"(\w+)"[^}]*?"step":\s*"vm-template""#).unwrap();
@@ -531,19 +565,27 @@ fn windows_seed_is_deleted_after_a_failed_build() {
 #[test]
 fn windows_seed_carries_the_public_key_and_no_other_secret() {
     let dir = TempDir::new().unwrap();
-    let (server, run) = windows_build(dir.path(), 200);
+    let (server, run) = windows_build(dir.path(), 200, None);
     assert!(run.ok, "{}", run.output);
-    let uploads: Vec<String> = server
-        .requests()
+    let requests = server.requests();
+    let uploads: Vec<&Request> = requests
         .iter()
         .filter(|r| r.method.as_str() == "POST" && r.url.path() == api("storage/local/upload"))
-        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
         .collect();
     assert_eq!(uploads.len(), 1, "one seed upload\n{}", run.output);
-    // Ansible sends the file part base64-encoded (Content-Transfer-Encoding: base64).
-    let raw = &uploads[0];
-    let seed = seed_file_part(raw);
-    let body = &seed;
+    let auth = uploads[0]
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert_eq!(
+        auth,
+        format!("PVEAPIToken={PVE_TOKEN_ID}={PVE_SECRET}"),
+        "the upload's Authorization header (curl reads it on stdin)"
+    );
+    // curl sends the seed's bytes as they are, so the raw body holds the seed files.
+    let raw = String::from_utf8_lossy(&uploads[0].body).into_owned();
+    let body = &raw;
     assert!(body.contains(WIN_KEY), "the seed lacks the public key");
     for secret in [
         PVE_SECRET,
@@ -551,11 +593,7 @@ fn windows_seed_carries_the_public_key_and_no_other_secret() {
         "SENTINEL-ROLE",
         "SENTINEL-SECRET-ID",
     ] {
-        assert!(!body.contains(secret), "the seed carries {secret}");
-        assert!(
-            !raw.contains(secret),
-            "the upload request body carries {secret}"
-        );
+        assert!(!body.contains(secret), "the upload body carries {secret}");
     }
     let password = Regex::new(r"<AdministratorPassword>\s*<Value>([^<]*)</Value>").unwrap();
     let value = password
@@ -571,49 +609,6 @@ fn windows_seed_carries_the_public_key_and_no_other_secret() {
         !run.stdout.contains(&value),
         "the run's stdout shows the one-time password"
     );
-}
-
-/// The `filename` part of a multipart upload body, base64-decoded when its transfer encoding
-/// says so.
-fn seed_file_part(raw: &str) -> String {
-    let start = raw
-        .find("name=\"filename\"")
-        .expect("the upload has a filename part");
-    // The part's headers start after the boundary line before its Content-Disposition.
-    let part = &raw[raw[..start].rfind("\n--").unwrap_or(0)..];
-    let header_end = part
-        .find("\n\n")
-        .or_else(|| part.find("\r\n\r\n"))
-        .expect("part headers end");
-    let headers = &part[..header_end];
-    let rest = &part[header_end..];
-    let content = rest.split("\n--").next().unwrap_or_default();
-    if headers.contains("Content-Transfer-Encoding: base64") {
-        base64_decode(content)
-    } else {
-        content.to_owned()
-    }
-}
-
-/// Standard base64, whitespace ignored.
-fn base64_decode(text: &str) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = Vec::new();
-    let mut acc: u32 = 0;
-    let mut bits = 0;
-    for c in text.bytes() {
-        let Some(v) = ALPHABET.iter().position(|&a| a == c) else {
-            continue;
-        };
-        acc = (acc << 6) | v as u32;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-            acc &= (1 << bits) - 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Every task under `tasks`, at every depth.
@@ -711,11 +706,32 @@ fn answer_file_inputs_are_the_one_time_password_image_index_and_public_key() {
             .as_str()
             .is_some_and(|s| s.ends_with("autounattend.xml.j2"))
     });
-    let upload = tasks.iter().filter(|t| {
-        t["ansible.builtin.uri"]["url"]
-            .as_str()
-            .is_some_and(|u| u.contains("_win_seed_storage") && u.ends_with("/upload"))
-    });
+    let upload: Vec<&Value> = tasks
+        .iter()
+        .filter(|t| t["name"] == "Upload the Windows seed ISO")
+        .collect();
+    if upload.len() != 1 {
+        problems.push(format!("{} seed upload tasks, expected 1", upload.len()));
+    }
+    for t in &upload {
+        // The token reaches curl on stdin (`--header @-`), never in argv.
+        let argv: Vec<&str> = t["ansible.builtin.command"]["argv"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        if argv.is_empty() {
+            problems.push("the seed upload is not an ansible.builtin.command argv".to_owned());
+        }
+        for arg in &argv {
+            if arg.contains("_pve_secret") || arg.contains("_pve_token_id") {
+                problems.push(format!("the seed upload argv carries the token: `{arg}`"));
+            }
+        }
+        let header_from_stdin = argv.windows(2).any(|w| w[0] == "--header" && w[1] == "@-");
+        if !header_from_stdin {
+            problems.push("the seed upload argv has no `--header @-`".to_owned());
+        }
+    }
     let guarded: Vec<&Value> = render.chain(upload).collect();
     if guarded.len() != 2 {
         problems.push(format!(
