@@ -45,12 +45,10 @@
       - .Store.GraphDriverName
       - .Store.GraphOptions
     _store_fmt: "{{ _store_fields | map('regex_replace', '^', '{{') | map('regex_replace', '$', '}}') | join('|') }}"
-    # The account the dedicated-account probe runs as: linger_user when the host declares one,
-    # else the runner account the runner hosts declare (github_runner_account). Those hosts
-    # declare no linger_user, because a fresh runner deploy runs tasks/enable-linger.yml before that
-    # account exists, and tasks/enable-linger.yml reads linger_user. Empty when neither is declared,
-    # which skips the probe. A second service with its own dedicated account adds a generic host var
-    # then.
+    # The dedicated-account probe's account: linger_user, else github_runner_account (runner hosts
+    # cannot declare linger_user: a fresh runner deploy runs tasks/enable-linger.yml before that
+    # account exists). Empty skips the probe.
+    # ponytail: names one service's var; a second dedicated-account service adds a generic host var.
     _probe_account: "{{ linger_user | default(github_runner_account | default('')) }}"
     # $1 = engine, $2 = inspect format, $3 = podman info format (podman probes only).
     _script: |
