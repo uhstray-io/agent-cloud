@@ -134,12 +134,18 @@ fn run(play: Value, host_vars: Value, extra: Option<Value>, check: bool) -> Run 
     let output = process::run(&mut cmd);
     Run {
         ok: output.status.success(),
-        out: format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ),
+        out: process::output_text(&output),
     }
+}
+
+/// Runs the play with `list` as the declared ISO list, against the fake API at `server`.
+fn run_declared(server: &Server, list: Value, check: bool) -> Run {
+    run(
+        lifted_play(&server.url()),
+        json!({"proxmox_isos": list}),
+        None,
+        check,
+    )
 }
 
 /// A single-task localhost play, as the single-task tests lift one task of the play.
@@ -178,9 +184,8 @@ fn full_grants() -> Grants {
     }
 }
 
-/// The fake API for one run on `n1` and `s1`: the version, the nodes (`n1` online), the storage status (active, with
-/// ISO content), the ISO listing (`before` until the first read, `after` from the second), and the privileges.
-fn mount_reads(server: &Server, before: Value, after: Value, grants: &Grants) {
+/// The version reply, and the node list with the fixture node at `status`.
+fn mount_version_and_nodes(server: &Server, status: &str) {
     server.mount(reply(
         "GET",
         "/api2/json/version",
@@ -191,8 +196,14 @@ fn mount_reads(server: &Server, before: Value, after: Value, grants: &Grants) {
         "GET",
         "/api2/json/nodes",
         200,
-        json!({"data": [{"node": NODE, "status": "online"}]}),
+        json!({"data": [{"node": NODE, "status": status}]}),
     ));
+}
+
+/// The fake API for one run on `n1` and `s1`: the version, the nodes (`n1` online), the storage status (active, with
+/// ISO content), the ISO listing (`before` until the first read, `after` from the second), and the privileges.
+fn mount_reads(server: &Server, before: Value, after: Value, grants: &Grants) {
+    mount_version_and_nodes(server, "online");
     server.mount(reply(
         "GET",
         "/api2/json/nodes/n1/storage/s1/status",
@@ -280,18 +291,8 @@ fn an_entry_without_a_sha256_or_with_a_bad_one_is_refused_before_any_request() {
     upper["sha256"] = json!(sha("A"));
 
     // Act
-    let no_key = run(
-        lifted_play(&server.url()),
-        json!({"proxmox_isos": [missing]}),
-        None,
-        false,
-    );
-    let bad_digest = run(
-        lifted_play(&server.url()),
-        json!({"proxmox_isos": [upper]}),
-        None,
-        false,
-    );
+    let no_key = run_declared(&server, json!([missing]), false);
+    let bad_digest = run_declared(&server, json!([upper]), false);
 
     // Assert
     refused_before_any_request(&server, &no_key, "entry 0 must have exactly the keys");
@@ -308,12 +309,7 @@ fn a_filename_that_is_not_a_plain_lowercase_iso_is_refused_before_any_request() 
     // newline after a valid name (a $-anchored pattern would pass it). Each is refused with no request sent.
     for file in ["Win Server.iso", "x.ISO", "x.img", "x.iso\n"] {
         let server = Server::start();
-        let out = run(
-            lifted_play(&server.url()),
-            json!({"proxmox_isos": [iso("Installer A", file)]}),
-            None,
-            false,
-        );
+        let out = run_declared(&server, json!([iso("Installer A", file)]), false);
         refused_before_any_request(&server, &out, "entry 0 filename must be");
     }
 }
@@ -373,12 +369,7 @@ fn a_name_node_storage_url_or_extra_key_outside_its_pattern_is_refused_before_an
     // Act + Assert: each row is refused naming its entry and field, with no request sent.
     for (entry, part) in rows {
         let server = Server::start();
-        let out = run(
-            lifted_play(&server.url()),
-            json!({"proxmox_isos": [entry]}),
-            None,
-            false,
-        );
+        let out = run_declared(&server, json!([entry]), false);
         refused_before_any_request(&server, &out, part);
     }
 }
@@ -397,18 +388,8 @@ fn a_duplicate_name_or_storage_and_filename_pair_is_refused_before_any_request()
     ]);
 
     // Act
-    let name = run(
-        lifted_play(&server.url()),
-        json!({"proxmox_isos": same_name}),
-        None,
-        false,
-    );
-    let pair = run(
-        lifted_play(&server.url()),
-        json!({"proxmox_isos": same_file}),
-        None,
-        false,
-    );
+    let name = run_declared(&server, same_name, false);
+    let pair = run_declared(&server, same_file, false);
 
     // Assert
     refused_before_any_request(&server, &name, "entry 1 repeats a name already declared");
@@ -449,12 +430,7 @@ fn a_dry_run_sends_only_reads_and_reports_fetch_for_absent_and_re_verify_for_pre
     mount_downloads(&server, "OK");
 
     // Act
-    let out = run(
-        lifted_play(&server.url()),
-        json!({"proxmox_isos": two_isos()}),
-        None,
-        true,
-    );
+    let out = run_declared(&server, two_isos(), true);
 
     // Assert: green, the report names each action with "would", and no write was sent.
     assert!(out.ok, "{}", out.out);
@@ -474,12 +450,7 @@ fn a_real_run_posts_each_declared_iso_once_with_its_digest_and_sends_no_delete()
     mount_downloads(&server, "OK");
 
     // Act
-    let out = run(
-        lifted_play(&server.url()),
-        json!({"proxmox_isos": two_isos()}),
-        None,
-        false,
-    );
+    let out = run_declared(&server, two_isos(), false);
 
     // Assert: green; exactly one download request per declared ISO, each with its own digest and the verify flag;
     // every download's status poll follows its own request (one at a time); no DELETE.
@@ -524,12 +495,7 @@ fn a_download_that_ends_with_a_checksum_mismatch_fails_the_run_and_names_the_iso
     mount_downloads(&server, "checksum mismatch: expected a, got b");
 
     // Act
-    let out = run(
-        lifted_play(&server.url()),
-        json!({"proxmox_isos": two_isos()}),
-        None,
-        false,
-    );
+    let out = run_declared(&server, two_isos(), false);
 
     // Assert: red, naming the ISO and Proxmox's exit status text.
     assert!(!out.ok, "{}", out.out);
@@ -549,12 +515,7 @@ fn a_missing_allocate_template_privilege_is_refused_before_any_post_and_names_it
     mount_downloads(&server, "OK");
 
     // Act
-    let out = run(
-        lifted_play(&server.url()),
-        json!({"proxmox_isos": two_isos()}),
-        None,
-        false,
-    );
+    let out = run_declared(&server, two_isos(), false);
 
     // Assert: refused, naming the privilege and its path, and no download was requested.
     assert!(!out.ok, "{}", out.out);
@@ -580,12 +541,7 @@ fn a_node_privilege_is_missing_unless_the_root_pair_is_held_and_a_zero_value_cou
     mount_reads(&server, json!([]), json!([]), &no_node);
 
     // Act
-    let missing = run(
-        lifted_play(&server.url()),
-        json!({"proxmox_isos": two_isos()}),
-        None,
-        true,
-    );
+    let missing = run_declared(&server, two_isos(), true);
 
     // Assert: red naming the node privilege and its path, with the root pair as the alternative.
     assert!(!missing.ok, "{}", missing.out);
@@ -612,12 +568,7 @@ fn a_node_privilege_is_missing_unless_the_root_pair_is_held_and_a_zero_value_cou
         mount_reads(&server, json!([]), json!([]), &grants);
 
         // Act
-        let out = run(
-            lifted_play(&server.url()),
-            json!({"proxmox_isos": two_isos()}),
-            None,
-            true,
-        );
+        let out = run_declared(&server, two_isos(), true);
 
         // Assert
         assert!(out.ok, "{}", out.out);
@@ -628,31 +579,45 @@ fn a_node_privilege_is_missing_unless_the_root_pair_is_held_and_a_zero_value_cou
 fn a_node_that_is_not_online_refuses_the_run_before_any_download() {
     // Arrange: the declared node answers offline.
     let server = Server::start();
-    server.mount(reply(
-        "GET",
-        "/api2/json/version",
-        200,
-        json!({"data": {"version": "9.0", "release": "9.0", "repoid": "fake"}}),
-    ));
-    server.mount(reply(
-        "GET",
-        "/api2/json/nodes",
-        200,
-        json!({"data": [{"node": NODE, "status": "offline"}]}),
-    ));
+    mount_version_and_nodes(&server, "offline");
 
     // Act
-    let out = run(
-        lifted_play(&server.url()),
-        json!({"proxmox_isos": two_isos()}),
-        None,
-        false,
-    );
+    let out = run_declared(&server, two_isos(), false);
 
     // Assert
     assert!(!out.ok, "{}", out.out);
     assert!(
         out.out.contains("is not an online Proxmox node"),
+        "{}",
+        out.out
+    );
+    assert!(no_writes(&server).is_empty(), "{:?}", no_writes(&server));
+}
+
+#[test]
+fn a_storage_status_reply_without_active_or_content_is_refused_with_the_assert_message() {
+    // Arrange: the declared storage's status reply carries neither `active` nor `content`. The override takes priority
+    // over the status mock that `mount_reads` mounts; the other reads answer as in `mount_reads`.
+    let server = Server::start();
+    server.mount(
+        reply(
+            "GET",
+            "/api2/json/nodes/n1/storage/s1/status",
+            200,
+            json!({"data": {}}),
+        )
+        .with_priority(1),
+    );
+    mount_reads(&server, json!([]), json!([]), &full_grants());
+
+    // Act
+    let out = run_declared(&server, two_isos(), false);
+
+    // Assert: refused with the storage assert's message rather than a template error, and no write was sent.
+    assert!(!out.ok, "{}", out.out);
+    assert!(
+        out.out
+            .contains("is not active, or does not accept ISO content"),
         "{}",
         out.out
     );

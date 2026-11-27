@@ -36,21 +36,17 @@
 # DELETE in it). Every declared ISO is sent to download-url, so Proxmox hashes a present file against the declared
 # sha256. A match ends the task OK with no download. A mismatch ends the task with an error and keeps the file. That
 # behaviour is read from pve-common's download_file_from_url, and it is UNPROVEN on this cluster until the first real
-# run shows it: check the first run's task output before trusting a re-verify.
+# run shows it: check the first run's task output before trusting a re-verify. After the downloads the run re-reads
+# each storage and asserts every declared volid is there.
 #
 # Storage: the run prints each declared storage's free space before any write. The API gives no size for a remote
-# file, so the run cannot tell whether a download fits; it does not check the restore target's headroom either.
-# Free space is reported, never gated.
-#
-# Checks before a write: the list's shape, every node online, every storage active and accepting ISO content, and
-# the privileges above. After the downloads the run re-reads each storage and asserts every declared volid is there.
+# file, so the run cannot tell whether a download fits. Free space is reported, never gated.
 #
 # Check mode (a dry run) sends only GET requests. It prints the same report with "would fetch" for an absent ISO and
 # "would re-verify" for a present one, and writes nothing.
 #
 # The first write waits, one ISO at a time, up to an hour per ISO (720 polls of 5 s): a multi-GB download or a
-# re-hash of a present file can take that long. The download request and its task status are no_log, because the
-# request carries the token; the report and every refusal are printed.
+# re-hash of a present file can take that long.
 #
 # TLS: the Proxmox API requests verify the certificate only when proxmox_validate_certs is true. The default is
 # false until plan 19 Phase 2 pins the Proxmox CA (the same switch the backup-storage playbooks use). The
@@ -90,12 +86,13 @@
     _iso_keys: [name, node, storage, filename, url, sha256]
     # Every pattern ends in \Z, not $: Python's $ also matches before a final newline, so "x.iso\n" would pass
     # a $-anchored pattern and Proxmox would rewrite that name into a different volume id.
-    _re_name: '^[A-Za-z0-9][A-Za-z0-9 ._-]{0,62}\Z'
-    _re_node: '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z'
-    _re_storage: '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z'
-    _re_filename: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,250}\.iso\Z'
-    _re_url: '^https://[^\s]+\Z'
-    _re_sha256: '^[0-9a-f]{64}\Z'
+    _iso_field_rules:
+      - {key: name, re: '^[A-Za-z0-9][A-Za-z0-9 ._-]{0,62}\Z', msg: 'name must be 1-63 letters, digits, spaces, dots, underscores or hyphens, starting with a letter or digit'}
+      - {key: node, re: '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z', msg: 'node must be 1-63 letters, digits, dots, underscores or hyphens, starting with a letter or digit'}
+      - {key: storage, re: '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z', msg: 'storage must be 1-63 letters, digits, dots, underscores or hyphens, starting with a letter or digit'}
+      - {key: filename, re: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,250}\.iso\Z', msg: 'filename must be letters, digits, underscores, dots or hyphens ending in a lowercase .iso'}
+      - {key: url, re: '^https://[^\s]+\Z', msg: 'url must be an https:// URL with no whitespace'}
+      - {key: sha256, re: '^[0-9a-f]{64}\Z', msg: 'sha256 must be 64 lowercase hexadecimal characters'}
   tasks:
     - name: Require the declared ISO list
       ansible.builtin.assert:
@@ -111,9 +108,9 @@
         that: "'proxmox_isos' not in ('' | extra_var_names)"
         fail_msg: "proxmox_isos is declared in inventory only (site-config), never as an extra var."
 
-    # Every malformed entry is named by its index, before any request is sent. Each rule is one `if` line, so a
-    # reader can see what each entry must satisfy. An entry that is not a mapping with exactly the six keys gets
-    # no field check, because its fields do not exist.
+    # Every malformed entry is named by its index, before any request is sent. Each field rule is one row of
+    # `_iso_field_rules`, so a reader can see what each entry must satisfy. An entry that is not a mapping with
+    # exactly the six keys gets no field check, because its fields do not exist.
     - name: Collect every malformed ISO entry before any request
       ansible.builtin.set_fact:
         _iso_problems: >-
@@ -124,23 +121,12 @@
           {%- if not shaped -%}
           {%- set ns.out = ns.out + [at ~ ' must have exactly the keys ' ~ (_iso_keys | join(', '))] -%}
           {%- endif -%}
-          {%- if shaped and not ((e.name is string) and ((e.name) is match(_re_name))) -%}
-          {%- set ns.out = ns.out + [at ~ ' name must be 1-63 letters, digits, spaces, dots, underscores or hyphens, starting with a letter or digit'] -%}
+          {%- if shaped -%}
+          {%- for r in _iso_field_rules -%}
+          {%- if not ((e[r.key] is string) and (e[r.key] is match(r.re))) -%}
+          {%- set ns.out = ns.out + [at ~ ' ' ~ r.msg] -%}
           {%- endif -%}
-          {%- if shaped and not ((e.node is string) and ((e.node) is match(_re_node))) -%}
-          {%- set ns.out = ns.out + [at ~ ' node must be 1-63 letters, digits, dots, underscores or hyphens, starting with a letter or digit'] -%}
-          {%- endif -%}
-          {%- if shaped and not ((e.storage is string) and ((e.storage) is match(_re_storage))) -%}
-          {%- set ns.out = ns.out + [at ~ ' storage must be 1-63 letters, digits, dots, underscores or hyphens, starting with a letter or digit'] -%}
-          {%- endif -%}
-          {%- if shaped and not ((e.filename is string) and ((e.filename) is match(_re_filename))) -%}
-          {%- set ns.out = ns.out + [at ~ ' filename must be letters, digits, underscores, dots or hyphens ending in a lowercase .iso'] -%}
-          {%- endif -%}
-          {%- if shaped and not ((e.url is string) and ((e.url) is match(_re_url))) -%}
-          {%- set ns.out = ns.out + [at ~ ' url must be an https:// URL with no whitespace'] -%}
-          {%- endif -%}
-          {%- if shaped and not ((e.sha256 is string) and ((e.sha256) is match(_re_sha256))) -%}
-          {%- set ns.out = ns.out + [at ~ ' sha256 must be 64 lowercase hexadecimal characters'] -%}
+          {%- endfor -%}
           {%- endif -%}
           {%- if shaped and ((e.name) in ns.names) -%}
           {%- set ns.out = ns.out + [at ~ ' repeats a name already declared'] -%}
@@ -250,11 +236,12 @@
       no_log: true
       check_mode: false
 
+    # The defined filters keep a reply missing active or content from raising a template error (ansible-core 2.20).
     - name: Require each declared storage to be active and to accept ISO content
       ansible.builtin.assert:
         that:
-          - _storage_reads.results | selectattr('json.data.active', 'equalto', 1) | list | length == _storage_keys | length
-          - _storage_reads.results | selectattr('json.data.content', 'search', '(^|,)iso(,|$)') | list | length == _storage_keys | length
+          - _storage_reads.results | selectattr('json.data.active', 'defined') | selectattr('json.data.active', 'equalto', 1) | list | length == _storage_keys | length
+          - _storage_reads.results | selectattr('json.data.content', 'defined') | selectattr('json.data.content', 'search', '(^|,)iso(,|$)') | list | length == _storage_keys | length
         fail_msg: "Refused: a declared storage is not active, or does not accept ISO content (check its content types in Proxmox)."
 
     # The API gives no size for a remote file, so the free space is shown and never compared with a download.
@@ -286,6 +273,18 @@
     - name: Index the ISO listing before any write by node and storage
       ansible.builtin.set_fact:
         _listed_before: "{{ _content_before.results | items2dict(key_name='item', value_name='json') }}"
+
+    # The names of the declared ISOs already on their storage, computed once from that listing for the report below.
+    - name: Name each declared ISO that is on its storage before any write
+      ansible.builtin.set_fact:
+        _present_before: >-
+          {%- set ns = namespace(out=[]) -%}
+          {%- for e in proxmox_isos -%}
+          {%- if (e.storage ~ ':iso/' ~ e.filename) in (_listed_before[e.node ~ '/' ~ e.storage].data | map(attribute='volid') | list) -%}
+          {%- set ns.out = ns.out + [e.name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.out }}
 
     - name: Read the token's privileges on the root, each storage and each node
       ansible.builtin.uri:
@@ -334,9 +333,9 @@
       ansible.builtin.debug:
         msg: >-
           {{ item.name }} ({{ item.storage }}:iso/{{ item.filename }} on {{ item.node }}):
-          {{ 'present' if ((item.storage ~ ':iso/' ~ item.filename) in (_listed_before[item.node ~ '/' ~ item.storage].data | map(attribute='volid') | list)) else 'absent' }};
+          {{ 'present' if item.name in _present_before else 'absent' }};
           action: {{ ('would ' if ansible_check_mode else '')
-          ~ ('re-verify' if ((item.storage ~ ':iso/' ~ item.filename) in (_listed_before[item.node ~ '/' ~ item.storage].data | map(attribute='volid') | list)) else 'fetch') }}
+          ~ ('re-verify' if item.name in _present_before else 'fetch') }}
       loop: "{{ proxmox_isos }}"
       loop_control:
         label: "{{ item.name }}"

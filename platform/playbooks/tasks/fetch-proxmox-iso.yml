@@ -7,9 +7,7 @@
 # task status are no_log: the request carries the API token. The final assert is visible and names the ISO and
 # Proxmox's own exit status text, which carries no secret.
 #
-# Proxmox answers download-url with a task id (UPID) at once; the download and the checksum run in that task. A
-# present file is hashed by the same task, and a match ends it OK with no download (pve-common, unproven on this
-# cluster until the first real run).
+# Proxmox answers download-url with a task id (UPID) at once; the download and the checksum run in that task.
 
 - name: Download the ISO onto its storage with Proxmox verifying the sha256
   ansible.builtin.uri:
