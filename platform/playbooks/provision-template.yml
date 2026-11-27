@@ -95,6 +95,15 @@
             that: _os in ['ubuntu', 'windows']
             fail_msg: "template_os must be ubuntu or windows, not {{ _os }}."
 
+        # Both reach request paths, and the survey now passes them: refuse anything that is not a
+        # plain node name or a number before any request.
+        - name: "Refuse a malformed target_node or template_vmid"
+          ansible.builtin.assert:
+            that:
+              - _node | string is match('^[A-Za-z0-9][A-Za-z0-9-]*$')
+              - _vmid | string is match('^[1-9][0-9]*$')
+            fail_msg: "target_node must be a node name and template_vmid a positive integer."
+
         # No Windows default vmid or node: the Ubuntu default 9000 would collide with the Ubuntu
         # template, and instance values belong in inventory or the survey.
         - name: "Require template_vmid and target_node for a Windows template"

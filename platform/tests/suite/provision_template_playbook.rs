@@ -440,6 +440,38 @@ fn windows_without_a_template_vmid_sends_nothing() {
     assert!(sent.is_empty(), "requests sent: {sent:?}\n{}", run.output);
 }
 
+#[test]
+fn a_malformed_node_or_vmid_sends_nothing() {
+    // Both reach request paths, and the survey passes them; each OS refuses them before any request.
+    let cases: [(&str, Vec<String>); 4] = [
+        (
+            "ubuntu node",
+            vec!["target_node=n1/../../cluster".to_owned()],
+        ),
+        ("ubuntu vmid", vec!["template_vmid=9000/status".to_owned()]),
+        ("windows node", {
+            let mut e = windows_extra(Some("9100"));
+            e.push("target_node=n1?x=1".to_owned());
+            e
+        }),
+        ("windows vmid", windows_extra(Some("0"))),
+    ];
+    let mut problems = vec![];
+    for (case, extra) in cases {
+        let dir = TempDir::new().unwrap();
+        let server = Server::start();
+        let run = run_play(dir.path(), &server, &extra, &[]);
+        let sent = server.requests().len();
+        if run.ok || sent != 0 {
+            problems.push(format!(
+                "{case}: passed={}, requests={sent}\n{}",
+                run.ok, run.output
+            ));
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
 /// A Windows build at WIN_VMID whose create answers `create_status`, with a fake `genisoimage`.
 /// The seed upload answers `{"data": <upload_upid>}` (null when `None`), and that task's status is
 /// `stopped`. The upload runs the real curl, so a missing curl fails the test.
