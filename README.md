@@ -188,7 +188,7 @@ Deployments are orchestrated by **Semaphore** running composable Ansible playboo
 | `check-secrets.yml` | Read-only secret inventory from OpenBao |
 | `ensure-service-persistence.yml` | Make a service's containers start at boot (linger + podman's boot unit, the system unit for rootful podman, or a per-service boot unit for legacy containers); restarts nothing |
 | `verify-service-persistence.yml` / `verify-service-health.yml` | Read-only proof a service starts at boot and answers its declared health path |
-| `inspect-host-containers.yml` | Read-only list of the containers on one host that the connecting user, a declared `linger_user`, root and Docker can see, with engine version, state and restart policy |
+| `inspect-host-containers.yml` | Read-only list of the containers on one host that the connecting user, the host's dedicated account (a declared `linger_user`, else `github_runner_account`), root and Docker can see, with engine version, state and restart policy |
 
 Playbooks use composable tasks from `platform/playbooks/tasks/` (manage-secrets, manage-diode-credentials, manage-approle, etc.). Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 
