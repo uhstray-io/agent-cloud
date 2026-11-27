@@ -19,7 +19,7 @@
   vars:
     _extra_var_guard_nested: true
 
-- name: "Create Ubuntu 24.04 VM Template"
+- name: "Create the VM Template (Ubuntu 24.04 or Windows Server 2025)"
   hosts: localhost
   connection: local
   gather_facts: true
@@ -417,8 +417,9 @@
                 mode: "0700"
               when: not ansible_check_mode
 
-            # Used once by the unattended install and never stored: the clone unattend and the
-            # first-logon script switch the template to key-only SSH access.
+            # Used once by the unattended install and never stored. The template is reached by the
+            # management key the first-logon script installs; each clone's administrator password
+            # is set from the secret store at provisioning (design D3).
             - name: "Generate the one-time Administrator password"
               ansible.builtin.set_fact:
                 _win_admin_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits']) }}"
@@ -606,6 +607,14 @@
           # The seed ISO holds the one-time password, so it is removed whether the build passed or
           # failed. Only the exact volid this run uploaded, on the storage it went to (L-008).
           always:
+            # First, so a failed remote step below cannot leave the password-bearing ISO on the
+            # controller.
+            - name: "Remove the local seed directory"
+              ansible.builtin.file:
+                path: "{{ _win_seed_tmp.path }}"
+                state: absent
+              when: _win_seed_tmp.path is defined
+
             - name: "Guard template VMID before detaching the seed ISO"
               ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
               vars:
@@ -638,6 +647,8 @@
                 timeout: 60
                 status_code: [200]
               register: _win_seed_delete
+              # The read-back below decides: a refused delete must not skip it.
+              failed_when: false
               when:
                 - not ansible_check_mode
                 - _win_upload is defined and _win_upload is not skipped
@@ -660,11 +671,6 @@
                 - not ansible_check_mode
                 - _win_upload is defined and _win_upload is not skipped
 
-            - name: "Remove the local seed directory"
-              ansible.builtin.file:
-                path: "{{ _win_seed_tmp.path }}"
-                state: absent
-              when: _win_seed_tmp.path is defined
       rescue:
         - name: "Remember why the template step failed"
           ansible.builtin.set_fact:
