@@ -39,13 +39,13 @@ and why.
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | 1 | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | 1 | Test |
 | 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | 1 | OPA branch rule (`agent_actions.rego`; inert until callers send fields) |
-| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused (2026-11-15: called CodeRabbit "paused" on #1152 from `gh pr checks`' `skipping` bucket, to the operator and in a dismissal message; the check's own title read "Review rate limited", and reviews were already on the PR; 2026-11-17: told the coordinator and the operator CodeRabbit was skipping #1206 from the same bucket, after a push, without listing reviews; it had requested changes on the previous head) — **x5** (2026-11-17: called #1203's head review-ready over an outstanding changes request; 2026-11-17: reported #1202's resolved threads as unresolved from a compaction summary) | Unverified claim | 5 | Convention; guard proposed in occurrence 3; readiness report quoting the read-only `scripts/merge-when-green.py` run on that head proposed (occurrence 4) |
+| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused (2026-11-15: called CodeRabbit "paused" on #1152 from `gh pr checks`' `skipping` bucket, to the operator and in a dismissal message; the check's own title read "Review rate limited", and reviews were already on the PR; 2026-11-17: told the coordinator and the operator CodeRabbit was skipping #1206 from the same bucket, after a push, without listing reviews; it had requested changes on the previous head) — **x6** (2026-11-17: called #1203's head review-ready over an outstanding changes request; 2026-11-17: reported #1202's resolved threads as unresolved from a compaction summary; 2026-11-26: a review session told the operator CodeRabbit "shows skipping" on #535 from `gh pr checks`' `skipping` bucket, where the check's title read "Review rate limited") | Unverified claim | 6 | Convention; guard proposed in occurrence 3; readiness report quoting the read-only `scripts/merge-when-green.py` run on that head proposed (occurrence 4) |
 | 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | 1 | Test (synthetic OpenBao, mutation-proven)  |
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
 | 1.15 | **x4** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars (x4: a plan generalised "the guard renders no value" from one name; the guard references three) (widened by 1.44) | Unverified claim | 4 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries, or use `forgeries.by_name` with an assertion of the run-start guard's message; the guard's own test proves it never renders a forged value) |
-| 1.16 | **x6** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41; x5: a review reply said every failure message carried the read-back result; one did not; x6: the correction of that reply said only the last one did; three did) | Unverified claim | 6 | Convention; mechanical check proposed (count ≥ 3) |
+| 1.16 | **x7** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41; x5: a review reply said every failure message carried the read-back result; one did not; x6: the correction of that reply said only the last one did; three did; x7: a batch decision said every MEDIUM finding of two review returns was in one plan; one named both plans) | Unverified claim | 7 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6; widened by 1.35, 1.37) | Unverified claim | 1 | Convention |
@@ -64,7 +64,7 @@ and why.
 | 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) — **x2** (2026-11-10: called a survey a read-only reproduction of a deploy refusal because the category word matched; it failed at a different step) | Unverified claim | 2 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
 | 1.33 | Called the Plane GitHub integration "working end to end" from webhook deliveries alone; the in-app integration page, the part a person uses, did not list GitHub | Unverified claim | 1 | Test (Phase 3e of Deploy Plane asserts every marketplace application exists, `test_the_marketplace_phase_judges_the_script_summary`); the general rule Convention |
 | 1.34 | Recorded that a PR changed exactly a task's scoped files from one commit's stat; the PR's merge diff carried four more files from another task | Unverified claim | 1 | Convention |
-| 1.35 | Offered an operator a drill option, then recorded it, from a truncated read of a playbook header; the fault drill has three modes and stops Grafana (widens 1.19) | Unverified claim | 1 | Convention |
+| 1.35 | Offered an operator a drill option, then recorded it, from a truncated read of a playbook header; the fault drill has three modes and stops Grafana (widens 1.19) (widened by 1.45) | Unverified claim | 1 | Convention |
 | 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) — **x2** (2026-11-12: wrote "refused before changing anything" from a refusing assert's message; the deploy had already moved the checkout and re-rendered the Alloy config) | Unverified claim | 2 | Instance: tests pin both playbooks' shared derivation; class Convention, no detector |
 | 1.37 | Called a fix impossible ("a wrapper cannot repair" parallel's ignored SIGALRM) from a fact about shells, built a serial fallback on it; a perl job shell fixed it (widens 1.19) | Unverified claim | 1 | Instance: wrapper test with control; class Convention, no detector |
 | 1.38 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
@@ -74,6 +74,7 @@ and why.
 | 1.42 | Read a send's message id as delivery | Unverified claim | 2 | Convention |
 | 1.43 | Wrote a time into the batch record without reading the clock | Unverified claim | 3 | Convention; guard proposed (count 3, AC-1085) |
 | 1.44 | A coverage sentence said a check proves more than its fixtures show (widens 1.15) | Unverified claim | 2 | Convention; proof-sentence table proposed (AC-1088) |
+| 1.45 | Counted a pull request's undismissed reviews from the first page of an API list, then "corrected" a right ledger line from that read (widens 1.35) | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -187,7 +188,7 @@ and why.
 | 5.33 | Refreshed a PR over a newly landed area rule and checked it only where the rule's own test looks; the playbook-tier area omitted the filter plugins `ansible.cfg` loads | Process | 1 | Test: `lanes` suite (`every_playbook_module_runs_when_ansible_cfg_or_a_filter_plugin_changes`) |
 | 5.34 | Fixed a destructive block's failure paths one review finding at a time on #1206; returns 4 and 5 found four more paths in the same block | Process | 1 | Convention (failure table accepted for later briefs, 2026-11-18) |
 | 5.35 | Skipped a skill-pass finding that a port test held wider rows than its original, on a comment saying the filter reads only tag and spec; carried as decided until the third return | Process | 1 | Convention |
-| 5.36 | One batch unit bundled eleven guard-test fixes across five test modules, a BATS test deletion and a plan cell; it went back nine times and was closed and cut into three | Process | 3 | Convention (three-returns rule; split past about three files); guard proposed (count 3, AC-1086) |
+| 5.36 | One batch unit bundled eleven guard-test fixes across five test modules, a BATS test deletion and a plan cell; it went back nine times and was closed and cut into three — **x4** (2026-11-26: #535 bundled the Windows and macOS runner plans; a fourth correction round was dispatched after the third return) | Process | 4 | Convention (three-returns rule; split past about three files); guard proposed (count 3, AC-1086) |
 | 5.37 | Ran two rounds of four-agent `/simplify` plus security passes on S9 without totalling agent tokens, against a 450k stop never sized from a measured round; spend reached about six times the stop | Process | 7 | Convention (stop set per model class from a measured round; running total before each wave); dispatch check refusing a brief without an ESTIMATE line proposed (count 3, AC-1051) |
 | 5.38 | Three returns on S9's `ansible.cfg` check: a grammar reader, then a pin with a second unchecked list; no plan said where the fact "this setting loads a directory" was declared | Process | 1 | Test: `lanes` suite (`cfg_dirs_classifies_every_pinned_key_and_refuses_the_rest`) |
 | 5.39 | The pre-push hook tested one commit; a commit made during the hook was pushed untested | Process | 1 | Convention (hook check for a ref that moved during the run proposed, AC-929) |
@@ -200,6 +201,8 @@ and why.
 | 5.46 | A coordinator hand-over left the batch registry, the batch index and the compaction notes naming the old address; mail went to the old session | Process | 1 | Convention |
 | 5.47 | An owner's turn ended after a Skill run; the unit sat idle until the coordinator's tick (rows 4, 7, 8 and 9) (widens 5.4) | Process | 4 | Convention; guard proposed (count 3, AC-1087) |
 | 5.48 | A hold on pushes was sent without reading whether a push was running; a passing push was stopped | Process | 1 | Convention |
+| 5.49 | A plan reused a Linux playbook for new host kinds from its header alone; the third return of the 2026-11-26 work on #535 | Process | 1 | Convention |
+| 5.50 | A batch checked its own registry for who held a pull request, not the live sessions (widens 6.10); a takeover was planned and approved over a session already working it | Process | 1 | Convention |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -209,7 +212,7 @@ and why.
 | 6.7 | A task variable shadowed a lazily evaluated play variable and stopped seed-environment provisioning | Assumption about files | 1 | Main-variant provisioner integration test |
 | 6.8 | Took the volume separator for the container separator; the production NetBox deploy would have waited on a container that does not exist | Assumed runtime semantics | 1 | Test (stub engine, mutation-checked) |
 | 6.9 | Scoped a restart-policy fix to rootless podman, the runtime a review named; the repo's own test says rootful's boot unit is the same | Assumed runtime semantics | 1 | Test (rootful case) |
-| 6.10 | Acted on a merged plan as current state while a peer session was building the same scope; the handoff was called checked — **x2** (2026-11-16: two fixes briefed from pre-merge Plane text, already on dev) — **x3** (2026-11-16: a brief section not re-checked after a later decision; #1177 opened with a false milestone) | Assumption about files | 3 | Convention (dispatch refuses a brief older than the latest index decision, proposed; count 3) |
+| 6.10 | Acted on a merged plan as current state while a peer session was building the same scope; the handoff was called checked — **x2** (2026-11-16: two fixes briefed from pre-merge Plane text, already on dev) — **x3** (2026-11-16: a brief section not re-checked after a later decision; #1177 opened with a false milestone) (widened by 5.50) | Assumption about files | 3 | Convention (dispatch refuses a brief older than the latest index decision, proposed; count 3) |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | 1 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention |
 | 8.2 | Referenced tests by identifiers that did not exist — **x2** (a PR number in a commit message) | Unverified claim | 2 | Test (`test_ledger_test_citations.py` + ratchet) |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | 1 | Convention |
@@ -795,7 +798,7 @@ indexes, and the regression asserts a sentinel argument is absent from output.
 
 ### 1.10 Reported that a review had started, from a keyword match on a comment I never read
 
-**Occurrences: 5** — 2026-09-23, 2026-11-15, 2026-11-17, 2026-11-17, 2026-11-17
+**Occurrences: 6** — 2026-09-23, 2026-11-15, 2026-11-17, 2026-11-17, 2026-11-17, 2026-11-26
 
 **What happened.** On 2026-09-23 at 15:13Z I posted review requests to CodeRabbit on four
 PRs and sorted its replies with a `jq` keyword test. My patterns for a started review
@@ -851,6 +854,16 @@ batch report ("row green", a return, a hold).
 **Occurrence 4 — 2026-11-17.** At 16:26 EST #1203's owner reported head `35f3ee1e` to the coordinator as ready for review. CodeRabbit's review 5946641917 on `2f106ab0` (21:07:53Z, CHANGES_REQUESTED) was still outstanding, with two threads unanswered by the owner's own account; the coordinator found it on GitHub. Why the rule did not fire: occurrence 3's rule binds a report that names a reviewer's state, and this report named none: "ready" read as a statement about the owner's work, not about the pull request's reviews. Guard proposal, for this form: a readiness report quotes the read-only `scripts/merge-when-green.py` run on that head (it reads changes requests and threads).
 
 **Occurrence 5 — 2026-11-17.** At 21:33 EST #1202's owner told the coordinator that CodeRabbit's thread on #1202 was answered and unresolved, so a dismissal needed the operator's decision. It took that state from its pre-compaction summary. A GraphQL read showed both threads resolved by `coderabbitai[bot]`, which the standing dismissal rule covers; the coordinator's own read caught it before the operator was asked. The coordinator's first reply had repeated that the operator's word was needed, before it read the threads, and was corrected one message later. Why the rule did not fire: occurrence 3's rule reads a reviewer's state again before every report that names it, but a state carried in a compaction summary read as already known (1.41).
+
+**Occurrence 6 — 2026-11-26.** A pull-request review session told the operator that CodeRabbit "shows
+skipping" on #535's head `4bb91eee`, read from `gh pr checks`. The check run on that head has conclusion
+`neutral` and the title "Review rate limited"
+(`gh api repos/uhstray-io/agent-cloud/commits/4bb91eeecdede6680abcf3c0052ad321a2c2f535/check-runs`), and
+CodeRabbit's last CHANGES_REQUESTED review on the pull request at that time was on `6cc03fc7`, the head
+before (`gh api --paginate repos/uhstray-io/agent-cloud/pulls/535/reviews`; its later CHANGES_REQUESTED review of
+`55e2be5a`, submitted 2026-11-26T14:48:08Z, was dismissed at 16:18:57Z). The rule did not fire: occurrence 2 says to read the
+check run's title and list the reviews, and occurrence 3 adds that they are listed again after every push, but that rule lives in prose a session has to
+recall, and the proposed `--reviews` mode, which would have been the one source to quote, is still unbuilt.
 
 ### 1.14 A fact about the private inventory read from the public template
 
@@ -970,7 +983,7 @@ The rule is widened in 1.44.
 
 ### 1.16 A count written into a committed plan without running the count
 
-**Occurrences: 6** — 2026-09-25, 2026-10-03, 2026-11-02, 2026-11-10, 2026-11-18, 2026-11-18
+**Occurrences: 7** — 2026-09-25, 2026-10-03, 2026-11-02, 2026-11-10, 2026-11-18, 2026-11-18, 2026-11-26
 
 **What happened.** Recording the launch-permission gap for #264, I wrote into
 `plan/development/01-secrets-credentials.md` that "44 playbook and task files log in to
@@ -1055,6 +1068,8 @@ failure messages did". The final-head review round found it, and reply 461559846
 rule did not fire: the correction was written from memory of the earlier mistake, not from the file at
 the old head, and a correction reads as already checked. The rule covers it: a claim about an earlier
 head is read from that head (`git show <sha>:<path>`) when it is written, a correction included.
+
+**Occurrence 7 — 2026-11-26.** Cutting #535 again, the mac-win-runners coordinator told the operator in chat that the two MEDIUM findings of the third return and the one of the fourth were all in the macOS plan, and wrote the same into its batch index (decision 18, 18:25 EST): "every MEDIUM finding of returns three and four is in the macOS change". The third return's text was on screen. Its finding 2 (MEDIUM, the per-OS supervisor status step) named Windows task 6.6 as well as macOS task 5.1 (PR comment 7197662112). The brief 01 owner first carried the sentence into this pull request's ledger (pushed in `86293edb`) and its draft body. It caught the error while re-reading the return, corrected the ledger in `1b12f2fa` before the body was posted, and reported it to the coordinator about 25 minutes after the decision. The coordinator corrected the index and told the operator at 18:55 EST (decision 18's correction). No action rested on the sentence: the cut stands, because the open MEDIUM after the fix is macOS-only. Why the rule did not fire: the claim was an "every" over review findings, not a count, and it was a summary written to justify a decision, which reads as a reading of the source rather than a claim about it. The rule covers it: an "every" over a set, a summary of review findings included, is checked against each member of the set when it is written; here, by naming each MEDIUM finding and the tasks it cites.
 
 ### 1.17 Explained a 401 as the token's scope; the service's database had just gone down
 
@@ -1870,6 +1885,7 @@ The alert outcome was also unchecked when I offered it. Traced afterwards, it ho
 
 **Enforced by.** Convention.
 
+
 ### 1.36 Briefed a fix's guarantee from a comment's citation, without reading the cited code (widens 1.29)
 
 **Occurrences: 2** — 2026-11-11, 2026-11-12
@@ -2061,6 +2077,18 @@ by measurement); this is the reverse, a capability assumed without the documenta
 **Enforced by.** Convention. Proposed: a proof-sentence table as a required comment on plan and design pull requests (AC-1088).
 
 **Occurrence 2 — 2026-11-21 to 2026-11-26.** #1218 recorded the design for four internal-CA leaves on the DGX Spark nodes. Three returns found sentences saying a leaf was proven while the check behind them read something weaker. Return 1 (CodeRabbit, head `6525ec4d`): a gateway leaf with reload `none` had no proof of the leaf the gateway process held, and a Phase B deploy skipped its real run on an empty dry run. Return 2 (independent review, head `50483ca4`, issue comment 7194962329, 2026-11-26T14:32:16Z): the proof for each leaf rested on site-config switches that nothing ties to what the listener serves. Return 3 (head `cc7e75ab`, issue comment 7195258614, 14:44:36Z): the lead sentence of decision (b) still said "decision 8's proof applies unchanged" to all four leaves, and a claim about dgx-spark's launcher carried no attribution. The contract restatement of decision 39 and the owner's sweep (issue comment 7195169134, 14:40:56Z) fixed the sentences the returns named; the sweep missed the lead sentence of decision (b). Why the rule did not fire: 1.44 was written for a coverage sentence about a test guard and was not yet on `dev` when #1218's returns came, and each fix took the sentence named, not every sentence of the kind.
+
+### 1.45 Counted a pull request's undismissed reviews from the first page of an API list (widens 1.35)
+
+**Occurrences: 1** — 2026-11-26
+
+**What happened.** On 2026-11-26 the brief 01 owner of the mac-win-runners batch listed #535's reviews with `gh api repos/uhstray-io/agent-cloud/pulls/535/reviews`, which returns only the first page of 30, and told the coordinator that CodeRabbit's undismissed CHANGES_REQUESTED reviews were on `ec34e46d` and `298d3e60`. With `--paginate` (read 2026-11-26 at 19:25 EST) there are four: those two plus `346b9b37` and `6cc03fc7` (2026-10-29). The owner then "corrected" this ledger's 1.10 occurrence 6, which rightly named `6cc03fc7` as the last one at the time it describes, to `298d3e60`, citing the same unpaginated read. A review pass found it, and the clause was put back. The coordinator's next instruction to the owner repeated the two-review list.
+
+**Root cause.** A list was read from an API that returns one page by default, and nothing in the output said more pages existed. 1.35 covers a claim that a mechanism exists or does not, read from a file cut short by a filter or a line limit; a page limit on an API list cuts a read the same way, and here the claim was about what a list holds.
+
+**The rule.** A list read from an API (`gh api`, a REST or GraphQL listing) is read with every page (`gh api --paginate`, or the cursor followed to the end) before anything is said about what it holds or does not hold, and a correction to a record is read the same way.
+
+**Enforced by.** Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -5935,7 +5963,7 @@ batch's later briefs; that is a brief convention, not a check.
 
 ### 5.36 One unit bundled eleven guard-test fixes across five modules; it went back nine times and was cut again
 
-**Occurrences: 3** — 2026-11-17, 2026-11-18, 2026-11-21
+**Occurrences: 4** — 2026-11-17, 2026-11-18, 2026-11-21, 2026-11-26
 
 **What happened.** The coordinator's brief 06 for batch v0.17.0 (`handoffs-v0.17.0/06-now-vars-and-guards-b.md:24`) put "all eight AC-911 points and three AC-909 points" into one pull request, #1185. Those points spanned five Rust test modules (`backup_credentials.rs`, `become_password_resolution.rs`, `credential_leaks.rs`, `ledger.rs`, `manage_secrets.rs`), the deletion of a BATS test, and a plan cell. #1185 went back nine times: the owner sent the executor eight correction rounds after review and security passes, and three review rounds asked for changes (CodeRabbit on `8e1c1c01` and `4adf1fed`, `pr-reviewer` on `e8bf4630`), two of them overlapping with executor rounds. Each fix to one guard surfaced a bypass in another. Under the three-returns rule, Joseph closed #1185 (batch index decision 28), and it was cut into three pull requests (decision 31; AC-972, AC-973, AC-974).
 
@@ -5948,6 +5976,8 @@ batch's later briefs; that is a brief convention, not a check.
 **Occurrence 2 — 2026-11-18.** Brief 23 cut the git-hooks port as one unit. It became #1186 (23 files, 3,627 added lines on its final head) and went back five times. The brief set no line between a port finding (the Rust test is weaker than, or differs from, the original it replaces) and hardening (the original had the same weakness), and no size cap per port pull request, so a reviewer reading the whole diff each round returned 1, 5 and 13 Minor test-strength threads on three successive heads (the last is decision 50 in the v0.17.0 batch index). The coordinator's "sweep the file once" recommendation (decisions 48 and 49) assumed one enumeration would end the loop. Why the rule did not fire: the split rule counts files and fixes, and a port of one source group read as one unit however many modules it produced. 2.40 records the test-side cause; this is the brief-side one. A port brief states the parity line and caps a port pull request at one module family.
 
 **Occurrence 3 — 2026-11-21.** Brief 02 (#1218, AC-1025) put seven design calls, the build's launch list, a task group and a note in a second OpenSpec change into one pull request, written by an executor from a decisions file. It named none of the existing decisions the text had to agree with (naming decisions 5, 6, 9 and 15; CA decisions 8 and 9). Four `/simplify` rounds each found real defects; the last found eight, one of them a conflict with naming decision 9. The passes took about 3.25M tokens and the work about 0.72M (owner's figures, coordinator's record). Why the rule did not fire: the split rule (about three files) did not fire on a one-file design pull request; the bundling was by concern, not by file count.
+
+**Occurrence 4 — 2026-11-26.** #535 (AC-1040) carried two independent OpenSpec plans, the Windows runner and the macOS runner, in one pull request of ten files. On 2026-11-26 it went back four times: CodeRabbit's review threads on `55e2be5a` (2026-11-26 14:48Z), its follow-ups in those threads (15:37Z to 15:46Z), and two `pr-reviewer` rounds, on `6bff6c31` (PR comment 7197662112) and `0eeeeb2e` (PR comment 7198377233). Of the three MEDIUM findings in returns three and four, two were in the macOS plan alone and one (the supervisor status step) in both plans; return four's findings in the Windows plan were all LOW. The owner stopped after the third return and handed back. Eight minutes later the session that had dispatched it, a pull-request review session outside any batch, sent it a new correction task (`task_c84e95901b62`, 2026-11-26T16:35:21Z, in that owner's transcript), and that work drew the fourth return. The mac-win-runners batch then took #535 and cut it again (its index, decisions 17 and 18): the macOS plan moved to the branch `docs/add-macos-github-runner`, off `dev`, and the Windows plan stays in #535. Why the rule did not fire: the split rule is applied when a brief is cut, and #535 came from a contributor as one pull request; no brief ever cut it. The third return went back to a dispatcher outside the batch, which sent a fourth correction round instead of a new cut.
 
 ### 5.37 Ran two rounds of four-agent passes without totalling agent tokens; the unit passed its spend stop about six times over
 
@@ -6120,6 +6150,36 @@ batch's later briefs; that is a brief convention, not a check.
 **Root cause.** The hold was written from the queue's plan, not from a read of each owner's running work. The owner then stopped the run before asking, though the message asked for a reply on exactly that case.
 
 **The rule.** An order that stops or holds work first reads whether that work is running, and says what to do with a run in flight. A receiver that finds a run in flight asks before stopping it, unless the order says to stop it.
+
+**Enforced by.** Convention.
+
+### 5.49 A plan reused a playbook for a new kind of host from its header alone
+
+**Occurrences: 1** — 2026-11-26
+
+**What happened.** On 2026-11-26 the owner chose to have the macOS runner of #535 (AC-1040) take configurations minted by the orchestrator. Commit `448fe0af` rewrote the macOS plan to match. Task 5.1 said to extend the scheduled stock template "as Windows task 6.6 does", and rollback stage 2 relied on the stock task's prune mode (`grs_prune_only`). The author had read only the playbook's header comment (`platform/playbooks/stock-github-runner-jit.yml:1-23`). The third return of the 2026-11-26 work was the independent `pr-reviewer` round on head `6bff6c31`; the first two were CodeRabbit's review of `55e2be5a` and its thread follow-ups on `9e634e84`. That round found four gaps:
+- The playbook ends every host that is not `ephemeral` before its prune (`stock-github-runner-jit.yml:50-52`).
+- Prune mode is reached only through the Linux leave path (`platform/playbooks/tasks/github-runner-lifecycle.yml:166-169`), so the plan had no way to withdraw a Mac.
+- After stocking, the playbook runs the Linux supervisor's `status`, `systemctl` and `journalctl` on every host and requires it `active` (`stock-github-runner-jit.yml:76-108`).
+- The stock task reads the stock with GNU `find -printf` and writes each file `root:root` (`platform/playbooks/tasks/github-runner-jit-stock.yml:51-52`, `:192-193`).
+
+Windows task 6.6's one-line "Extend the scheduled stock template" came from `346b9b37` (2026-10-29), a commit of this pull request's branch. Fixed in `ae2955ab` and `79661192`.
+
+**Root cause.** In the plan. The plan named an existing mechanism as serving a new operating system on the strength of its name and its header. Nobody read the steps it runs on the host, or the entry point the rollback relied on.
+
+**The rule.** A plan that says an existing playbook or task serves a new kind of host first decides where the split by operating system sits (a play or an include per family), then reads every step that runs on the host: commands, paths, owners and the checks after the work, and every entry point the plan relies on, such as a mode or a leave path. It names, with `file:line`, each step that needs a branch for the new host, and how the plan reaches each entry point. Related: 10.24 (Docker's mount semantics assumed on rootless podman); 1.35 (a mechanism read from a truncated header).
+
+**Enforced by.** Convention.
+
+### 5.50 A batch checked its own registry for who held a pull request, not the live sessions (widens 6.10)
+
+**Occurrences: 1** — 2026-11-26
+
+**What happened.** On 2026-11-26 the mac-win-runners coordinator scoped its batch and checked the batch registry (`batches.md`) for who held #535. It did not list the live Orca sessions (`orca worktree ps --json`). A pull-request review session had dispatched a session to #535 at 08:46 EST. The batch planned a takeover of #535, asked the operator, and had it approved (its index, decisions 2 and 14) before the collision was found at the gate walk, before any dispatch. Two questions to the operator had to be asked again (decision 16). Source: the mac-win-runners batch index, decisions 2, 14 and 16, and its ledger note under "Notes for later pull requests".
+
+**Root cause.** The registry lists only what batches claim. Work dispatched outside a batch, by a review session or by the operator, appears only in the live session list.
+
+**The rule.** Before a batch claims a pull request or a branch, it reads both the batch registry and the live session list (`orca worktree ps --json`, with no `--limit` or `--since`, checking the `scope:` line for hosts not covered, which its help says an empty answer does not clear), and names any session working that pull request in the question it asks the operator. 6.10 asks a named peer session for its in-flight work; this entry widens it to a peer session nobody has named yet. Related: 5.10 and 5.44 (two sessions on one checkout or one unit).
 
 **Enforced by.** Convention.
 
