@@ -25,8 +25,6 @@ elif command -v xorriso &>/dev/null; then
   xorriso -as mkisofs -output "$OUTPUT" -volid WINSEED -joliet -rock "$SRC"
 elif command -v hdiutil &>/dev/null; then
   hdiutil makehybrid -o "$OUTPUT" -iso -joliet -default-volume-name WINSEED "$SRC"
-  # hdiutil appends .iso if not present
-  [[ -f "${OUTPUT}.iso" ]] && mv "${OUTPUT}.iso" "$OUTPUT"
 else
   echo "ERROR: No ISO creation tool found." >&2
   echo "  Install one of:" >&2

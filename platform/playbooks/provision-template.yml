@@ -100,7 +100,7 @@
         - name: "Refuse a malformed target_node or template_vmid"
           ansible.builtin.assert:
             that:
-              - _node | string is match('^[A-Za-z0-9][A-Za-z0-9-]*$')
+              - _node | string is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
               - _vmid | string is match('^[1-9][0-9]*$')
             fail_msg: "target_node must be a node name and template_vmid a positive integer."
 
@@ -186,7 +186,8 @@
               VMID {{ _vmid }} holds a {{ 'windows' if _vmid_is_windows else 'linux' }} VM;
               a {{ _os }} template cannot use it.
           vars:
-            _vmid_is_windows: "{{ (_existing_tmpl.json.data.ostype | default('')) is match('win') }}"
+            # Every Windows ostype Proxmox lists: w2k, w2k3, w2k8, win7, win8, win10, win11, wvista, wxp.
+            _vmid_is_windows: "{{ (_existing_tmpl.json.data.ostype | default('')) is match('^(w2k|win|wvista|wxp)') }}"
           when:
             - _existing_tmpl.status == 200
             - (_vmid_is_windows | bool) != (_os == 'windows')
@@ -216,6 +217,20 @@
               _win_resources.json.data | default([], true)
               | selectattr('name', 'defined') | selectattr('name', 'equalto', _name)
               | map(attribute='vmid') | map('int') | reject('equalto', _vmid | int) | list | length > 0
+
+        # A vmid is unique across the cluster, but the config read above asks one node only.
+        - name: "Fail if the Windows VMID is held on another node or under another name"
+          ansible.builtin.fail:
+            msg: "VMID {{ _vmid }} is already used by another VM in the cluster."
+          when:
+            - _os == 'windows'
+            - >-
+              _win_resources.json.data | default([], true)
+              | selectattr('vmid', 'defined') | selectattr('vmid', 'equalto', _vmid | int)
+              | rejectattr('node', 'equalto', _node) | list | length > 0
+              or _win_resources.json.data | default([], true)
+              | selectattr('vmid', 'defined') | selectattr('vmid', 'equalto', _vmid | int)
+              | rejectattr('name', 'equalto', _name) | list | length > 0
 
         - name: "Guard template VMID before seed preparation"
           ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
@@ -443,6 +458,16 @@
               no_log: true
               when: not ansible_check_mode
 
+            # The key lands inside a single-quoted PowerShell literal.
+            - name: "Require an OpenSSH public key for the first-logon script"
+              ansible.builtin.assert:
+                that:
+                  - _win_ssh_pub is match('^(ssh|ecdsa)-[A-Za-z0-9-]+ [A-Za-z0-9+/]+=*( .*)?$')
+                  - >-
+                    "'" not in _win_ssh_pub
+                fail_msg: "The management public key is not an OpenSSH public key."
+              when: not ansible_check_mode
+
             - name: "Render the first-logon script"
               ansible.builtin.template:
                 src: "{{ _win_dir }}/first-logon.ps1.j2"
@@ -469,6 +494,24 @@
                 _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
               tags: [always]
 
+            # A run killed before its always section leaves its seed behind under this same name.
+            - name: "Look for a seed left by an earlier run"
+              ansible.builtin.uri:
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ _win_seed_storage }}/content"
+                method: GET
+              register: _win_seed_before
+              check_mode: false
+
+            - name: "Delete a seed left by an earlier run"
+              ansible.builtin.uri:
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ _win_seed_storage | urlencode }}/content/{{ _win_seed_volid | urlencode }}?delay=30"
+                method: DELETE
+                timeout: 60
+                status_code: [200]
+              when:
+                - not ansible_check_mode
+                - _win_seed_volid in (_win_seed_before.json.data | default([], true) | map(attribute='volid') | list)
+
             # The ISO holds the one-time password. curl, not the uri module: the uri module's
             # form-multipart sends a file part base64-encoded, or with its line endings rewritten
             # under 7or8bit (ansible.module_utils.urls.prepare_multipart), so the ISO would not
@@ -492,7 +535,6 @@
                   - "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ _win_seed_storage }}/upload"
                 stdin: "Authorization: PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
               register: _win_upload
-              changed_when: true
               no_log: true
               when: not ansible_check_mode
 
@@ -514,6 +556,13 @@
                 - not ansible_check_mode
                 - _win_upload_upid | default('') is string
                 - _win_upload_upid | default('') | length > 0
+
+            - name: "Fail if the seed upload task failed"
+              ansible.builtin.fail:
+                msg: "Seed upload failed: {{ _win_upload_task.json.data.exitstatus }}"
+              when:
+                - _win_upload_task.json is defined
+                - _win_upload_task.json.data.exitstatus | default('OK') != 'OK'
 
             - name: "Guard template VMID before Windows creation"
               ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
@@ -561,6 +610,13 @@
               when:
                 - not ansible_check_mode
                 - _win_create.json.data is defined and _win_create.json.data is string
+
+            - name: "Fail if the Windows VM creation task failed"
+              ansible.builtin.fail:
+                msg: "VM creation failed: {{ _win_create_task.json.data.exitstatus }}"
+              when:
+                - _win_create_task.json is defined
+                - _win_create_task.json.data.exitstatus | default('OK') != 'OK'
 
             - name: "Guard template VMID before Windows start"
               ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
@@ -673,7 +729,6 @@
                 method: DELETE
                 timeout: 60
                 status_code: [200]
-              register: _win_seed_delete
               # The read-back below decides: a refused delete must not skip it.
               failed_when: false
               when:
@@ -685,7 +740,6 @@
                 url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ _win_seed_storage }}/content"
                 method: GET
               register: _win_seed_content
-              check_mode: false
               when:
                 - not ansible_check_mode
                 - _win_upload is defined and _win_upload is not skipped

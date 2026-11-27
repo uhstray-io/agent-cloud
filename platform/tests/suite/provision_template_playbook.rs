@@ -12,8 +12,8 @@
 
 use std::path::Path;
 
-use agent_cloud_tests::http::{Mock, Request, ResponseTemplate, Server, matchers};
-use agent_cloud_tests::{playbook, process, repo, text};
+use agent_cloud_tests::http::{Mock, Request, Server, matchers};
+use agent_cloud_tests::{playbook, process, repo, seed, text};
 use regex::Regex;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -26,6 +26,7 @@ const PVE_TOKEN_ID: &str = "t@pve!x";
 const WIN_KEY: &str = "ssh-ed25519 AAAAsentinel";
 const WIN_VMID: &str = "9100";
 const WIN_SEED_VOLID: &str = "local:iso/windows-seed-9100.iso";
+const WIN_SEED_FILE: &str = "windows-seed-9100.iso";
 
 /// The Ubuntu requests recorded on the playbook before the Windows branch (base `89cca2dc`):
 /// method, path with query, body (a multipart upload as `<multipart>`).
@@ -127,12 +128,19 @@ fn lift_tasks(tasks: &mut Value, pb_dir: &Path) {
     }
 }
 
-/// The template play (the one with `tasks`), lifted.
-fn lifted_play() -> Value {
-    let mut play = playbook::plays(PLAYBOOK)
+/// The template play: the one with `tasks` (the imported plays have none).
+fn template_play() -> Value {
+    playbook::plays(PLAYBOOK)
         .into_iter()
         .find(|p| p.get("tasks").is_some())
-        .expect("the playbook has a play with tasks");
+        .expect("the playbook has a play with tasks")
+}
+
+/// The template play, lifted. No task reads a gathered fact, so facts are not gathered; the
+/// Ubuntu golden tests would see any request this changed.
+fn lifted_play() -> Value {
+    let mut play = template_play();
+    play["gather_facts"] = json!(false);
     let pb_dir = repo::path("platform/playbooks");
     lift_tasks(&mut play["tasks"], &pb_dir);
     play
@@ -189,7 +197,7 @@ fn run_play(
 fn reply(method: &str, path: &str, status: u16, body: Value) -> Mock {
     Mock::given(matchers::method(method))
         .and(matchers::path(path))
-        .respond_with(ResponseTemplate::new(status).set_body_json(body))
+        .respond_with(seed::reply(status, &body))
 }
 
 fn api(rest: &str) -> String {
@@ -227,9 +235,7 @@ fn mount_build(server: &Server, vmid: &str, create_status: u16) {
     let create = if create_status == 200 {
         reply("POST", &api("qemu"), 200, json!({"data": "UPID:fake"}))
     } else {
-        Mock::given(matchers::method("POST"))
-            .and(matchers::path(api("qemu")))
-            .respond_with(ResponseTemplate::new(create_status))
+        reply("POST", &api("qemu"), create_status, json!(null))
     };
     server.mount(create);
     server.mount(reply(
@@ -265,7 +271,7 @@ fn mount_build(server: &Server, vmid: &str, create_status: u16) {
     ));
     server.mount(
         Mock::given(matchers::method("DELETE"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": null}))),
+            .respond_with(seed::reply(200, &json!({"data": null}))),
     );
     server.mount(reply(
         "GET",
@@ -273,13 +279,6 @@ fn mount_build(server: &Server, vmid: &str, create_status: u16) {
         200,
         json!({"data": []}),
     ));
-}
-
-fn path_and_query(req: &Request) -> String {
-    match req.url.query() {
-        Some(q) => format!("{}?{q}", req.url.path()),
-        None => req.url.path().to_owned(),
-    }
 }
 
 fn shown_body(req: &Request) -> String {
@@ -293,10 +292,6 @@ fn shown_body(req: &Request) -> String {
     } else {
         String::from_utf8_lossy(&req.body).into_owned()
     }
-}
-
-fn is_write(req: &Request) -> bool {
-    ["POST", "PUT", "DELETE"].contains(&req.method.as_str())
 }
 
 /// Runs the Ubuntu build and compares every request with GOLDEN, in order.
@@ -325,7 +320,10 @@ fn assert_ubuntu_golden(template_os: Option<&str>) {
     let got: Vec<(String, String, String)> = server
         .requests()
         .iter()
-        .map(|r| (r.method.to_string(), path_and_query(r), shown_body(r)))
+        .map(|r| {
+            let (method, path) = seed::record(r);
+            (method, path, shown_body(r))
+        })
         .collect();
     let want: Vec<(String, String, String)> = GOLDEN
         .iter()
@@ -359,12 +357,20 @@ fn windows_extra(vmid: Option<&str>) -> Vec<String> {
     extra
 }
 
+/// Every request as "METHOD path?query", in arrival order.
+fn sent(server: &Server) -> Vec<String> {
+    seed::recorded(server)
+        .into_iter()
+        .map(|(method, path)| format!("{method} {path}"))
+        .collect()
+}
+
+/// The POST, PUT and DELETE requests, as [`sent`] shows them.
 fn no_writes(server: &Server) -> Vec<String> {
-    server
-        .requests()
-        .iter()
-        .filter(|r| is_write(r))
-        .map(|r| format!("{} {}", r.method, path_and_query(r)))
+    seed::recorded(server)
+        .into_iter()
+        .filter(|(method, _)| ["POST", "PUT", "DELETE"].contains(&method.as_str()))
+        .map(|(method, path)| format!("{method} {path}"))
         .collect()
 }
 
@@ -425,18 +431,13 @@ fn windows_reusing_the_template_name_at_another_vmid_is_refused_before_any_write
 fn windows_without_a_template_vmid_sends_nothing() {
     let dir = TempDir::new().unwrap();
     let server = Server::start();
-    mount_build(&server, "9000", 200);
     let run = run_play(dir.path(), &server, &windows_extra(None), &[]);
     assert!(
         !run.ok,
         "a Windows build without a vmid passed\n{}",
         run.output
     );
-    let sent: Vec<String> = server
-        .requests()
-        .iter()
-        .map(|r| format!("{} {}", r.method, path_and_query(r)))
-        .collect();
+    let sent = sent(&server);
     assert!(sent.is_empty(), "requests sent: {sent:?}\n{}", run.output);
 }
 
@@ -476,6 +477,18 @@ fn a_malformed_node_or_vmid_sends_nothing() {
 /// The seed upload answers `{"data": <upload_upid>}` (null when `None`), and that task's status is
 /// `stopped`. The upload runs the real curl, so a missing curl fails the test.
 fn windows_build(dir: &Path, create_status: u16, upload_upid: Option<&str>) -> (Server, Run) {
+    windows_build_with(dir, create_status, upload_upid, vec![], &[])
+}
+
+/// [`windows_build`] with `overrides` mounted first (a caller gives each a priority above the
+/// build's defaults) and `more` extra vars after the usual ones.
+fn windows_build_with(
+    dir: &Path,
+    create_status: u16,
+    upload_upid: Option<&str>,
+    overrides: Vec<Mock>,
+    more: &[String],
+) -> (Server, Run) {
     let curl_found = std::env::var_os("PATH")
         .is_some_and(|path| std::env::split_paths(&path).any(|d| d.join("curl").is_file()));
     assert!(
@@ -483,6 +496,9 @@ fn windows_build(dir: &Path, create_status: u16, upload_upid: Option<&str>) -> (
         "curl is not on PATH: the Windows seed upload runs curl"
     );
     let server = Server::start();
+    for mock in overrides {
+        server.mount(mock);
+    }
     if let Some(upid) = upload_upid {
         server.mount(
             reply(
@@ -503,8 +519,9 @@ fn windows_build(dir: &Path, create_status: u16, upload_upid: Option<&str>) -> (
     mount_build(&server, WIN_VMID, create_status);
     let path = process::fake_bin(dir, &[("genisoimage", FAKE_GENISOIMAGE)]);
     let mut extra = windows_extra(Some(WIN_VMID));
-    extra.push("BAO_ROLE_ID=SENTINEL-ROLE".to_owned());
-    extra.push("BAO_SECRET_ID=SENTINEL-SECRET-ID".to_owned());
+    extra.extend(more.iter().cloned());
+    // The Windows runs pass ssh_public_key, so the store branch is not exercised: the BAO
+    // sentinels prove only that the environment values do not leak.
     let env = [
         ("PATH", path),
         ("BAO_ROLE_ID", "SENTINEL-ROLE".into()),
@@ -514,22 +531,29 @@ fn windows_build(dir: &Path, create_status: u16, upload_upid: Option<&str>) -> (
     (server, run)
 }
 
-/// The seed DELETE (its volid decoded) is sent, and a storage read-back comes after it.
+/// Whether `req` is a DELETE of the Windows seed on storage `local`.
+fn is_seed_delete(req: &Request) -> bool {
+    req.method.as_str() == "DELETE"
+        && req.url.path().starts_with(&api("storage/local/content/"))
+        && req.url.path().ends_with(WIN_SEED_FILE)
+}
+
+fn is_seed_upload(req: &Request) -> bool {
+    req.method.as_str() == "POST" && req.url.path() == api("storage/local/upload")
+}
+
+/// The seed DELETE is sent after the upload, and a storage read-back comes after it.
 fn assert_seed_deleted(server: &Server, output: &str) {
     let reqs = server.requests();
-    let prefix = api("storage/local/content/");
-    let delete = reqs.iter().position(|r| {
-        r.method.as_str() == "DELETE"
-            && r.url.path().starts_with(&prefix)
-            && urlencoding_decode(&r.url.path()[prefix.len()..]) == WIN_SEED_VOLID
-    });
-    let sent: Vec<String> = reqs
-        .iter()
-        .map(|r| format!("{} {}", r.method, path_and_query(r)))
-        .collect();
-    let Some(delete) = delete else {
+    let sent = sent(server);
+    let upload = reqs.iter().position(is_seed_upload);
+    let Some(delete) = reqs.iter().rposition(is_seed_delete) else {
         panic!("no DELETE of {WIN_SEED_VOLID}: {sent:?}\n{output}");
     };
+    assert!(
+        upload.is_some_and(|u| u < delete),
+        "no DELETE of {WIN_SEED_VOLID} after the upload: {sent:?}\n{output}"
+    );
     let read_back = reqs[delete + 1..]
         .iter()
         .any(|r| r.method.as_str() == "GET" && r.url.path() == api("storage/local/content"));
@@ -537,26 +561,6 @@ fn assert_seed_deleted(server: &Server, output: &str) {
         read_back,
         "no storage read-back after the DELETE: {sent:?}\n{output}"
     );
-}
-
-/// Percent-decoding of a path segment (`%3A` to `:`), enough for a volid.
-fn urlencoding_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let Ok(b) = u8::from_str_radix(&text[i + 1..i + 3], 16)
-        {
-            out.push(b);
-            i += 3;
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[test]
@@ -600,10 +604,7 @@ fn windows_seed_carries_the_public_key_and_no_other_secret() {
     let (server, run) = windows_build(dir.path(), 200, None);
     assert!(run.ok, "{}", run.output);
     let requests = server.requests();
-    let uploads: Vec<&Request> = requests
-        .iter()
-        .filter(|r| r.method.as_str() == "POST" && r.url.path() == api("storage/local/upload"))
-        .collect();
+    let uploads: Vec<&Request> = requests.iter().filter(|r| is_seed_upload(r)).collect();
     assert_eq!(uploads.len(), 1, "one seed upload\n{}", run.output);
     let auth = uploads[0]
         .headers
@@ -685,10 +686,7 @@ fn answer_file_inputs_are_the_one_time_password_image_index_and_public_key() {
             problems.push(format!("{file} has a `{{%` statement"));
         }
     }
-    let play = playbook::plays(PLAYBOOK)
-        .into_iter()
-        .find(|p| p.get("tasks").is_some())
-        .unwrap();
+    let play = template_play();
     let mut tasks = vec![];
     all_tasks(&play["tasks"], &mut tasks);
     let setters: Vec<&Value> = tasks
@@ -777,4 +775,116 @@ fn answer_file_inputs_are_the_one_time_password_image_index_and_public_key() {
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn windows_vmid_held_on_another_node_is_refused_before_any_write() {
+    let dir = TempDir::new().unwrap();
+    // Over a full build, so a missed refusal goes on to write.
+    let elsewhere = reply(
+        "GET",
+        "/api2/json/cluster/resources",
+        200,
+        json!({"data": [{"vmid": 9100, "name": "windows-server-2025-template", "node": "othernode"}]}),
+    )
+    .with_priority(1);
+    let (server, run) = windows_build_with(dir.path(), 200, None, vec![elsewhere], &[]);
+    assert!(
+        !run.ok,
+        "a vmid held on another node passed\n{}",
+        run.output
+    );
+    let writes = no_writes(&server);
+    assert!(writes.is_empty(), "writes sent: {writes:?}\n{}", run.output);
+}
+
+#[test]
+fn ubuntu_refuses_a_vmid_holding_a_legacy_windows_ostype() {
+    let dir = TempDir::new().unwrap();
+    let server = Server::start();
+    server.mount(reply(
+        "GET",
+        &api("qemu/9000/config"),
+        200,
+        json!({"data": {"template": 1, "ostype": "w2k8", "name": "x", "ide2": "vm-lvms:vm-9000-cloudinit"}}),
+    ));
+    let run = run_play(dir.path(), &server, &[], &[]);
+    assert!(
+        !run.ok,
+        "an Ubuntu run at a w2k8 vmid passed\n{}",
+        run.output
+    );
+    assert!(
+        run.output.contains("holds a windows VM"),
+        "not refused by the cross-OS check\n{}",
+        run.output
+    );
+    let writes = no_writes(&server);
+    assert!(writes.is_empty(), "writes sent: {writes:?}\n{}", run.output);
+}
+
+#[test]
+fn windows_build_fails_when_the_create_task_fails() {
+    let dir = TempDir::new().unwrap();
+    let failed_task = reply(
+        "GET",
+        &api("tasks/UPID:fake/status"),
+        200,
+        json!({"data": {"status": "stopped", "exitstatus": "unexpected error"}}),
+    )
+    .with_priority(1);
+    let (server, run) = windows_build_with(dir.path(), 200, None, vec![failed_task], &[]);
+    assert!(!run.ok, "a failed create task passed\n{}", run.output);
+    let template = api(&format!("qemu/{WIN_VMID}/template"));
+    let converted = server
+        .requests()
+        .iter()
+        .any(|r| r.method.as_str() == "POST" && r.url.path() == template);
+    assert!(
+        !converted,
+        "the VM was converted after a failed create task: {:?}\n{}",
+        sent(&server),
+        run.output
+    );
+    assert_seed_deleted(&server, &run.output);
+}
+
+#[test]
+fn a_seed_left_by_an_earlier_run_is_deleted_before_the_upload() {
+    let dir = TempDir::new().unwrap();
+    let leftover = reply(
+        "GET",
+        &api("storage/local/content"),
+        200,
+        json!({"data": [{"volid": WIN_SEED_VOLID}]}),
+    )
+    .up_to_n_times(1)
+    .with_priority(1);
+    let (server, run) = windows_build_with(dir.path(), 200, None, vec![leftover], &[]);
+    assert!(run.ok, "{}", run.output);
+    let reqs = server.requests();
+    let upload = reqs.iter().position(is_seed_upload);
+    let delete = reqs.iter().position(is_seed_delete);
+    assert!(
+        matches!((delete, upload), (Some(d), Some(u)) if d < u),
+        "no DELETE of {WIN_SEED_VOLID} before the upload: {:?}\n{}",
+        sent(&server),
+        run.output
+    );
+}
+
+#[test]
+fn a_malformed_public_key_is_refused_before_the_seed_is_built() {
+    let dir = TempDir::new().unwrap();
+    // Well-formed but for a single quote in the comment, which would end the PowerShell literal.
+    let key = json!({"ssh_public_key": "ssh-ed25519 AAAAsentinel it's"}).to_string();
+    let (server, run) = windows_build_with(dir.path(), 200, None, vec![], &[key]);
+    assert!(!run.ok, "a key with a quote passed\n{}", run.output);
+    let uploaded = server.requests().iter().any(is_seed_upload);
+    assert!(
+        !uploaded,
+        "the seed was uploaded: {:?}\n{}",
+        sent(&server),
+        run.output
+    );
 }

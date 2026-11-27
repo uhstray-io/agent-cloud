@@ -51,7 +51,14 @@ Get-ChildItem WSMan:\localhost\Listener -ErrorAction SilentlyContinue | Remove-I
 Stop-Service WinRM -Force -ErrorAction SilentlyContinue
 Set-Service WinRM -StartupType Disabled
 
-Write-Output 'Step 6: remove the one-time password from the disk'
+Write-Output 'Step 6: replace the one-time password, then remove it from the disk'
+# The seed ISO carried the one-time password, so it must not stay a working credential on the
+# template or its clones: the Administrator gets a random password generated here and never
+# written or printed. Each clone's password is set from the secret store at provisioning.
+$Bytes = New-Object byte[] 32
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($Bytes)
+Set-LocalUser -Name Administrator -Password (ConvertTo-SecureString ([Convert]::ToBase64String($Bytes)) -AsPlainText -Force)
+Remove-Variable Bytes
 # Where Windows Setup caches the answer file is unverified; each known place is removed, and the
 # spike reads the template disk for the password after sysprep (spike U09).
 Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name DefaultPassword,AutoAdminLogon,AutoLogonCount -ErrorAction SilentlyContinue
