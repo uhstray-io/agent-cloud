@@ -829,34 +829,16 @@ fn answer_file_inputs_are_the_one_time_password_image_index_and_public_key() {
 #[test]
 fn first_logon_opens_ssh_on_every_profile_and_drops_host_keys_before_sysprep() {
     let logon = text::read("platform/hypervisor/proxmox/windows/first-logon.ps1");
-    let lines: Vec<&str> = logon.lines().collect();
-    let mut problems = vec![];
-    let rule = "-Name 'OpenSSH-Server-In-TCP'";
-    let create = lines.iter().position(|l| {
-        l.trim_start().starts_with("New-NetFirewallRule")
-            && l.contains(rule)
-            && l.contains("-Profile Any")
-    });
-    let drop = lines
-        .iter()
-        .position(|l| l.trim_start().starts_with("Remove-NetFirewallRule") && l.contains(rule));
-    match (drop, create) {
-        (Some(d), Some(c)) if d < c => {}
-        _ => problems.push(format!(
-            "no Remove-NetFirewallRule (line {drop:?}) before a New-NetFirewallRule of OpenSSH-Server-In-TCP with -Profile Any (line {create:?})"
-        )),
-    }
-    let remove = lines
-        .iter()
-        .position(|l| l.trim_start().starts_with("Remove-Item") && l.contains("ssh_host_*"));
-    let sysprep = lines.iter().position(|l| l.contains("sysprep.exe"));
-    match (remove, sysprep) {
-        (Some(r), Some(s)) if r < s => {}
-        _ => problems.push(format!(
-            "the ssh_host_* Remove-Item (line {remove:?}) is not before sysprep.exe (line {sysprep:?})"
-        )),
-    }
-    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    text::assert_precedes(
+        &logon,
+        r"^Remove-NetFirewallRule -Name 'OpenSSH-Server-In-TCP'",
+        r"^New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' .*-Profile Any",
+    );
+    text::assert_precedes(
+        &logon,
+        r"^Remove-Item -Path 'C:\\ProgramData\\ssh\\ssh_host_\*'",
+        r"^& .*sysprep\.exe",
+    );
 }
 
 #[test]
