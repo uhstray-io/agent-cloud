@@ -268,9 +268,11 @@
       no_log: true
       check_mode: false
 
+    # no_log: it reads the whole registered results, whose request headers carry the token (MISTAKES 4.6).
     - name: Index the ISO listing before any write by node and storage
       ansible.builtin.set_fact:
         _listed_before: "{{ _content_before.results | items2dict(key_name='item', value_name='json') }}"
+      no_log: true
 
     - name: Read the token's privileges on the root, each storage and each node
       ansible.builtin.uri:
@@ -356,6 +358,7 @@
     - name: Index the ISO listing after the downloads by node and storage
       ansible.builtin.set_fact:
         _listed_after: "{{ _content_after.results | items2dict(key_name='item', value_name='json') }}"
+      no_log: true
       when: not ansible_check_mode
 
     - name: Name each declared ISO that is not on its storage after the downloads
