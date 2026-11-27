@@ -325,6 +325,8 @@ TEMPFILE_USERS = {
     "removed in an always: block",
     "release-version.yml": "anonymous agent-cloud clone and the 0600 git credential file for the release App "
     "token, contains no SSH key, removed in an always: block",
+    "provision-template.yml": "Windows seed source and ISO with the one-time administrator password and the "
+    "management public key, contains no SSH private key, removed in an always: block",
 }
 
 

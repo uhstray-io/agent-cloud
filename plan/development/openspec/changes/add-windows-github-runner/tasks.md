@@ -72,7 +72,7 @@ under the decision it settles.
 
 ## 2. Extend the shared mechanisms (before any host depends on them)
 
-- [ ] 2.1 `provision-template.yml`: add `template_os` (default `ubuntu`) and make
+- [x] 2.1 `provision-template.yml`: add `template_os` (default `ubuntu`) and make
       `target_node` and `template_vmid` real per-template parameters. With
       `template_os: windows`, build from the Windows ISO, the VirtIO ISO and a seed ISO
       generated from `platform/hypervisor/proxmox/windows/autounattend.xml.j2` plus a
@@ -82,11 +82,11 @@ under the decision it settles.
       `ubuntu-2404-template`), tag it with the OS, and fail before creating anything when
       the selected name or `template_vmid` already belongs to a VM or template of another
       OS.
-- [ ] 2.2 The seed carries only the management public key and a random one-time
+- [x] 2.2 The seed carries only the management public key and a random one-time
       administrator password generated in memory for that build (D3). Add a test that
       fails if the rendered answer file contains any value read from the secret store
       other than a `:public_key`.
-- [ ] 2.3 BATS or pytest regression: with `template_os` absent, the requests
+- [x] 2.3 BATS or pytest regression: with `template_os` absent, the requests
       `provision-template.yml` would send are identical to today's (the Ubuntu path is
       byte-identical), and a Windows build pointed at the Ubuntu template's name or vmid is
       refused before any request.

@@ -3276,6 +3276,24 @@ templates:
     # main's copy predates the workflow step result (vm-template) and the cloud-init
     # drive match; the (Dev) variant runs the current code before promotion.
     dev_variant: true
+    # These fields exist so scripts/semaphore-launch.py can pass them. All are optional, and
+    # leaving them absent keeps the Ubuntu build unchanged.
+    survey_vars:
+      - name: template_os
+        title: "Template OS"
+        description: "ubuntu (default) or windows"
+        type: string
+        required: false
+      - name: template_vmid
+        title: "Template VMID"
+        description: "VMID of the template; required for windows, defaults to 9000 for ubuntu"
+        type: integer
+        required: false
+      - name: target_node
+        title: "Target node"
+        description: "Proxmox node to build on; required for windows"
+        type: string
+        required: false
 
   - name: Destroy VM
     playbook: platform/playbooks/destroy-vm.yml

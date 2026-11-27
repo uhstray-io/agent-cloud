@@ -129,3 +129,9 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1234 (AC-1100).
 - **DERIVED:** A playbook-tier test that lifts a play's vars and `when` lists and runs them against stub hosts on a local connection proves the Jinja, not the privilege change: the stub run has no `become`, so a task's `become_user` (and anything else it does only under `become`) is never exercised, and reverting it passes. Pair such a test with a static check on the lifted task's `become_user`, and mutate that line once to watch the check go red.
 - **APPLIES TO:** playbook-tier modules under `platform/tests/suite/` that lift tasks carrying `become` or `become_user`, such as `inspect_host_containers_playbook.rs`.
+
+### L-022 · 2026-11-27 · playbooks
+
+- **ACCEPTED:** #1235 (AC-1107).
+- **DERIVED:** Upload an ISO or any other binary through an HTTP API with `curl --form`, never with the `uri` module's `form-multipart` body. In that body (`ansible.module_utils.urls.prepare_multipart`, read on ansible-core 2.20.8) a part given as `content` has its line endings rewritten to `\r\n`; a part given as a `filename` alone is sent base64-encoded, which arrives as the file only if the receiver decodes `Content-Transfer-Encoding` (not verified for Proxmox), or, with `multipart_encoding: 7or8bit`, has its line endings rewritten too.
+- **APPLIES TO:** playbooks under `platform/playbooks/` that upload binary files through an HTTP API, such as the Windows seed upload in `provision-template.yml`. The Ubuntu seed upload in the same playbook still uses the `uri` body and is existing debt (AC-1110).
