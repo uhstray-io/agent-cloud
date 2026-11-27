@@ -123,3 +123,9 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1228 (AC-1060).
 - **DERIVED:** Raising a version default in an agent-cloud playbook (`github_runner_version | default(...)` in `deploy-github-runner.yml`) changes nothing on a host whose site-config inventory pins its own value, and production pins the runner version there. A version bump that must reach production plans the site-config pin change as its own pull request, and the deploy run follows that one, not the agent-cloud merge.
 - **APPLIES TO:** version pins and other defaults in `platform/playbooks/` that site-config can override, and the plans that bump them.
+
+### L-021 · 2026-11-26 · tests
+
+- **ACCEPTED:** #1234 (AC-1100).
+- **DERIVED:** A playbook-tier test that lifts a play's vars and `when` lists and runs them against stub hosts on a local connection proves the Jinja, not the privilege change: the stub run has no `become`, so a task's `become_user` (and anything else it does only under `become`) is never exercised, and reverting it passes. Pair such a test with a static check on the lifted task's `become_user`, and mutate that line once to watch the check go red.
+- **APPLIES TO:** playbook-tier modules under `platform/tests/suite/` that lift tasks carrying `become` or `become_user`, such as `inspect_host_containers_playbook.rs`.
