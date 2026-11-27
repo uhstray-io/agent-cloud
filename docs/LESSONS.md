@@ -133,5 +133,5 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 ### L-022 · 2026-11-27 · playbooks
 
 - **ACCEPTED:** #1235 (AC-1107).
-- **DERIVED:** Ansible's `uri` module does not deliver a binary file byte for byte in a `form-multipart` body: a file part is base64-encoded by default, and with `multipart_encoding: 7or8bit` its line endings become `\r\n` (`ansible.module_utils.urls.prepare_multipart`). A playbook that uploads an ISO or any other binary sends it with `curl --form`, with the API token passed on stdin (`--header @-`, curl 7.55.0 or later) rather than in argv.
+- **DERIVED:** Upload an ISO or any other binary through an HTTP API with `curl --form`, never with the `uri` module's `form-multipart` body. The `uri` module does not deliver a file part byte for byte: it base64-encodes it by default, and with `multipart_encoding: 7or8bit` it turns its line endings into `\r\n` (`ansible.module_utils.urls.prepare_multipart`).
 - **APPLIES TO:** playbooks under `platform/playbooks/` that upload files through an HTTP API, such as the Windows seed upload in `provision-template.yml`.
