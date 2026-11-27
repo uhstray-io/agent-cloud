@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build the Windows seed ISO that provision-template.yml attaches next to the installer.
 # usage: build-seed-iso.sh <src-dir> <out-iso>
-# <src-dir> holds Autounattend.xml, first-logon.ps1 and clone-unattend.xml; Windows Setup
-# reads Autounattend.xml from the root of any attached drive. The volume is labeled WINSEED.
+# <src-dir> holds Autounattend.xml, first-logon.ps1, clone-unattend.xml and management.pub;
+# Windows Setup reads Autounattend.xml from the root of any attached drive. The volume is labeled WINSEED.
 # Works on Linux (genisoimage, mkisofs or xorriso) and macOS (mkisofs or hdiutil).
 set -euo pipefail
 

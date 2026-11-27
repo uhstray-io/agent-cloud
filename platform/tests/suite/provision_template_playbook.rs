@@ -232,12 +232,12 @@ fn mount_build(server: &Server, vmid: &str, create_status: u16) {
         200,
         json!({"data": null}),
     ));
-    let create = if create_status == 200 {
-        reply("POST", &api("qemu"), 200, json!({"data": "UPID:fake"}))
+    let created = if create_status == 200 {
+        json!({"data": "UPID:fake"})
     } else {
-        reply("POST", &api("qemu"), create_status, json!(null))
+        json!(null)
     };
-    server.mount(create);
+    server.mount(reply("POST", &api("qemu"), create_status, created));
     server.mount(reply(
         "GET",
         &api("tasks/UPID:fake/status"),
@@ -428,44 +428,50 @@ fn windows_reusing_the_template_name_at_another_vmid_is_refused_before_any_write
 }
 
 #[test]
-fn windows_without_a_template_vmid_sends_nothing() {
-    let dir = TempDir::new().unwrap();
-    let server = Server::start();
-    let run = run_play(dir.path(), &server, &windows_extra(None), &[]);
-    assert!(
-        !run.ok,
-        "a Windows build without a vmid passed\n{}",
-        run.output
-    );
-    let sent = sent(&server);
-    assert!(sent.is_empty(), "requests sent: {sent:?}\n{}", run.output);
-}
-
-#[test]
 fn a_malformed_node_or_vmid_sends_nothing() {
-    // Both reach request paths, and the survey passes them; each OS refuses them before any request.
-    let cases: [(&str, Vec<String>); 4] = [
+    // Both reach request paths, and the survey passes them; each OS refuses them before any
+    // request. A Windows build has no default vmid, so one without a vmid sends nothing either.
+    // Each row must be refused by its own check, not by a later request failing.
+    const MALFORMED: &str = "target_node must be a node name and template_vmid a positive integer.";
+    const NO_VMID: &str = "A Windows template needs -e template_vmid=<n>";
+    let cases: [(&str, Vec<String>, &str); 6] = [
         (
             "ubuntu node",
             vec!["target_node=n1/../../cluster".to_owned()],
+            MALFORMED,
         ),
-        ("ubuntu vmid", vec!["template_vmid=9000/status".to_owned()]),
-        ("windows node", {
-            let mut e = windows_extra(Some("9100"));
-            e.push("target_node=n1?x=1".to_owned());
-            e
-        }),
-        ("windows vmid", windows_extra(Some("0"))),
+        (
+            "ubuntu vmid",
+            vec!["template_vmid=9000/status".to_owned()],
+            MALFORMED,
+        ),
+        (
+            "ubuntu vmid with a trailing newline",
+            vec![json!({"template_vmid": "9000\n"}).to_string()],
+            MALFORMED,
+        ),
+        (
+            "windows node",
+            {
+                let mut e = windows_extra(Some("9100"));
+                e.push("target_node=n1?x=1".to_owned());
+                e
+            },
+            MALFORMED,
+        ),
+        ("windows vmid", windows_extra(Some("0")), MALFORMED),
+        ("windows without a vmid", windows_extra(None), NO_VMID),
     ];
     let mut problems = vec![];
-    for (case, extra) in cases {
+    for (case, extra, refusal) in cases {
         let dir = TempDir::new().unwrap();
         let server = Server::start();
         let run = run_play(dir.path(), &server, &extra, &[]);
-        let sent = server.requests().len();
-        if run.ok || sent != 0 {
+        let sent = sent(&server);
+        let refused = run.output.contains(refusal);
+        if run.ok || !sent.is_empty() || !refused {
             problems.push(format!(
-                "{case}: passed={}, requests={sent}\n{}",
+                "{case}: passed={}, refused by its check={refused}, requests={sent:?}\n{}",
                 run.ok, run.output
             ));
         }
@@ -666,25 +672,19 @@ fn template_names(src: &str) -> Vec<String> {
 fn answer_file_inputs_are_the_one_time_password_image_index_and_public_key() {
     let win = "platform/hypervisor/proxmox/windows";
     let answer = text::read(&format!("{win}/autounattend.xml.j2"));
-    let logon = text::read(&format!("{win}/first-logon.ps1.j2"));
+    let logon = text::read(&format!("{win}/first-logon.ps1"));
     let mut problems = vec![];
     for name in template_names(&answer) {
         if !["_win_admin_password", "_win_image_index"].contains(&name.as_str()) {
             problems.push(format!("autounattend.xml.j2 renders `{name}`"));
         }
     }
-    for name in template_names(&logon) {
-        if name != "_win_ssh_pub" {
-            problems.push(format!("first-logon.ps1.j2 renders `{name}`"));
-        }
+    // The script is copied, not rendered: it must hold no Jinja.
+    if logon.contains("{{") || logon.contains("{%") {
+        problems.push("first-logon.ps1 holds Jinja".to_owned());
     }
-    for (file, src) in [
-        ("autounattend.xml.j2", &answer),
-        ("first-logon.ps1.j2", &logon),
-    ] {
-        if src.contains("{%") {
-            problems.push(format!("{file} has a `{{%` statement"));
-        }
+    if answer.contains("{%") {
+        problems.push("autounattend.xml.j2 has a `{%` statement".to_owned());
     }
     let play = template_play();
     let mut tasks = vec![];
@@ -711,6 +711,25 @@ fn answer_file_inputs_are_the_one_time_password_image_index_and_public_key() {
         }
         if t["no_log"] != json!(true) {
             problems.push("the _win_admin_password task is not no_log".to_owned());
+        }
+    }
+    let key_writers: Vec<&Value> = tasks
+        .iter()
+        .filter(|t| {
+            t["ansible.builtin.copy"]["dest"]
+                .as_str()
+                .is_some_and(|d| d.ends_with("/management.pub"))
+        })
+        .collect();
+    if key_writers.len() != 1 {
+        problems.push(format!("{} tasks write management.pub", key_writers.len()));
+    }
+    for t in &key_writers {
+        let content = t["ansible.builtin.copy"]["content"]
+            .as_str()
+            .unwrap_or_default();
+        if template_names(content) != ["_win_ssh_pub"] {
+            problems.push(format!("management.pub is written from `{content}`"));
         }
     }
     let pub_var = play["vars"]["_win_ssh_pub"].as_str().unwrap_or_default();
@@ -806,7 +825,7 @@ fn ubuntu_refuses_a_vmid_holding_a_legacy_windows_ostype() {
         "GET",
         &api("qemu/9000/config"),
         200,
-        json!({"data": {"template": 1, "ostype": "w2k8", "name": "x", "ide2": "vm-lvms:vm-9000-cloudinit"}}),
+        json!({"data": {"template": 1, "ostype": "w2k8"}}),
     ));
     let run = run_play(dir.path(), &server, &[], &[]);
     assert!(
@@ -875,16 +894,44 @@ fn a_seed_left_by_an_earlier_run_is_deleted_before_the_upload() {
 
 #[test]
 fn a_malformed_public_key_is_refused_before_the_seed_is_built() {
+    let cases = [
+        ("a key with a trailing newline", "ssh-ed25519 AAAAx\n"),
+        ("not a key", "not a key"),
+    ];
+    let mut problems = vec![];
+    for (case, key) in cases {
+        let dir = TempDir::new().unwrap();
+        let key = json!({"ssh_public_key": key}).to_string();
+        let (server, run) = windows_build_with(dir.path(), 200, None, vec![], &[key]);
+        let uploaded = server.requests().iter().any(is_seed_upload);
+        if run.ok || uploaded {
+            problems.push(format!(
+                "{case}: passed={}, uploaded={uploaded}: {:?}\n{}",
+                run.ok,
+                sent(&server),
+                run.output
+            ));
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn a_malformed_seed_storage_is_refused_before_any_write() {
     let dir = TempDir::new().unwrap();
-    // Well-formed but for a single quote in the comment, which would end the PowerShell literal.
-    let key = json!({"ssh_public_key": "ssh-ed25519 AAAAsentinel it's"}).to_string();
-    let (server, run) = windows_build_with(dir.path(), 200, None, vec![], &[key]);
-    assert!(!run.ok, "a key with a quote passed\n{}", run.output);
-    let uploaded = server.requests().iter().any(is_seed_upload);
+    let storage = "seed_iso_storage=bad/name".to_owned();
+    let (server, run) = windows_build_with(dir.path(), 200, None, vec![], &[storage]);
     assert!(
-        !uploaded,
-        "the seed was uploaded: {:?}\n{}",
-        sent(&server),
+        !run.ok,
+        "a seed storage with a slash passed\n{}",
         run.output
     );
+    assert!(
+        run.output
+            .contains("seed_iso_storage must be a storage name"),
+        "not refused by the seed storage check\n{}",
+        run.output
+    );
+    let writes = no_writes(&server);
+    assert!(writes.is_empty(), "writes sent: {writes:?}\n{}", run.output);
 }

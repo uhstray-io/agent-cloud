@@ -100,8 +100,8 @@
         - name: "Refuse a malformed target_node or template_vmid"
           ansible.builtin.assert:
             that:
-              - _node | string is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
-              - _vmid | string is match('^[1-9][0-9]*$')
+              - "_node | string is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\\Z')"
+              - "_vmid | string is match('^[1-9][0-9]*\\Z')"
             fail_msg: "target_node must be a node name and template_vmid a positive integer."
 
         # No Windows default vmid or node: the Ubuntu default 9000 would collide with the Ubuntu
@@ -124,6 +124,13 @@
           ansible.builtin.assert:
             that: _virtio_iso is match('^[^:/]+:iso/[^/]+\\.iso$')
             fail_msg: "virtio_iso must be a volid of the form <storage>:iso/<file>.iso, not '{{ _virtio_iso }}'."
+          when: _os == 'windows'
+
+        # The storage name reaches request paths.
+        - name: "Require a plain seed ISO storage name"
+          ansible.builtin.assert:
+            that: "_win_seed_storage is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\\Z')"
+            fail_msg: "seed_iso_storage must be a storage name, not '{{ _win_seed_storage }}'."
           when: _os == 'windows'
 
         - name: "Require a source for the Proxmox connection"
@@ -218,19 +225,18 @@
               | selectattr('name', 'defined') | selectattr('name', 'equalto', _name)
               | map(attribute='vmid') | map('int') | reject('equalto', _vmid | int) | list | length > 0
 
-        # A vmid is unique across the cluster, but the config read above asks one node only.
+        # A vmid is unique across the cluster, but the config read above asks one node only. A 200
+        # on this node is already judged by the template, OS and name checks above.
         - name: "Fail if the Windows VMID is held on another node or under another name"
           ansible.builtin.fail:
             msg: "VMID {{ _vmid }} is already used by another VM in the cluster."
           when:
             - _os == 'windows'
+            - _existing_tmpl.status != 200
             - >-
               _win_resources.json.data | default([], true)
               | selectattr('vmid', 'defined') | selectattr('vmid', 'equalto', _vmid | int)
-              | rejectattr('node', 'equalto', _node) | list | length > 0
-              or _win_resources.json.data | default([], true)
-              | selectattr('vmid', 'defined') | selectattr('vmid', 'equalto', _vmid | int)
-              | rejectattr('name', 'equalto', _name) | list | length > 0
+              | list | length > 0
 
         - name: "Guard template VMID before seed preparation"
           ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
@@ -441,9 +447,10 @@
                 mode: "0700"
               when: not ansible_check_mode
 
-            # Used once by the unattended install and never stored. The template is reached by the
-            # management key the first-logon script installs; each clone's administrator password
-            # is set from the secret store at provisioning (design D3).
+            # Used once by the unattended install and never stored; the first-logon script replaces
+            # it. The template is reached by the management key the first-logon script installs.
+            # Each clone's administrator password is to be set from the secret store at
+            # provisioning (design D3, task 4.2; not built yet).
             - name: "Generate the one-time Administrator password"
               ansible.builtin.set_fact:
                 _win_admin_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits']) }}"
@@ -458,19 +465,25 @@
               no_log: true
               when: not ansible_check_mode
 
-            # The key lands inside a single-quoted PowerShell literal.
+            # One line, written to its own seed file: the first-logon script copies it and never
+            # parses it.
             - name: "Require an OpenSSH public key for the first-logon script"
               ansible.builtin.assert:
                 that:
-                  - _win_ssh_pub is match('^(ssh|ecdsa)-[A-Za-z0-9-]+ [A-Za-z0-9+/]+=*( .*)?$')
-                  - >-
-                    "'" not in _win_ssh_pub
+                  - "_win_ssh_pub is match('^(ssh|ecdsa)-[A-Za-z0-9-]+ [A-Za-z0-9+/]+=*( [^\\n]*)?\\Z')"
                 fail_msg: "The management public key is not an OpenSSH public key."
               when: not ansible_check_mode
 
-            - name: "Render the first-logon script"
-              ansible.builtin.template:
-                src: "{{ _win_dir }}/first-logon.ps1.j2"
+            - name: "Write the management public key"
+              ansible.builtin.copy:
+                content: "{{ _win_ssh_pub }}\n"
+                dest: "{{ _win_seed_tmp.path }}/src/management.pub"
+                mode: "0600"
+              when: not ansible_check_mode
+
+            - name: "Copy the first-logon script"
+              ansible.builtin.copy:
+                src: "{{ _win_dir }}/first-logon.ps1"
                 dest: "{{ _win_seed_tmp.path }}/src/first-logon.ps1"
                 mode: "0600"
               when: not ansible_check_mode
