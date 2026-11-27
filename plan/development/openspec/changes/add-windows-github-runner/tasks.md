@@ -27,16 +27,18 @@ under the decision it settles.
 - [ ] 1.2 Unattended install: write the first draft of the task 2.1 template branch and
       the `autounattend.xml.j2`, land the draft on `dev` through its own pull request
       from a branch cut from `dev` (the one exception to 0.1's single pull request; merge
-      `dev` into the feature branch once it lands), declaring its template in
-      `platform/semaphore/templates.yml` with `dev_variant: true`
-      (documented at `platform/semaphore/templates.yml:16-19`), publish its `(Dev)`
-      copy with the scoped create, using the project, inventory and environment ids of an
-      existing `(Dev)` template on that instance (`platform/semaphore/README.md:286-291`,
-      `:312-318`, `:591-599`), then run that `(Dev)` copy, which runs the `dev` record
-      (`platform/semaphore/repositories.yml:45-47`), against a throwaway vmid (UEFI, TPM
-      state disk, VirtIO SCSI and network, the three
-      ISOs from `SharedISOs`), so the spike is itself re-runnable and its output is a
-      Semaphore task log. Record whether setup loads the VirtIO drivers,
+      `dev` into the feature branch once it lands). The draft extends
+      `provision-template.yml`, whose template is `Create VM Template`
+      (`platform/semaphore/templates.yml:3269-3278`: `dev_variant: true`, its own isolated
+      environment) and has no survey fields; the same pull request adds `template_os`,
+      `template_vmid` and `target_node` as its survey fields, because
+      `scripts/semaphore-launch.py` refuses any value that is not one (`:96-99`). Publish
+      the new survey with `Publish Semaphore Template Surveys (Dev)`
+      (`platform/semaphore/templates.yml:3004-3012`), then run `Create VM Template (Dev)`,
+      which runs the `dev` record (`platform/semaphore/repositories.yml:45-47`), with those
+      three fields set, against a throwaway vmid (UEFI, TPM state disk, VirtIO SCSI and
+      network, the three ISOs from `SharedISOs`), so the spike is itself re-runnable and its
+      output is a Semaphore task log. Record whether setup loads the VirtIO drivers,
       completes without interaction, installs the guest agent, enables OpenSSH with
       PowerShell as the default shell, and powers off after sysprep.
 - [ ] 1.3 Clone-time identity: convert the spike VM to a template, clone it with a Proxmox
@@ -129,7 +131,10 @@ under the decision it settles.
       16 cores, 32768 MB, a 150 G system disk and a 250 G data disk, the address, tags,
       `ansible_connection: ssh`, `ansible_shell_type: powershell`, and a comment
       recording why this node and this size (design D2).
-- [ ] 3.3 Declare the runner vars: pinned `github_runner_version`, the label list
+- [ ] 3.3 Declare the runner vars: `github_runner_lifecycle: ephemeral` and
+      `github_runner_name` (the stock play skips a host that is not ephemeral and requires
+      the name, `platform/playbooks/stock-github-runner-jit.yml:50-52`, `:59`), pinned
+      `github_runner_version`, the label list
       (`uhstray-lan`; the runner adds the rest), the shared runner group, the account
       name, `github_runner_windows_build_roots: ['D:\z']`, the toolchain manifest (D5:
       name, version, URL, SHA-256, arguments per tool), the licence edition, state and
@@ -153,8 +158,9 @@ under the decision it settles.
 - [ ] 4.2 Store the bootstrap administrator password for clones in the secret store
       (`store-ssh-password.yml` path) and generate the per-service key
       (`generate-service-ssh-key.yml`).
-- [ ] 4.3 Run `provision-template.yml -e template_os=windows -e template_vmid=<the Windows
-      template vmid declared in 3.1>` targeting crabnebula from Semaphore, so the 2.1
+- [ ] 4.3 Run `Create VM Template (Dev)` with its survey fields `template_os=windows`,
+      `template_vmid=<the Windows template vmid declared in 3.1>` and `target_node`
+      crabnebula (the fields task 1.2 adds), so the 2.1
       collision guard sees the Windows vmid and not the Ubuntu default. Confirm the
       template exists on crabnebula and the seed ISO is gone.
 - [ ] 4.4 Run `provision-vm.yml` for `gh-runner-win-01` with `target_host:
@@ -263,7 +269,10 @@ under the decision it settles.
 - [ ] 6.8 Add or extend the Semaphore templates (deploy, drain, verify), run the deploy from
       Semaphore, then re-run it unchanged. Give the Windows deploy a leave path for a host
       no longer declared `ephemeral`, in the order of `proposal.md` rollback stage 2 (the
-      Linux leave path's steps, reordered there; the Linux task file is POSIX-only).
+      Linux leave path's steps, reordered there; the Linux task file is POSIX-only). The
+      leave path runs only while the supervisor service still exists, as the Linux one runs
+      only while its unit exists (`platform/playbooks/tasks/github-runner-lifecycle.yml:40-48`,
+      `:154-158`), so a redeploy of a host that has already left changes nothing.
       Prove it once on this host before it serves any repository's work, then restore the
       declaration and redeploy.
 - [ ] 6.9 Validation gate: the runner shows in the group with labels

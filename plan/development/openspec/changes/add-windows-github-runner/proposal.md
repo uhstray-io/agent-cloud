@@ -126,7 +126,8 @@ Staged, each stage independently sufficient, matching the Linux change:
    platform change.
 2. **Withdraw availability.** Remove `github_runner_lifecycle: ephemeral` from the host's
    declaration, so the stock template skips it, and run the Windows deploy's leave path
-   (task 6.8). In order: drain as design D9 does and disable the supervisor; delete the
+   (task 6.8), which runs only while the supervisor is still installed. In order: drain as
+   design D9 does and disable the supervisor; delete the
    host's runner records with the stock task's prune mode (`grs_prune_only`), so no
    stocked configuration can start a runner; remove the stock under
    `C:\ProgramData\github-runner\jit\`; then reset the account (D7) and remove the
