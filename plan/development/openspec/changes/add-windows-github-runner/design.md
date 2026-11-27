@@ -138,8 +138,8 @@ storage (`SharedISOs`) that every node can read.
 
 **Non-Goals**
 
-- **macOS.** Covered by `add-macos-github-runner`, planned separately on branch
-  `docs/add-macos-github-runner` (not merged), which needs Apple hardware.
+- **macOS.** Covered by `add-macos-github-runner` (not on `dev`; see Cross-references),
+  which needs Apple hardware.
 - **Windows on ARM.** No `zerds` job targets it.
 - **A GPU in the VM.** The Vulkan build needs the SDK's headers, import library and shader
   compiler, not a GPU; the shipped exe falls back to CPU when no Vulkan driver is present.
@@ -619,8 +619,7 @@ administrative rights; the platform interior is unreachable from the host.
 
 **The strongest lifecycle** is a fresh VM cloned from the template per job,
 registered with a just-in-time configuration and destroyed afterwards. That is what
-`add-macos-github-runner` (planned separately on branch `docs/add-macos-github-runner`,
-not merged) builds on Apple hardware, where clones are cheap. On this cluster a full clone
+`add-macos-github-runner` builds on Apple hardware, where clones are cheap. On this cluster a full clone
 of a 400 G Windows VM per job is too slow to be practical until linked clones are
 available on the chosen storage, so it is recorded as follow-up, with the template work
 in D3 as its foundation.
@@ -685,8 +684,7 @@ an `ubuntu:22.04` container on both.
   (2026-10-06). → The plane-wide `github_runner_version` is bumped within 14 days of every
   runner release, a deadline independent of the monthly template rebuild (D3), and
   verification (task 8.3) reports a pending release and any runner within a week of the
-  window closing. The rule is shared with `add-macos-github-runner` (planned separately
-  on branch `docs/add-macos-github-runner`, not merged).
+  window closing. The rule is shared with `add-macos-github-runner`.
 - **GitHub could start charging for self-hosted minutes.** It announced a per-minute
   charge on self-hosted runners in private repositories for 2026-03-01, then postponed
   it without cancelling. → Outside this platform's control; recorded so that "no GitHub
@@ -797,8 +795,9 @@ task 2.8.
    CPU, versus staying on evaluation. **Recommendation: Server 2025 Standard**, bought
    after phase 6 proves the path on the evaluation edition. Also for the owner: whether
    client access licences apply to a build host with no interactive users.
-   **Decided 2026-11-26:** stay on the evaluation edition for now. The licence is not
-   decided, so task 7.6 and the licence conversion stay blocked on the owner.
+   **Open, 2026-11-26:** the owner keeps the evaluation edition through the proof phases
+   and has not picked a licence, so task 7.6 waits on that choice, and no tagged release
+   runs on the evaluation edition (task 7.6).
 2. **Node.** crabnebula (failure-domain separation, most headroom, 20 core licences)
    versus alphacentauri (16 core licences, shares the Linux pool's node). **Recommendation:
    crabnebula.**
@@ -831,7 +830,7 @@ task 2.8.
 | [specs/platform/github-actions-runners/spec.md](specs/platform/github-actions-runners/spec.md) | The requirements and scenarios the Validation Criteria table checks |
 | [add-github-actions-runners/design.md](../add-github-actions-runners/design.md) | The Linux plane this change extends |
 | [add-ephemeral-github-runners/design.md](../add-ephemeral-github-runners/design.md) | The just-in-time lifecycle D7 adopts |
-| `add-macos-github-runner` (branch `docs/add-macos-github-runner`, not merged) | The macOS member planned beside this one |
+| `add-macos-github-runner`, kept on branch `docs/add-macos-github-runner` and not on `dev` | The macOS member planned beside this one |
 | [platform/services/github-runner/CLAUDE.md](../../../../../platform/services/github-runner/CLAUDE.md) | The runner service's operating notes and isolation table |
 | [plan/architecture/00-foundation-standards.md](../../../../architecture/00-foundation-standards.md) | The plan-document standard this file follows |
 | [Root AGENTS.md](../../../../../AGENTS.md) | Platform rules and the workflow table |
@@ -842,5 +841,4 @@ task 2.8.
 |---|---|
 | 2026-10-11 | Initial draft, then the first review round |
 | 2026-10-29 | The account reset before every job (D7) and the second and third review rounds |
-| 2026-11-26 | Owner review: the patch playbook's drain follows D9, every Windows job declares a timeout, the reset is timed in the spike, and this file takes the numbered-plan structure |
-| 2026-11-26 | Split from the macOS plan, which moved to branch `docs/add-macos-github-runner`; the owner's decisions recorded under Open Questions; the fourth review round's fixes to tasks 1.2, 6.5, 6.6 and 9.4 to 9.8 |
+| 2026-11-26 | Owner review: the patch playbook's drain follows D9, every Windows job declares a timeout, the reset is timed in the spike, and this file takes the numbered-plan structure; then split from the macOS plan, the owner's decisions recorded under Open Questions, and the fourth review round's fixes to tasks 1.2, 6.5, 6.6 and 9.4 to 9.8 |

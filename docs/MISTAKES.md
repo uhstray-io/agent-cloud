@@ -201,7 +201,7 @@ and why.
 | 5.47 | An owner's turn ended after a Skill run; the unit sat idle until the coordinator's tick (rows 4, 7, 8 and 9) (widens 5.4) | Process | 4 | Convention; guard proposed (count 3, AC-1087) |
 | 5.48 | A hold on pushes was sent without reading whether a push was running; a passing push was stopped | Process | 1 | Convention |
 | 5.49 | A plan reused a Linux playbook for new host kinds from its header alone; the third return of the 2026-11-26 work on #535 | Process | 1 | Convention |
-| 5.50 | A batch checked its own registry for who held a pull request, not the live sessions; a takeover was planned and approved over a session already working it | Process | 1 | Convention |
+| 5.50 | A batch checked its own registry for who held a pull request, not the live sessions (widens 6.10); a takeover was planned and approved over a session already working it | Process | 1 | Convention |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -211,7 +211,7 @@ and why.
 | 6.7 | A task variable shadowed a lazily evaluated play variable and stopped seed-environment provisioning | Assumption about files | 1 | Main-variant provisioner integration test |
 | 6.8 | Took the volume separator for the container separator; the production NetBox deploy would have waited on a container that does not exist | Assumed runtime semantics | 1 | Test (stub engine, mutation-checked) |
 | 6.9 | Scoped a restart-policy fix to rootless podman, the runtime a review named; the repo's own test says rootful's boot unit is the same | Assumed runtime semantics | 1 | Test (rootful case) |
-| 6.10 | Acted on a merged plan as current state while a peer session was building the same scope; the handoff was called checked — **x2** (2026-11-16: two fixes briefed from pre-merge Plane text, already on dev) — **x3** (2026-11-16: a brief section not re-checked after a later decision; #1177 opened with a false milestone) | Assumption about files | 3 | Convention (dispatch refuses a brief older than the latest index decision, proposed; count 3) |
+| 6.10 | Acted on a merged plan as current state while a peer session was building the same scope; the handoff was called checked — **x2** (2026-11-16: two fixes briefed from pre-merge Plane text, already on dev) — **x3** (2026-11-16: a brief section not re-checked after a later decision; #1177 opened with a false milestone) (widened by 5.50) | Assumption about files | 3 | Convention (dispatch refuses a brief older than the latest index decision, proposed; count 3) |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | 1 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention |
 | 8.2 | Referenced tests by identifiers that did not exist — **x2** (a PR number in a commit message) | Unverified claim | 2 | Test (`test_ledger_test_citations.py` + ratchet) |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | 1 | Convention |
@@ -858,9 +858,10 @@ batch report ("row green", a return, a hold).
 skipping" on #535's head `4bb91eee`, read from `gh pr checks`. The check run on that head has conclusion
 `neutral` and the title "Review rate limited"
 (`gh api repos/uhstray-io/agent-cloud/commits/4bb91eeecdede6680abcf3c0052ad321a2c2f535/check-runs`), and
-CodeRabbit's last CHANGES_REQUESTED review on the pull request was on `6cc03fc7`, the head before. The rule did not fire
-for the reason occurrence 3 names: it lives in prose a session has to recall, and the proposed
-`--reviews` mode, which would have been the one source to quote, is still unbuilt.
+CodeRabbit's last CHANGES_REQUESTED review on the pull request was on `298d3e60`, submitted 2026-10-19
+(`gh api repos/uhstray-io/agent-cloud/pulls/535/reviews`). The rule did not fire: occurrences 2 and 3 say to read
+the check run's title and list the reviews, again after every push, but that rule lives in prose a session has to
+recall, and the proposed `--reviews` mode, which would have been the one source to quote, is still unbuilt.
 
 ### 1.14 A fact about the private inventory read from the public template
 
@@ -5961,7 +5962,7 @@ batch's later briefs; that is a brief convention, not a check.
 
 **Occurrence 3 — 2026-11-21.** Brief 02 (#1218, AC-1025) put seven design calls, the build's launch list, a task group and a note in a second OpenSpec change into one pull request, written by an executor from a decisions file. It named none of the existing decisions the text had to agree with (naming decisions 5, 6, 9 and 15; CA decisions 8 and 9). Four `/simplify` rounds each found real defects; the last found eight, one of them a conflict with naming decision 9. The passes took about 3.25M tokens and the work about 0.72M (owner's figures, coordinator's record). Why the rule did not fire: the split rule (about three files) did not fire on a one-file design pull request; the bundling was by concern, not by file count.
 
-**Occurrence 4 — 2026-11-26.** #535 (AC-1040) carried two independent OpenSpec plans, the Windows runner and the macOS runner, in one pull request of ten files. It went back four times: CodeRabbit's review threads on `55e2be5a` (2026-11-26 14:48Z), its follow-ups in those threads (15:37Z to 15:46Z), and two `pr-reviewer` rounds, on `6bff6c31` (PR comment 7197662112) and `0eeeeb2e` (PR comment 7198377233). Of the three MEDIUM findings in returns three and four, two were in the macOS plan alone and one (the supervisor status step) in both plans; return four's findings in the Windows plan were all LOW. The owner stopped after the third return and handed back. Eight minutes later the session that had dispatched it, a pull-request review session outside any batch, sent it a new correction task (`task_c84e95901b62`, 2026-11-26T16:35:21Z, in that owner's transcript), and that work drew the fourth return. The mac-win-runners batch then took #535 and cut it again (its index, decisions 17 and 18): the macOS plan moved to the unmerged branch `docs/add-macos-github-runner`, and the Windows plan stays in #535. Why the rule did not fire: the split rule is applied when a brief is cut, and #535 came from a contributor as one pull request; no brief ever cut it. The three-returns rule went back to a dispatcher that sent a fourth correction round instead of a new cut: a session that receives a third return re-cuts the unit or asks the operator, and never dispatches another correction.
+**Occurrence 4 — 2026-11-26.** #535 (AC-1040) carried two independent OpenSpec plans, the Windows runner and the macOS runner, in one pull request of ten files. It went back four times: CodeRabbit's review threads on `55e2be5a` (2026-11-26 14:48Z), its follow-ups in those threads (15:37Z to 15:46Z), and two `pr-reviewer` rounds, on `6bff6c31` (PR comment 7197662112) and `0eeeeb2e` (PR comment 7198377233). Of the three MEDIUM findings in returns three and four, two were in the macOS plan alone and one (the supervisor status step) in both plans; return four's findings in the Windows plan were all LOW. The owner stopped after the third return and handed back. Eight minutes later the session that had dispatched it, a pull-request review session outside any batch, sent it a new correction task (`task_c84e95901b62`, 2026-11-26T16:35:21Z, in that owner's transcript), and that work drew the fourth return. The mac-win-runners batch then took #535 and cut it again (its index, decisions 17 and 18): the macOS plan moved to the branch `docs/add-macos-github-runner`, off `dev`, and the Windows plan stays in #535. Why the rule did not fire: the split rule is applied when a brief is cut, and #535 came from a contributor as one pull request; no brief ever cut it. The third return went back to a dispatcher outside the batch, which sent a fourth correction round instead of a new cut.
 
 ### 5.37 Ran two rounds of four-agent passes without totalling agent tokens; the unit passed its spend stop about six times over
 
@@ -6151,11 +6152,11 @@ Windows task 6.6's one-line "Extend the scheduled stock template" came from `346
 
 **Root cause.** In the plan. The plan named an existing mechanism as serving a new operating system on the strength of its name and its header. Nobody read the steps it runs on the host, or the entry point the rollback relied on.
 
-**The rule.** A plan that says an existing playbook or task serves a new kind of host first decides where the split by operating system sits (a play or an include per family), then reads every step that runs on the host: commands, paths, owners and the checks after the work, and every entry point the plan relies on, such as a mode or a leave path. It names, with `file:line`, each step that needs a branch for the new host, and how the plan reaches each entry point. Related: 10.24 (Docker's mount semantics assumed on rootless podman).
+**The rule.** A plan that says an existing playbook or task serves a new kind of host first decides where the split by operating system sits (a play or an include per family), then reads every step that runs on the host: commands, paths, owners and the checks after the work, and every entry point the plan relies on, such as a mode or a leave path. It names, with `file:line`, each step that needs a branch for the new host, and how the plan reaches each entry point. Related: 10.24 (Docker's mount semantics assumed on rootless podman); 1.35 (a mechanism read from a truncated header).
 
 **Enforced by.** Convention.
 
-### 5.50 A batch checked its own registry for who held a pull request, not the live sessions
+### 5.50 A batch checked its own registry for who held a pull request, not the live sessions (widens 6.10)
 
 **Occurrences: 1** — 2026-11-26
 
@@ -6163,7 +6164,7 @@ Windows task 6.6's one-line "Extend the scheduled stock template" came from `346
 
 **Root cause.** The registry lists only what batches claim. Work dispatched outside a batch, by a review session or by the operator, appears only in the live session list.
 
-**The rule.** Before a batch claims a pull request or a branch, it reads both the batch registry and the live session list (`orca worktree ps --json`), and names any session working that pull request in the question it asks the operator.
+**The rule.** Before a batch claims a pull request or a branch, it reads both the batch registry and the live session list (`orca worktree ps --json`, with no `--limit` or `--since`, checking the `scope:` line for hosts not covered, which its help says an empty answer does not clear), and names any session working that pull request in the question it asks the operator. 6.10 asks a named peer session for its in-flight work; this entry widens it to a peer session nobody has named yet. Related: 5.10 and 5.44 (two sessions on one checkout or one unit).
 
 **Enforced by.** Convention.
 

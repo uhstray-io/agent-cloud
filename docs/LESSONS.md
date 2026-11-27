@@ -123,9 +123,3 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1228 (AC-1060).
 - **DERIVED:** Raising a version default in an agent-cloud playbook (`github_runner_version | default(...)` in `deploy-github-runner.yml`) changes nothing on a host whose site-config inventory pins its own value, and production pins the runner version there. A version bump that must reach production plans the site-config pin change as its own pull request, and the deploy run follows that one, not the agent-cloud merge.
 - **APPLIES TO:** version pins and other defaults in `platform/playbooks/` that site-config can override, and the plans that bump them.
-
-### L-021 · 2026-11-26 · semaphore
-
-- **ACCEPTED:** #535 (AC-1040).
-- **DERIVED:** A plan task that runs new orchestration code from production Semaphore before the feature ships (a spike, a first drill) lands that code on `dev` through its own pull request first, with its template declared `dev_variant: true`, and then runs the template's `(Dev)` variant. A `(Dev)` template runs the `agent-cloud dev` repository record (`platform/semaphore/repositories.yml:45-47`), never a feature branch, and `setup-templates.yml` emits the `(Dev)` copy only for a template that sets `dev_variant: true` (`platform/semaphore/setup-templates.yml:76-81`). A task that says "run it from the Dev variant on this branch" cannot be carried out as written.
-- **APPLIES TO:** OpenSpec `tasks.md` spike and drill steps that launch Semaphore templates, and the briefs cut from them.

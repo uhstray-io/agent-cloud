@@ -25,11 +25,14 @@ under the decision it settles.
       or later (D4). If it is not, the fix is an orchestrator image upgrade, sequenced
       before phase 2; WinRM is not the fallback.
 - [ ] 1.2 Unattended install: write the first draft of the task 2.1 template branch and
-      the `autounattend.xml.j2`, land the draft on `dev` through its own pull request,
-      declaring its template in `platform/semaphore/templates.yml` with `dev_variant: true`
-      (`platform/semaphore/templates.yml:16-19`), then run it from that template's `(Dev)`
-      variant, which runs the `dev` record (`platform/semaphore/repositories.yml:45-47`),
-      against a throwaway vmid (UEFI, TPM state disk, VirtIO SCSI and network, the three
+      the `autounattend.xml.j2`, land the draft on `dev` through its own pull request
+      from a branch cut from `dev` (the one exception to 0.1's single pull request; merge
+      `dev` into the feature branch once it lands), declaring its template in
+      `platform/semaphore/templates.yml` with `dev_variant: true`
+      (documented at `platform/semaphore/templates.yml:16-19`), publish that template with the scoped
+      create (`semaphore_allow_scoped_create=true`, `platform/semaphore/README.md:591-599`),
+      then run it from its `(Dev)` variant, which runs the `dev` record
+      (`platform/semaphore/repositories.yml:45-47`), against a throwaway vmid (UEFI, TPM state disk, VirtIO SCSI and network, the three
       ISOs from `SharedISOs`), so the spike is itself re-runnable and its output is a
       Semaphore task log. Record whether setup loads the VirtIO drivers,
       completes without interaction, installs the guest agent, enables OpenSSH with
@@ -224,7 +227,11 @@ under the decision it settles.
       `ACTIONS_RUNNER_INPUT_JITCONFIG`, using the mechanism task 1.6 kept; the supervisor
       writes the name of the runner it starts to
       `C:\ProgramData\github-runner\current`, the file the stock task reads as the running
-      runner (`platform/playbooks/tasks/github-runner-jit-stock.yml:54-55`); quarantine on
+      runner (`platform/playbooks/tasks/github-runner-jit-stock.yml:54-55`), clears it on
+      the deploy's reset, and prints it as `current=` in its status, as the Linux
+      supervisor does (`platform/services/github-runner/deployment/ephemeral-supervisor.sh:476`,
+      `:508`, `:557`), because the lifecycle verify reads that line
+      (`platform/playbooks/tasks/github-runner-lifecycle.yml:243`, `:264`); quarantine on
       an unverifiable reset or on `github_runner_max_start_failures` empty runs.
 - [ ] 6.6 Stock the Windows host from the scheduled stock template
       (`stock-github-runner-jit.yml`, `add-ephemeral-github-runners` D3) with a play of its
@@ -234,10 +241,8 @@ under the decision it settles.
       (`platform/playbooks/tasks/github-runner-jit-stock.yml:44-60`, `:186-194`): give them
       a Windows branch, `ansible.windows.win_find` for the read and `win_copy` with
       `win_acl` for the write, under `C:\ProgramData\github-runner\jit\` with the access
-      6.5 gives it. The Windows read branch also reads
-      `C:\ProgramData\github-runner\current` (the name 6.5 records), so the prune keeps the
-      running runner: the stock task reads that file as the running runner at
-      `github-runner-jit-stock.yml:54-55`, and the prune keeps it at `:112`. The Linux
+      6.5 gives it. The Windows read branch also reads the text of 6.5's `current` file,
+      so the prune keeps the running runner (`github-runner-jit-stock.yml:112`). The Linux
       play's supervisor check runs `systemctl` and requires
       `active` and `quarantine=no` (`stock-github-runner-jit.yml:76-108`); the Windows play
       instead requires the supervisor service running (`win_service`) and no quarantine
@@ -352,12 +357,13 @@ under the decision it settles.
       `trufflehog git file://. --since-commit HEAD --only-verified --fail`).
 - [ ] 9.3 Run `/simplify` and `/security-review` over the branch diff.
 - [ ] 9.4 Commit and push the feature branch (the standing authorization in root
-      `AGENTS.md`, Branch Workflow).
+      `AGENTS.md`, Branch Workflow), then post the `simplify` and `security-review`
+      commit statuses on the pushed head (Branch Workflow step 5).
 - [ ] 9.5 Open the PR into `dev`, wait for the review round and every check, and fix or
       answer every finding.
 - [ ] 9.6 Merge it through `scripts/merge-when-green.py --feedback-addressed --merge` once
       every gate under "Feature-to-Dev pull-request merges" in root `AGENTS.md` holds on
-      the final head.
+      the final head and no `dev` merge hold is in force (`docs/MISTAKES.md` 5.26).
 - [ ] 9.7 Open the `dev` to `main` promotion, wait for every required check, and fix or
       answer every finding.
 - [ ] 9.8 Merge the promotion with `gh pr merge --merge --match-head-commit <sha>` after
