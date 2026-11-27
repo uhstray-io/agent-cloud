@@ -137,7 +137,7 @@ and why.
 | 3.19 | Grew the down Semaphore root, then ran an unbounded diagnostic before restarting it; the restart came ~11.5h later | Live state | 1 | Convention |
 | 3.20 | **x2** — Launched production Semaphore tasks at the top of the hour, into the scheduled burst; the shared inventory file was removed mid-parse, failing my task; the same race may have caused the four scheduled tasks that started with it to fail (inferred, not proven) (x2: three more launches in forbidden minutes, no failure) | Live state | 2 | Convention (launch away from schedule slots); per-task inventory proposed; widened by 3.22 |
 | 3.21 | Merged and synced two shared-inventory switches for a mode never run in production (availability probes on, Alloy self-source declared native) before any proof run read them; every `Deploy o11y` refused until both were reverted (related: 3.15) | Live state | 1 | Convention (merge such a switch off; prove it first); read-only pre-enable gate run proposed |
-| 3.22 | A manual launch in a minute 3.20 allows ran into the next schedule slot; the scheduled liveness check that started there failed on an empty shared inventory (link inferred from timing, not proven); widens 3.20 | Live state | 1 | Convention (finish before the next slot, or accept and check); launcher duration check proposed |
+| 3.22 | **x2** — A manual launch in a minute 3.20 allows ran into the next schedule slot; the scheduled liveness check that started there failed on an empty shared inventory (link inferred from timing, not proven); widens 3.20 (x2: a check-mode run estimated from older runs ended 21 s into the next slot; that slot's task passed) | Live state | 2 | Convention (finish before the next slot, or accept and check); launcher duration check proposed |
 | 3.23 | Ran an 18-minute production drill whose second deploy clones the moving `dev` head against a SHA pinned at launch; three merges landed mid-drill and the restore refused, leaving the drilled projection live | Live state | 1 | Convention |
 | 3.24 | A deploy placed files OPA reads only at startup and never restarted it; production OPA served its 2026-11-01 policies until 2026-11-12, twelve policy commits not live (widens 3.11) | Live state | 1 | Test for OPA (`opa:` cases in `test_compose_up_if_changed.bats`); general form Convention; verify gap AC-845 |
 | 3.25 | A read-only survey reported the latest node-wide Proxmox backup task failing for lack of space on 2026-10-14; it was filed as evidence for an o11y gate, not raised as an incident, and the nightly backups kept failing almost every night for four more weeks | Live state | 1 | Convention; backup-failure and backup-storage alert proposed |
@@ -4274,7 +4274,7 @@ switch can be proven before it is merged. Related: 3.15 (unproven `dev` changes 
 
 ### 3.22 A launch in an allowed minute ran into the next schedule slot; the liveness check there failed on the shared inventory (link inferred)
 
-**Occurrences: 1** — 2026-11-10
+**Occurrences: 2** — 2026-11-10, 2026-11-27
 
 **What happened.** On 2026-11-10 I launched `Provision VM` at 23:08:00 UTC (task 14728) and `Resize VM` at
 23:09:41 UTC (task 14729), both in check mode, both in minutes 3.20's rule allows (:05 to :09). Each ran past
@@ -4303,6 +4303,18 @@ real fix is a per-task inventory copy, below.
 falls within a template's recorded typical duration of the next declared slot, and proceeds only with an explicit
 accept-the-risk flag, matching the rule above. The foundational fix is unchanged: a per-task copy of the inventory, so
 no task can remove another's.
+
+**Occurrence 2 — 2026-11-27.** A manual check-mode launch of `Deploy GitHub Runner (Dev)` (Semaphore task 21729) was
+created at 16:35:11 UTC, ran 5 minutes 10 seconds and ended at 16:40:21 UTC, 21 seconds past the 16:40 schedule slot
+(times read in Semaphore by the batch coordinator; the end time is the launching session's report). The launching
+session had estimated about 2.5 minutes from two older runs of the template, and the playbook has grown since
+those runs, so the estimate the rule depends on was wrong. Two schedules declared in `templates.yml` fire at :40:
+`Check o11y Liveness (Dev)` (task 21730), which succeeded, and `Stock GitHub Runner JIT (Dev)`, which was not yet
+published in production and so started nothing (both read in Semaphore by the batch coordinator). No other task
+started in that slot, by the launching session's read. Nothing was lost. The rule did not fire because it asks the
+launcher to finish before the next slot without saying where the duration comes from; an estimate taken from old runs
+of a playbook that has changed since is the gap. The launcher duration check proposed above would read the template's
+recent durations, which closes it.
 
 ### 3.23 A long drill pinned a SHA at launch but cloned the moving branch for its restore
 

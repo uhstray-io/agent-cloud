@@ -1,0 +1,51 @@
+---
+# tasks/fetch-proxmox-iso.yml — one declared ISO: ask Proxmox to download it onto its storage with its sha256
+# checked, wait for Proxmox's task, and require the task to end OK.
+#
+# fetch-proxmox-isos.yml includes this file once per entry of proxmox_isos, one entry at a time (loop_var _iso).
+# Each write carries its own `when: not ansible_check_mode`, so a dry run sends no write. The request and its
+# task status are no_log: the request carries the API token. The final assert is visible and names the ISO and
+# Proxmox's own exit status text, which carries no secret.
+#
+# Proxmox answers download-url with a task id (UPID) at once; the download and the checksum run in that task.
+
+- name: Download the ISO onto its storage with Proxmox verifying the sha256
+  ansible.builtin.uri:
+    url: "{{ _pve_host }}/api2/json/nodes/{{ _iso.node | urlencode }}/storage/{{ _iso.storage | urlencode }}/download-url"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      content: iso
+      filename: "{{ _iso.filename }}"
+      url: "{{ _iso.url }}"
+      checksum: "{{ _iso.sha256 }}"
+      checksum-algorithm: sha256
+      verify-certificates: "1"
+    status_code: 200
+    headers:
+      Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+  register: _fetch_task
+  when: not ansible_check_mode
+  no_log: true
+
+# A multi-GB download, or a re-hash of a present file, can take up to an hour, so the poll allows 720 tries of 5 s.
+- name: Wait for the ISO download task (up to an hour per ISO)
+  ansible.builtin.uri:
+    url: "{{ _pve_host }}/api2/json/nodes/{{ _iso.node | urlencode }}/tasks/{{ _fetch_task.json.data | urlencode }}/status"
+    method: GET
+    status_code: 200
+    headers:
+      Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+  register: _fetch_status
+  until: "(_fetch_status.json.data | default({}, true)).status | default('', true) == 'stopped'"
+  retries: 720
+  delay: 5
+  when: not ansible_check_mode
+  no_log: true
+  check_mode: false
+
+- name: Require Proxmox to end the ISO download OK
+  ansible.builtin.assert:
+    that: "(_fetch_status.json.data | default({}, true)).exitstatus | default('', true) == 'OK'"
+    fail_msg: "Proxmox did not fetch {{ _iso.name }} onto {{ _iso.storage }}: {{ (_fetch_status.json.data | default({}, true)).exitstatus | default('no exit status', true) }}"
+  when: not ansible_check_mode
