@@ -74,7 +74,7 @@ and why.
 | 1.42 | Read a send's message id as delivery | Unverified claim | 2 | Convention |
 | 1.43 | Wrote a time into the batch record without reading the clock | Unverified claim | 3 | Convention; guard proposed (count 3, AC-1085) |
 | 1.44 | A coverage sentence said a check proves more than its fixtures show (widens 1.15) | Unverified claim | 2 | Convention; proof-sentence table proposed (AC-1088) |
-| 1.45 | Counted a pull request's open reviews from the first page of an API list, then "corrected" a right ledger line from that read (widens 1.35) | Unverified claim | 1 | Convention |
+| 1.45 | Counted a pull request's undismissed reviews from the first page of an API list, then "corrected" a right ledger line from that read (widens 1.35) | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -860,9 +860,9 @@ skipping" on #535's head `4bb91eee`, read from `gh pr checks`. The check run on 
 `neutral` and the title "Review rate limited"
 (`gh api repos/uhstray-io/agent-cloud/commits/4bb91eeecdede6680abcf3c0052ad321a2c2f535/check-runs`), and
 CodeRabbit's last CHANGES_REQUESTED review on the pull request at that time was on `6cc03fc7`, the head
-before (`gh api --paginate repos/uhstray-io/agent-cloud/pulls/535/reviews`; its later review of `55e2be5a`,
-submitted 2026-11-26T14:48Z, was dismissed). The rule did not fire: occurrences 2 and 3 say to read
-the check run's title and list the reviews, again after every push, but that rule lives in prose a session has to
+before (`gh api --paginate repos/uhstray-io/agent-cloud/pulls/535/reviews`; its later CHANGES_REQUESTED review of
+`55e2be5a`, submitted 2026-11-26T14:48:08Z, was dismissed at 16:18:57Z). The rule did not fire: occurrence 2 says to read the
+check run's title and list the reviews, and occurrence 3 adds that they are listed again after every push, but that rule lives in prose a session has to
 recall, and the proposed `--reviews` mode, which would have been the one source to quote, is still unbuilt.
 
 ### 1.14 A fact about the private inventory read from the public template
@@ -2078,7 +2078,7 @@ by measurement); this is the reverse, a capability assumed without the documenta
 
 **Occurrence 2 — 2026-11-21 to 2026-11-26.** #1218 recorded the design for four internal-CA leaves on the DGX Spark nodes. Three returns found sentences saying a leaf was proven while the check behind them read something weaker. Return 1 (CodeRabbit, head `6525ec4d`): a gateway leaf with reload `none` had no proof of the leaf the gateway process held, and a Phase B deploy skipped its real run on an empty dry run. Return 2 (independent review, head `50483ca4`, issue comment 7194962329, 2026-11-26T14:32:16Z): the proof for each leaf rested on site-config switches that nothing ties to what the listener serves. Return 3 (head `cc7e75ab`, issue comment 7195258614, 14:44:36Z): the lead sentence of decision (b) still said "decision 8's proof applies unchanged" to all four leaves, and a claim about dgx-spark's launcher carried no attribution. The contract restatement of decision 39 and the owner's sweep (issue comment 7195169134, 14:40:56Z) fixed the sentences the returns named; the sweep missed the lead sentence of decision (b). Why the rule did not fire: 1.44 was written for a coverage sentence about a test guard and was not yet on `dev` when #1218's returns came, and each fix took the sentence named, not every sentence of the kind.
 
-### 1.45 Counted a pull request's open reviews from the first page of an API list (widens 1.35)
+### 1.45 Counted a pull request's undismissed reviews from the first page of an API list (widens 1.35)
 
 **Occurrences: 1** — 2026-11-26
 
