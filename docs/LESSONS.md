@@ -133,5 +133,5 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 ### L-022 · 2026-11-27 · playbooks
 
 - **ACCEPTED:** #1235 (AC-1107).
-- **DERIVED:** Upload an ISO or any other binary through an HTTP API with `curl --form`, never with the `uri` module's `form-multipart` body. The `uri` module does not deliver a file part byte for byte: it base64-encodes it by default, and with `multipart_encoding: 7or8bit` it turns its line endings into `\r\n` (`ansible.module_utils.urls.prepare_multipart`).
-- **APPLIES TO:** playbooks under `platform/playbooks/` that upload files through an HTTP API, such as the Windows seed upload in `provision-template.yml`.
+- **DERIVED:** Upload an ISO or any other binary through an HTTP API with `curl --form`, never with the `uri` module's `form-multipart` body. That body sends a file part base64-encoded by default, which arrives as the file only if the receiver decodes `Content-Transfer-Encoding` (not verified for Proxmox), and with `multipart_encoding: 7or8bit` it turns the file's line endings into `\r\n` (`ansible.module_utils.urls.prepare_multipart`).
+- **APPLIES TO:** playbooks under `platform/playbooks/` that upload files through an HTTP API, such as the Windows seed upload in `provision-template.yml`. The Ubuntu seed upload in the same playbook still uses the `uri` body and is existing debt (AC-1110).
