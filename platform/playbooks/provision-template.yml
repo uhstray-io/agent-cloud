@@ -1,6 +1,7 @@
 ---
-# provision-template.yml — Create a reusable Ubuntu 24.04 VM template on Proxmox
-# Run via Semaphore or:
+# provision-template.yml — Create a reusable VM template on Proxmox: Ubuntu 24.04
+# (ubuntu-2404-template, the default) or, with -e template_os=windows, Windows Server 2025
+# (windows-server-2025-template). Run via Semaphore or:
 #   ansible-playbook -i inventory/local.yml playbooks/provision-template.yml
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
@@ -53,17 +54,35 @@
     _pve_host: ""
     _pve_token_id: ""
     _pve_secret: ""
-    _node: "{{ target_node | default('alphacentauri') }}"
-    _vmid: "{{ template_vmid | default(9000) }}"
-    _name: "ubuntu-2404-template"
+    _os: "{{ template_os | default('ubuntu', true) }}"
+    # `default(..., true)`: a blank survey value falls back like an absent one.
+    _node: "{{ target_node | default('alphacentauri', true) }}"
+    _vmid: "{{ template_vmid | default(9000, true) }}"
+    _name: "{{ 'windows-server-2025-template' if _os == 'windows' else 'ubuntu-2404-template' }}"
     _storage: "{{ vm_storage | default('vm-lvms') }}"
     _ubuntu_iso: "{{ ubuntu_iso | default('SharedISOs:iso/ubuntu-24.04.3-live-server-amd64.iso') }}"
-    _disk: "{{ disk_size | default('20G') }}"
-    _cores: "{{ cores | default(2) }}"
-    _mem: "{{ memory | default(2048) }}"
+    _disk: "{{ disk_size | default('64G' if _os == 'windows' else '20G') }}"
+    _cores: "{{ cores | default(4 if _os == 'windows' else 2) }}"
+    _mem: "{{ memory | default(8192 if _os == 'windows' else 2048) }}"
     _seed_path: "{{ _project_root }}/proxmox/cloud-init/autoinstall-seed.iso"
     _seed_volid: "local:iso/autoinstall-seed.iso"
     _ssh_pub: "{{ ssh_public_key | default(lookup('env', 'SSH_PUBLIC_KEY')) }}"
+    # Windows only. The ISOs are instance values (volid form <storage>:iso/<file>.iso) that
+    # inventory or the survey supplies, so there is no default.
+    _win_iso: "{{ windows_iso | default('') }}"
+    _virtio_iso: "{{ virtio_iso | default('') }}"
+    _win_image_index: "{{ windows_image_index | default(2) }}"
+    _win_seed_storage: "{{ seed_iso_storage | default('local', true) }}"
+    _win_seed_file: "windows-seed-{{ _vmid }}.iso"
+    _win_seed_volid: "{{ _win_seed_storage }}:iso/{{ _win_seed_file }}"
+    _win_dir: "{{ playbook_dir | dirname }}/hypervisor/proxmox/windows"
+    # A conditional expression: the store is read only when no key is passed, and only on the
+    # Windows path, which is the only one that renders this var.
+    _win_ssh_pub: >-
+      {{ ssh_public_key if (ssh_public_key | default('') | length > 0)
+         else lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:public_key',
+                     url=_bao_url, auth_method='approle',
+                     role_id=_bao_role_id, secret_id=_bao_secret_id) }}
 
   tasks:
     # Every hard failure below (a vmid collision, the create, the autoinstall waits) is caught,
@@ -71,6 +90,33 @@
     # before any later task or play (D10 review, PR 416).
     - name: "Create or adopt the template"
       block:
+        - name: "Refuse an unknown template_os"
+          ansible.builtin.assert:
+            that: _os in ['ubuntu', 'windows']
+            fail_msg: "template_os must be ubuntu or windows, not {{ _os }}."
+
+        # No Windows default vmid or node: the Ubuntu default 9000 would collide with the Ubuntu
+        # template, and instance values belong in inventory or the survey.
+        - name: "Require template_vmid and target_node for a Windows template"
+          ansible.builtin.assert:
+            that:
+              - template_vmid | default('') | string | length > 0
+              - target_node | default('') | string | length > 0
+            fail_msg: "A Windows template needs -e template_vmid=<n> and -e target_node=<node>; there is no default."
+          when: _os == 'windows'
+
+        - name: "Require the Windows installer ISO volid"
+          ansible.builtin.assert:
+            that: _win_iso is match('^[^:/]+:iso/[^/]+\\.iso$')
+            fail_msg: "windows_iso must be a volid of the form <storage>:iso/<file>.iso, not '{{ _win_iso }}'."
+          when: _os == 'windows'
+
+        - name: "Require the VirtIO driver ISO volid"
+          ansible.builtin.assert:
+            that: _virtio_iso is match('^[^:/]+:iso/[^/]+\\.iso$')
+            fail_msg: "virtio_iso must be a volid of the form <storage>:iso/<file>.iso, not '{{ _virtio_iso }}'."
+          when: _os == 'windows'
+
         - name: "Require a source for the Proxmox connection"
           ansible.builtin.assert:
             that: (_pve_operator_secret | length > 0) or (_bao_url | length > 0)
@@ -125,6 +171,43 @@
             msg: "VMID {{ _vmid }} exists but is not a template."
           when: _existing_tmpl.status == 200 and (_existing_tmpl.json.data.template | default(0) | int != 1)
 
+        - name: "Fail if VMID holds a VM of the other OS"
+          ansible.builtin.fail:
+            msg: >-
+              VMID {{ _vmid }} holds a {{ 'windows' if _vmid_is_windows else 'linux' }} VM;
+              a {{ _os }} template cannot use it.
+          vars:
+            _vmid_is_windows: "{{ (_existing_tmpl.json.data.ostype | default('')) is match('win') }}"
+          when:
+            - _existing_tmpl.status == 200
+            - (_vmid_is_windows | bool) != (_os == 'windows')
+
+        - name: "Fail if VMID holds a template with another name"
+          ansible.builtin.fail:
+            msg: "VMID {{ _vmid }} holds '{{ _existing_tmpl.json.data.name | default('') }}', not {{ _name }}."
+          when:
+            - _os == 'windows'
+            - _existing_tmpl.status == 200
+            - (_existing_tmpl.json.data.name | default('')) != _name
+
+        - name: "List cluster VMs to find the Windows template name elsewhere"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/cluster/resources?type=vm"
+            method: GET
+          register: _win_resources
+          check_mode: false
+          when: _os == 'windows'
+
+        - name: "Fail if the Windows template name is used by another VMID"
+          ansible.builtin.fail:
+            msg: "{{ _name }} already exists at another VMID than {{ _vmid }}."
+          when:
+            - _os == 'windows'
+            - >-
+              _win_resources.json.data | default([], true)
+              | selectattr('name', 'defined') | selectattr('name', 'equalto', _name)
+              | map(attribute='vmid') | map('int') | reject('equalto', _vmid | int) | list | length > 0
+
         - name: "Guard template VMID before seed preparation"
           ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
           vars:
@@ -132,7 +215,9 @@
           tags: [always]
 
         - name: "Create the template when it does not exist yet"
-          when: not (_tmpl_present | bool)
+          when:
+            - not (_tmpl_present | bool)
+            - _os == 'ubuntu'
           block:
             - name: "Build autoinstall seed ISO"
               ansible.builtin.command:
@@ -312,6 +397,274 @@
                   Template {{ _vmid }} ({{ _name }}) created on {{ _node }}.
                   Storage: {{ _storage }}, Disk: {{ _disk }}
                   Cloud-init enabled. Ready for cloning.
+
+        - name: "Create the Windows template when it does not exist yet"
+          when:
+            - not (_tmpl_present | bool)
+            - _os == 'windows'
+          block:
+            - name: "Make a private directory for the Windows seed"
+              ansible.builtin.tempfile:
+                state: directory
+                suffix: -winseed
+              register: _win_seed_tmp
+              when: not ansible_check_mode
+
+            - name: "Make the seed source directory"
+              ansible.builtin.file:
+                path: "{{ _win_seed_tmp.path }}/src"
+                state: directory
+                mode: "0700"
+              when: not ansible_check_mode
+
+            # Used once by the unattended install and never stored: the clone unattend and the
+            # first-logon script switch the template to key-only SSH access.
+            - name: "Generate the one-time Administrator password"
+              ansible.builtin.set_fact:
+                _win_admin_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits']) }}"
+              no_log: true
+              when: not ansible_check_mode
+
+            - name: "Render the answer file"
+              ansible.builtin.template:
+                src: "{{ _win_dir }}/autounattend.xml.j2"
+                dest: "{{ _win_seed_tmp.path }}/src/autounattend.xml"
+                mode: "0600"
+              no_log: true
+              when: not ansible_check_mode
+
+            - name: "Render the first-logon script"
+              ansible.builtin.template:
+                src: "{{ _win_dir }}/first-logon.ps1.j2"
+                dest: "{{ _win_seed_tmp.path }}/src/first-logon.ps1"
+                mode: "0600"
+              when: not ansible_check_mode
+
+            - name: "Copy the clone unattend file"
+              ansible.builtin.copy:
+                src: "{{ _win_dir }}/clone-unattend.xml"
+                dest: "{{ _win_seed_tmp.path }}/src/clone-unattend.xml"
+                mode: "0600"
+              when: not ansible_check_mode
+
+            - name: "Build the Windows seed ISO"
+              ansible.builtin.command:
+                cmd: "bash {{ _win_dir }}/build-seed-iso.sh {{ _win_seed_tmp.path }}/src {{ _win_seed_tmp.path }}/{{ _win_seed_file }}"
+                creates: "{{ _win_seed_tmp.path }}/{{ _win_seed_file }}"
+              when: not ansible_check_mode
+
+            - name: "Guard template VMID before Windows seed upload"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
+
+            # The ISO holds the one-time password.
+            - name: "Upload the Windows seed ISO"
+              ansible.builtin.uri:
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ _win_seed_storage }}/upload"
+                method: POST
+                body_format: form-multipart
+                body:
+                  content: "iso"
+                  filename:
+                    filename: "{{ _win_seed_tmp.path }}/{{ _win_seed_file }}"
+                    mime_type: "application/octet-stream"
+                status_code: [200]
+              register: _win_upload
+              no_log: true
+              when: not ansible_check_mode
+
+            - name: "Wait for the seed upload task"
+              ansible.builtin.uri:
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/tasks/{{ _win_upload.json.data }}/status"
+                method: GET
+              register: _win_upload_task
+              until: _win_upload_task.json.data.status == "stopped"
+              retries: 30
+              delay: 5
+              when:
+                - not ansible_check_mode
+                - _win_upload.json.data is defined and _win_upload.json.data is string
+
+            - name: "Guard template VMID before Windows creation"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
+
+            - name: "Create the Windows template VM"
+              ansible.builtin.uri:
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu"
+                method: POST
+                body_format: form-urlencoded
+                body:
+                  vmid: "{{ _vmid }}"
+                  name: "{{ _name }}"
+                  ostype: "win11"
+                  machine: "q35"
+                  bios: "ovmf"
+                  efidisk0: "{{ _storage }}:1,efitype=4m,pre-enrolled-keys=1"
+                  tpmstate0: "{{ _storage }}:1,version=v2.0"
+                  cpu: "host"
+                  cores: "{{ _cores }}"
+                  memory: "{{ _mem }}"
+                  scsihw: "virtio-scsi-single"
+                  scsi0: "{{ _storage }}:{{ _disk | regex_replace('G', '') }}"
+                  ide0: "{{ _win_iso }},media=cdrom"
+                  ide1: "{{ _virtio_iso }},media=cdrom"
+                  ide3: "{{ _win_seed_volid }},media=cdrom"
+                  net0: "virtio,bridge=vmbr0,firewall=0"
+                  boot: "order=scsi0;ide0"
+                  agent: "1"
+                  tags: "windows"
+                status_code: [200]
+              register: _win_create
+              when: not ansible_check_mode
+
+            - name: "Wait for Windows VM creation task"
+              ansible.builtin.uri:
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/tasks/{{ _win_create.json.data }}/status"
+                method: GET
+              register: _win_create_task
+              until: _win_create_task.json.data.status == "stopped"
+              retries: 30
+              delay: 5
+              when:
+                - not ansible_check_mode
+                - _win_create.json.data is defined and _win_create.json.data is string
+
+            - name: "Guard template VMID before Windows start"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
+
+            - name: "Start VM for the unattended install"
+              ansible.builtin.uri:
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/start"
+                method: POST
+                status_code: [200]
+              when: not ansible_check_mode
+
+            - name: "Wait for the Windows VM to be running"
+              ansible.builtin.uri:
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+                method: GET
+              register: _win_vm_status
+              until: _win_vm_status.json.data.status == "running"
+              retries: 12
+              delay: 10
+              when: not ansible_check_mode
+
+            - name: "Wait for unattended install and sysprep (VM powers off)"
+              ansible.builtin.uri:
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/status/current"
+                method: GET
+              register: _win_vm_status
+              until: _win_vm_status.json.data.status == "stopped"
+              retries: 120
+              delay: 30
+              when: not ansible_check_mode
+
+            - name: "Guard template VMID before Windows post-install config"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
+
+            - name: "Post-install: remove the install CDs, add a cloud-init drive"
+              ansible.builtin.uri:
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
+                method: PUT
+                body_format: form-urlencoded
+                body:
+                  ide0: "none,media=cdrom"
+                  ide1: "none,media=cdrom"
+                  ide3: "none,media=cdrom"
+                  ide2: "{{ _storage }}:cloudinit"
+                  boot: "order=scsi0"
+                status_code: [200]
+              when: not ansible_check_mode
+
+            - name: "Guard template VMID before Windows template conversion"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
+
+            - name: "Convert the Windows VM to a template"
+              ansible.builtin.uri:
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/template"
+                method: POST
+                status_code: [200]
+              when: not ansible_check_mode
+
+            - name: "Windows template creation complete"
+              ansible.builtin.debug:
+                msg: "Template {{ _vmid }} ({{ _name }}) created on {{ _node }}. Storage: {{ _storage }}, Disk: {{ _disk }}."
+          # The seed ISO holds the one-time password, so it is removed whether the build passed or
+          # failed. Only the exact volid this run uploaded, on the storage it went to (L-008).
+          always:
+            - name: "Guard template VMID before detaching the seed ISO"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
+
+            - name: "Detach the seed ISO so its volume can be deleted"
+              ansible.builtin.uri:
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
+                method: PUT
+                body_format: form-urlencoded
+                body:
+                  ide3: "none,media=cdrom"
+                status_code: [200]
+              failed_when: false
+              when:
+                - not ansible_check_mode
+                - _win_create.json.data is defined
+
+            - name: "Guard template VMID before deleting the seed ISO"
+              ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
+              vars:
+                _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
+              tags: [always]
+
+            - name: "Delete the uploaded seed ISO"
+              ansible.builtin.uri:
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ _win_seed_storage | urlencode }}/content/{{ _win_seed_volid | urlencode }}?delay=30"
+                method: DELETE
+                timeout: 60
+                status_code: [200]
+              register: _win_seed_delete
+              when:
+                - not ansible_check_mode
+                - _win_upload is defined and _win_upload is not skipped
+
+            - name: "Read back the seed storage content"
+              ansible.builtin.uri:
+                url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ _win_seed_storage }}/content"
+                method: GET
+              register: _win_seed_content
+              check_mode: false
+              when:
+                - not ansible_check_mode
+                - _win_upload is defined and _win_upload is not skipped
+
+            - name: "Require the seed ISO to be gone"
+              ansible.builtin.assert:
+                that: _win_seed_volid not in (_win_seed_content.json.data | default([], true) | map(attribute='volid') | list)
+                fail_msg: "seed ISO {{ _win_seed_volid }} is still on storage {{ _win_seed_storage }}"
+              when:
+                - not ansible_check_mode
+                - _win_upload is defined and _win_upload is not skipped
+
+            - name: "Remove the local seed directory"
+              ansible.builtin.file:
+                path: "{{ _win_seed_tmp.path }}"
+                state: absent
+              when: _win_seed_tmp.path is defined
       rescue:
         - name: "Remember why the template step failed"
           ansible.builtin.set_fact:
