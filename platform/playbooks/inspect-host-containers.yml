@@ -2,8 +2,8 @@
 # inspect-host-containers.yml — the containers on ONE host, from each engine it has.
 #
 # Read-only, identical under --check. Scope: rootless podman for the connecting user and, when
-# the host declares one, its dedicated `linger_user`; rootful podman; Docker. A rootless
-# container owned by any other account is not seen (a rootful probe cannot list another
+# the host declares one, its dedicated account (`linger_user`, else `github_runner_account`);
+# rootful podman; Docker. A rootless container owned by any other account is not seen (a rootful probe cannot list another
 # user's rootless containers). For each container: name, image, state, restart policy and the
 # compose working directory, which is how tasks/list-service-containers.yml selects a
 # service's containers. Each podman probe also prints the store's graph driver name and graph
@@ -45,6 +45,13 @@
       - .Store.GraphDriverName
       - .Store.GraphOptions
     _store_fmt: "{{ _store_fields | map('regex_replace', '^', '{{') | map('regex_replace', '$', '}}') | join('|') }}"
+    # The account the dedicated-account probe runs as: linger_user when the host declares one,
+    # else the runner account the runner hosts declare (github_runner_account). Those hosts
+    # declare no linger_user, because a fresh runner deploy runs tasks/enable-linger.yml before that
+    # account exists, and tasks/enable-linger.yml reads linger_user. Empty when neither is declared,
+    # which skips the probe. A second service with its own dedicated account adds a generic host var
+    # then.
+    _probe_account: "{{ linger_user | default(github_runner_account | default('')) }}"
     # $1 = engine, $2 = inspect format, $3 = podman info format (podman probes only).
     _script: |
       ENGINE=$1 FMT=$2 STORE_FMT=$3
@@ -79,14 +86,14 @@
       ansible.builtin.command:
         argv: "{{ ['/bin/sh', '-c', _script, 'inspect', 'podman', _fmt, _store_fmt] }}"
       become: true
-      become_user: "{{ linger_user }}"
+      become_user: "{{ _probe_account }}"
       register: _dedicated
       changed_when: false
       failed_when: false
       check_mode: false
       when:
-        - linger_user is defined
-        - linger_user != (ansible_user | default(''))
+        - _probe_account | length > 0
+        - _probe_account != (ansible_user | default(''))
 
     - name: "Rootful podman"
       ansible.builtin.command:
@@ -112,7 +119,7 @@
           connecting_user: "{{ ansible_user | default('(inventory default)') }}"
           rootless_podman: "{{ _rootless.stdout_lines | default([]) + _rootless.stderr_lines | default([]) }}"
           rootless_podman_dedicated_account: >-
-            {{ {linger_user: _dedicated.stdout_lines | default([]) + _dedicated.stderr_lines | default([])}
+            {{ {_probe_account: _dedicated.stdout_lines | default([]) + _dedicated.stderr_lines | default([])}
                if (_dedicated is defined and _dedicated is not skipped) else 'none declared' }}
           not_seen: rootless containers of any other account
           rootful_podman: "{{ _rootful.stdout_lines | default([]) + _rootful.stderr_lines | default([]) }}"
