@@ -64,7 +64,7 @@ and why.
 | 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) — **x2** (2026-11-10: called a survey a read-only reproduction of a deploy refusal because the category word matched; it failed at a different step) | Unverified claim | 2 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
 | 1.33 | Called the Plane GitHub integration "working end to end" from webhook deliveries alone; the in-app integration page, the part a person uses, did not list GitHub | Unverified claim | 1 | Test (Phase 3e of Deploy Plane asserts every marketplace application exists, `test_the_marketplace_phase_judges_the_script_summary`); the general rule Convention |
 | 1.34 | Recorded that a PR changed exactly a task's scoped files from one commit's stat; the PR's merge diff carried four more files from another task | Unverified claim | 1 | Convention |
-| 1.35 | Offered an operator a drill option, then recorded it, from a truncated read of a playbook header; the fault drill has three modes and stops Grafana (widens 1.19) — **x2** (2026-11-26: counted a pull request's undismissed reviews from the first page of an API list, then "corrected" a right ledger line from it) | Unverified claim | 2 | Convention |
+| 1.35 | Offered an operator a drill option, then recorded it, from a truncated read of a playbook header; the fault drill has three modes and stops Grafana (widens 1.19) (widened by 1.45) | Unverified claim | 1 | Convention |
 | 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) — **x2** (2026-11-12: wrote "refused before changing anything" from a refusing assert's message; the deploy had already moved the checkout and re-rendered the Alloy config) | Unverified claim | 2 | Instance: tests pin both playbooks' shared derivation; class Convention, no detector |
 | 1.37 | Called a fix impossible ("a wrapper cannot repair" parallel's ignored SIGALRM) from a fact about shells, built a serial fallback on it; a perl job shell fixed it (widens 1.19) | Unverified claim | 1 | Instance: wrapper test with control; class Convention, no detector |
 | 1.38 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
@@ -74,6 +74,7 @@ and why.
 | 1.42 | Read a send's message id as delivery | Unverified claim | 2 | Convention |
 | 1.43 | Wrote a time into the batch record without reading the clock | Unverified claim | 3 | Convention; guard proposed (count 3, AC-1085) |
 | 1.44 | A coverage sentence said a check proves more than its fixtures show (widens 1.15) | Unverified claim | 2 | Convention; proof-sentence table proposed (AC-1088) |
+| 1.45 | Counted a pull request's open reviews from the first page of an API list, then "corrected" a right ledger line from that read (widens 1.35) | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1870,8 +1871,6 @@ the producer identity and Prometheus targets read now have their own words, so t
 
 ### 1.35 Offered an operator a drill option, and then recorded it, from a truncated read (widens 1.19)
 
-**Occurrences: 2** — 2026-11-11, 2026-11-26
-
 **What happened.** On 2026-11-11 I asked Joseph whether to run the endpoint absent-series proof (the open "Endpoint availability live receipt" in 2.3). The recommended option said Alloy would be stopped "through a Semaphore playbook", that the missing-probe alert would fire, and that Alloy would then be restarted. He chose "Run it next slot". I then told him no such mechanism existed, and wrote the first draft of this entry saying `o11y-fault-drill.yml` "only stops DGX node exporters" and that "no template stops the receiver's Alloy". Both were read from a filtered `head -40` of the playbook's header comment. The PR #1087 review found the facts:
 
 - `o11y-fault-drill.yml` has three modes: `exporter`, `probe` and `grafana` (`:10-37`, the mode guard at `:83`). `grafana` stops the `o11y-grafana` container for up to fifteen minutes.
@@ -1886,7 +1885,6 @@ The alert outcome was also unchecked when I offered it. Traced afterwards, it ho
 
 **Enforced by.** Convention.
 
-**Occurrence 2 — 2026-11-26.** The brief 01 owner of the mac-win-runners batch listed #535's reviews with `gh api repos/uhstray-io/agent-cloud/pulls/535/reviews`, which returns only the first page of 30, and told the coordinator that CodeRabbit's undismissed CHANGES_REQUESTED reviews were on `ec34e46d` and `298d3e60`. With `--paginate` there are four: those two plus `346b9b37` and `6cc03fc7` (2026-10-29). The owner then "corrected" this ledger's 1.10 occurrence 6, which rightly named `6cc03fc7` as the last one at the time it describes, to `298d3e60`, citing the same unpaginated read. A review pass found it, and the clause was put back. The coordinator's next instruction to the owner repeated the two-review list. Why the rule did not fire: the entry names a grep filter and a line limit as the ways a read was cut short, and an API page limit cuts a read the same way without showing it. The claim was that no other changes request existed, which the rule says needs an exhaustive search, and a list read from an API is exhaustive only when every page is read.
 
 ### 1.36 Briefed a fix's guarantee from a comment's citation, without reading the cited code (widens 1.29)
 
@@ -2079,6 +2077,18 @@ by measurement); this is the reverse, a capability assumed without the documenta
 **Enforced by.** Convention. Proposed: a proof-sentence table as a required comment on plan and design pull requests (AC-1088).
 
 **Occurrence 2 — 2026-11-21 to 2026-11-26.** #1218 recorded the design for four internal-CA leaves on the DGX Spark nodes. Three returns found sentences saying a leaf was proven while the check behind them read something weaker. Return 1 (CodeRabbit, head `6525ec4d`): a gateway leaf with reload `none` had no proof of the leaf the gateway process held, and a Phase B deploy skipped its real run on an empty dry run. Return 2 (independent review, head `50483ca4`, issue comment 7194962329, 2026-11-26T14:32:16Z): the proof for each leaf rested on site-config switches that nothing ties to what the listener serves. Return 3 (head `cc7e75ab`, issue comment 7195258614, 14:44:36Z): the lead sentence of decision (b) still said "decision 8's proof applies unchanged" to all four leaves, and a claim about dgx-spark's launcher carried no attribution. The contract restatement of decision 39 and the owner's sweep (issue comment 7195169134, 14:40:56Z) fixed the sentences the returns named; the sweep missed the lead sentence of decision (b). Why the rule did not fire: 1.44 was written for a coverage sentence about a test guard and was not yet on `dev` when #1218's returns came, and each fix took the sentence named, not every sentence of the kind.
+
+### 1.45 Counted a pull request's open reviews from the first page of an API list (widens 1.35)
+
+**Occurrences: 1** — 2026-11-26
+
+**What happened.** On 2026-11-26 the brief 01 owner of the mac-win-runners batch listed #535's reviews with `gh api repos/uhstray-io/agent-cloud/pulls/535/reviews`, which returns only the first page of 30, and told the coordinator that CodeRabbit's undismissed CHANGES_REQUESTED reviews were on `ec34e46d` and `298d3e60`. With `--paginate` (read 2026-11-26 at 19:25 EST) there are four: those two plus `346b9b37` and `6cc03fc7` (2026-10-29). The owner then "corrected" this ledger's 1.10 occurrence 6, which rightly named `6cc03fc7` as the last one at the time it describes, to `298d3e60`, citing the same unpaginated read. A review pass found it, and the clause was put back. The coordinator's next instruction to the owner repeated the two-review list.
+
+**Root cause.** A list was read from an API that returns one page by default, and nothing in the output said more pages existed. 1.35 covers a claim that a mechanism exists or does not, read from a file cut short by a filter or a line limit; a page limit on an API list cuts a read the same way, and here the claim was about what a list holds.
+
+**The rule.** A list read from an API (`gh api`, a REST or GraphQL listing) is read with every page (`gh api --paginate`, or the cursor followed to the end) before anything is said about what it holds or does not hold, and a correction to a record is read the same way.
+
+**Enforced by.** Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 
