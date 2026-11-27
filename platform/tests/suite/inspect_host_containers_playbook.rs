@@ -42,8 +42,9 @@ fn render(dir: &Path, hosts: &[(&str, Value)]) -> (bool, String) {
         "inv.json",
         &json!({"all": {"children": {"targets": {"hosts": targets}}}}),
     );
-    let account = format!("{}/account-{{{{ inventory_hostname }}}}", dir.display());
-    let runs = format!("{}/runs-{{{{ inventory_hostname }}}}", dir.display());
+    let base = dir.display();
+    let account = format!("{base}/account-{{{{ inventory_hostname }}}}");
+    let runs = format!("{base}/runs-{{{{ inventory_hostname }}}}");
     let lifted = json!([{"hosts": "targets", "gather_facts": false, "vars": play["vars"],
     "tasks": [
         {"name": "account", "ansible.builtin.copy": {
@@ -96,8 +97,9 @@ fn the_probe_runs_as_the_linger_user_else_the_runner_account() {
     let mut problems = vec![];
     for (host, _, account, runs) in cases {
         let want = format!("account={account}\n");
-        let got = std::fs::read_to_string(dir.path().join(format!("account-{host}"))).ok();
-        if got.as_deref() != Some(want.as_str()) {
+        let got =
+            std::fs::read_to_string(dir.path().join(format!("account-{host}"))).unwrap_or_default();
+        if got != want {
             problems.push(format!("{host}: account {got:?}, expected {want:?}"));
         }
         let ran = dir.path().join(format!("runs-{host}")).exists();
