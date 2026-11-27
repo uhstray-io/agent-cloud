@@ -4308,14 +4308,13 @@ no task can remove another's.
 created at 16:35:11 UTC, ran 5 minutes 10 seconds and ended at 16:40:21 UTC, 21 seconds past the 16:40 schedule slot
 (times read in Semaphore by the batch coordinator; the end time is the launching session's report). The launching
 session had estimated about 2.5 minutes from two older runs of the template, and the playbook has grown since
-those runs, so the estimate the rule depends on was wrong. Only one scheduled task started in that slot: `Check o11y
-Liveness (Dev)` (task 21730), which succeeded. `Stock GitHub Runner JIT (Dev)` declares a ten-minute schedule in
-`templates.yml`, but that schedule was not yet published in production, so it started no task (task 21730 and the unpublished schedule
-read in Semaphore by the batch coordinator; no other task in that window, by the launching session's read). Nothing
-was lost. The rule did not fire
-because it asks the launcher to finish before the next slot without saying where the duration comes from; an
-estimate taken from old runs of a playbook that has changed since is the gap. The launcher duration check proposed
-above would read the template's recent durations, which closes it.
+those runs, so the estimate the rule depends on was wrong. Two schedules declared in `templates.yml` fire at :40:
+`Check o11y Liveness (Dev)` (task 21730), which succeeded, and `Stock GitHub Runner JIT (Dev)`, which was not yet
+published in production and so started nothing (both read in Semaphore by the batch coordinator). No other task
+started in that slot, by the launching session's read. Nothing was lost. The rule did not fire because it asks the
+launcher to finish before the next slot without saying where the duration comes from; an estimate taken from old runs
+of a playbook that has changed since is the gap. The launcher duration check proposed above would read the template's
+recent durations, which closes it.
 
 ### 3.23 A long drill pinned a SHA at launch but cloned the moving branch for its restore
 
