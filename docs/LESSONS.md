@@ -117,3 +117,9 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1233 (AC-1095).
 - **DERIVED:** Prove a fix for a CodeQL finding against CodeQL before the `dev` → `main` promotion. CodeQL runs here as GitHub's default setup, which analyses pull requests into `main` and not into `dev`, so a feature pull request gets no analysis of its own, and a finding first appears on the promotion as a review thread that must be resolved before the merge. A green CodeQL check on a pull request into `dev` is no proof: it can be the result of another pull request's analysis of the same head commit. To prove the fix, open a draft pull request into `main` from the branch (a pull request into `main` that is not a promotion needs the operator's OK), read its CodeQL check and the open alerts for `refs/pull/<n>/head` once every `Analyze` job has finished (the check can conclude early as neutral, "configurations not found", while an analysis still runs), then close it unmerged.
 - **APPLIES TO:** a fix for a CodeQL finding, and a change that adds credential-like literals or names (a parameter or constant named like a password, secret or token), test fixtures included.
+
+### L-020 · 2026-11-26 · playbooks
+
+- **ACCEPTED:** #1228 (AC-1060).
+- **DERIVED:** Raising a version default in an agent-cloud playbook (`github_runner_version | default(...)` in `deploy-github-runner.yml`) changes nothing on a host whose site-config inventory pins its own value, and production pins the runner version there. A version bump that must reach production plans the site-config pin change as its own pull request, and the deploy run follows that one, not the agent-cloud merge.
+- **APPLIES TO:** version pins and other defaults in `platform/playbooks/` that site-config can override, and the plans that bump them.

@@ -1012,9 +1012,9 @@ EOF
   [ "$("$RH/bin/Runner.Listener" --version)" = "2.336.0" ]
 }
 
-@test "gh-runner: the playbook pins 2.338.0 and gates on the installed version" {
+@test "gh-runner: the playbook pins 2.338.2 and gates on the installed version" {
   local PB="$BATS_TEST_DIRNAME/../playbooks/deploy-github-runner.yml"
-  assert_grep -qF "github_runner_version | default('2.338.0')" "$PB"
+  assert_grep -qF "github_runner_version | default('2.338.2')" "$PB"
   # The install runs with the user bus it needs to stop and start the service.
   task_block "$PB" "Install and register the runner" > "$BATS_TEST_TMPDIR/task"
   assert_grep -qF 'XDG_RUNTIME_DIR: "/run/user/{{ _runner_uid }}"' "$BATS_TEST_TMPDIR/task"
