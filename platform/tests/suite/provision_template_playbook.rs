@@ -80,6 +80,24 @@ const GOLDEN: &[(&str, &str, &str)] = &[
     ("GET", "/api2/json/nodes/alphacentauri/qemu/9000/config", ""),
 ];
 
+/// A fake `genisoimage` for the Ubuntu seed builder, which names each input file: writes each
+/// file operand, after a `==> <name>` line, to the path after `-output`.
+const FAKE_GENISOIMAGE_FILES: &str = r#"out=""; files=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -output) out="$2"; shift 2 ;;
+    -volid) shift 2 ;;
+    -*) shift ;;
+    *) files+=("$1"); shift ;;
+  esac
+done
+: > "$out"
+for f in "${files[@]}"; do
+  printf '==> %s\n' "$(basename "$f")" >> "$out"
+  cat "$f" >> "$out"
+done
+"#;
+
 /// A fake `genisoimage`: writes every file of its source directory, each after a `==> <name>`
 /// line, to the path after `-output`, so the uploaded seed is plain text.
 const FAKE_GENISOIMAGE: &str = r#"out=""; src=""
@@ -300,11 +318,20 @@ fn assert_ubuntu_golden(template_os: Option<&str>) {
     let project = dir.path().join("project");
     let seed_dir = project.join("proxmox/cloud-init");
     std::fs::create_dir_all(&seed_dir).unwrap();
-    std::fs::write(
-        seed_dir.join("build-seed-iso.sh"),
-        "#!/usr/bin/env bash\nprintf stub > \"$1\"\n",
-    )
-    .unwrap();
+    // The repository's own seed builder and its inputs run, with only genisoimage faked.
+    for name in [
+        "build-seed-iso.sh",
+        "autoinstall-user-data.yml",
+        "meta-data",
+    ] {
+        let dest = seed_dir.join(name);
+        std::fs::copy(
+            repo::path(&format!("platform/hypervisor/proxmox/cloud-init/{name}")),
+            &dest,
+        )
+        .unwrap();
+    }
+    let path = process::fake_bin(dir.path(), &[("genisoimage", FAKE_GENISOIMAGE_FILES)]);
     let server = Server::start();
     mount_build(&server, "9000", 200);
     let mut extra = vec![
@@ -315,7 +342,7 @@ fn assert_ubuntu_golden(template_os: Option<&str>) {
     if let Some(os) = template_os {
         extra.push(format!("template_os={os}"));
     }
-    let run = run_play(dir.path(), &server, &extra, &[]);
+    let run = run_play(dir.path(), &server, &extra, &[("PATH", path)]);
     assert!(run.ok, "{}", run.output);
     let got: Vec<(String, String, String)> = server
         .requests()
@@ -434,7 +461,7 @@ fn a_malformed_node_or_vmid_sends_nothing() {
     // Each row must be refused by its own check, not by a later request failing.
     const MALFORMED: &str = "target_node must be a node name and template_vmid a positive integer.";
     const NO_VMID: &str = "A Windows template needs -e template_vmid=<n>";
-    let cases: [(&str, Vec<String>, &str); 6] = [
+    let cases: [(&str, Vec<String>, &str); 7] = [
         (
             "ubuntu node",
             vec!["target_node=n1/../../cluster".to_owned()],
@@ -461,6 +488,17 @@ fn a_malformed_node_or_vmid_sends_nothing() {
         ),
         ("windows vmid", windows_extra(Some("0")), MALFORMED),
         ("windows without a vmid", windows_extra(None), NO_VMID),
+        (
+            // An integer 0 falls back to 9000 through `default(9000, true)`, so the Windows
+            // require check must refuse it, not the malformed check.
+            "windows integer zero vmid",
+            {
+                let mut e = windows_extra(None);
+                e.push(json!({"template_vmid": 0}).to_string());
+                e
+            },
+            NO_VMID,
+        ),
     ];
     let mut problems = vec![];
     for (case, extra, refusal) in cases {
@@ -792,6 +830,38 @@ fn answer_file_inputs_are_the_one_time_password_image_index_and_public_key() {
         if t["no_log"] != json!(true) {
             problems.push(format!("`{}` is not no_log", t["name"]));
         }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn first_logon_opens_ssh_on_every_profile_and_drops_host_keys_before_sysprep() {
+    let logon = text::read("platform/hypervisor/proxmox/windows/first-logon.ps1");
+    let lines: Vec<&str> = logon.lines().collect();
+    let mut problems = vec![];
+    let rule_lines: Vec<&&str> = lines
+        .iter()
+        .filter(|l| l.contains("-Name 'OpenSSH-Server-In-TCP'") && l.contains("NetFirewallRule"))
+        .collect();
+    for verb in ["New-NetFirewallRule", "Set-NetFirewallRule"] {
+        if !rule_lines
+            .iter()
+            .any(|l| l.contains(verb) && l.contains("-Profile Any"))
+        {
+            problems.push(format!(
+                "no {verb} of OpenSSH-Server-In-TCP with -Profile Any"
+            ));
+        }
+    }
+    let remove = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("Remove-Item") && l.contains("ssh_host_*"));
+    let sysprep = lines.iter().position(|l| l.contains("sysprep.exe"));
+    match (remove, sysprep) {
+        (Some(r), Some(s)) if r < s => {}
+        _ => problems.push(format!(
+            "the ssh_host_* Remove-Item (line {remove:?}) is not before sysprep.exe (line {sysprep:?})"
+        )),
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }

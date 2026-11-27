@@ -109,9 +109,9 @@
         - name: "Require template_vmid and target_node for a Windows template"
           ansible.builtin.assert:
             that:
-              - template_vmid | default('') | string | length > 0
+              - "template_vmid | default('') | string is match('^[1-9][0-9]*\\Z')"
               - target_node | default('') | string | length > 0
-            fail_msg: "A Windows template needs -e template_vmid=<n> and -e target_node=<node>; there is no default."
+            fail_msg: "A Windows template needs -e template_vmid=<n>, a positive integer, and -e target_node=<node>; there is no default."
           when: _os == 'windows'
 
         - name: "Require the Windows installer ISO volid"
