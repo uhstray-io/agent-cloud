@@ -79,7 +79,8 @@ Write-Output 'Step 8: stage the clone answer file'
 Copy-Item "$Seed\clone-unattend.xml" C:\Windows\System32\Sysprep\clone-unattend.xml -Force
 
 Write-Output 'Step 9: generalize the template and shut down'
-# Every clone generates its own host keys, as the Linux template's autoinstall removes them.
+# No clone may share the template's host keys; the Linux template's autoinstall removes them too.
+# That sshd creates new ones on a clone's first start is unverified (spike U09).
 Stop-Service sshd -Force -ErrorAction Stop
 Remove-Item -Path 'C:\ProgramData\ssh\ssh_host_*' -Force -ErrorAction Stop
 Stop-Transcript
