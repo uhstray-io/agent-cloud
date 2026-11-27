@@ -120,3 +120,20 @@ fn the_probe_runs_as_the_linger_user_else_the_runner_account() {
     }
     assert!(problems.is_empty(), "{}\n{output}", problems.join("\n"));
 }
+
+#[test]
+fn the_probe_becomes_the_account_it_resolved_and_the_report_names_it() {
+    // The stub hosts above run without `become`, so they cannot see which account the probe becomes:
+    // the probe task and the Report must use `_probe_account`, not `linger_user`.
+    let play = playbook::plays(PLAYBOOK).remove(0);
+    let tasks = play["tasks"].as_array().unwrap();
+    let probe: Vec<&Value> = tasks.iter().filter(|t| t["name"] == PROBE).collect();
+    assert_eq!(probe.len(), 1, "one dedicated-account probe task");
+    assert_eq!(probe[0]["become_user"], "{{ _probe_account }}");
+    let report: Vec<&Value> = tasks.iter().filter(|t| t["name"] == "Report").collect();
+    assert_eq!(report.len(), 1, "one Report task");
+    let dedicated = report[0]["ansible.builtin.debug"]["msg"]["rootless_podman_dedicated_account"]
+        .as_str()
+        .expect("the Report names the dedicated account's output");
+    assert!(dedicated.contains("{_probe_account:"), "{dedicated}");
+}

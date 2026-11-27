@@ -3,12 +3,12 @@
 #
 # Read-only, identical under --check. Scope: rootless podman for the connecting user and, when
 # the host declares one, its dedicated account (`linger_user`, else `github_runner_account`);
-# rootful podman; Docker. A rootless container owned by any other account is not seen (a rootful probe cannot list another
-# user's rootless containers). For each container: name, image, state, restart policy and the
-# compose working directory, which is how tasks/list-service-containers.yml selects a
-# service's containers. Each podman probe also prints the store's graph driver name and graph
-# options (from `podman info`), and nothing else from it. Names and metadata only: no
-# environment, no mounts, no labels beyond that one.
+# rootful podman; Docker. A rootless container owned by any other account is not seen (a rootful
+# probe cannot list another user's rootless containers). For each container: name, image, state,
+# restart policy and the compose working directory, which is how
+# tasks/list-service-containers.yml selects a service's containers. Each podman probe also
+# prints the store's graph driver name and graph options (from `podman info`), and nothing else
+# from it. Names and metadata only: no environment, no mounts, no labels beyond that one.
 #
 # Exists to onboard a host that carries no service group (devlog) from what
 # actually runs there, and to see which engine and account own a service's containers:
