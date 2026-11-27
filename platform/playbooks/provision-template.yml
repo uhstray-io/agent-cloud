@@ -429,7 +429,7 @@
             - name: "Render the answer file"
               ansible.builtin.template:
                 src: "{{ _win_dir }}/autounattend.xml.j2"
-                dest: "{{ _win_seed_tmp.path }}/src/autounattend.xml"
+                dest: "{{ _win_seed_tmp.path }}/src/Autounattend.xml"
                 mode: "0600"
               no_log: true
               when: not ansible_check_mode
