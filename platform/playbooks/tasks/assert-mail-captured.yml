@@ -66,6 +66,8 @@
         | unique(attribute='ID')
         | list if (_mail_captured.status | default(0)) == 200 else [] }}
   block:
+    # On ansible-core 2.20 an exhausted poll also prints an [ERROR] line on this task; the assert's message is the
+    # one that counts.
     - name: Poll the mail catcher for a matching message
       ansible.builtin.uri:
         url: "{{ mail_captured_api_url }}/api/v1/messages?limit={{ mail_captured_limit | default(50) }}"

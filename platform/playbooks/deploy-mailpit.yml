@@ -16,7 +16,7 @@
 #   mailpit_bind                  published host address, default 127.0.0.1 (loopback only)
 #   mailpit_smtp_port             published host port for SMTP, default 1025
 #   mailpit_http_port             published host port for the web UI and API, default 8025
-#   deploy_force_recreate         survey lever, literal true only: recreate even when nothing changed
+#   deploy_force_recreate         extra var, literal true only: recreate even when nothing changed
 #   container_engine, local_monorepo_dir, monorepo_deploy_path, service_branch:
 #                                 as for the other composable service deploys
 
@@ -95,7 +95,7 @@
         MAILPIT_BIND: "{{ mailpit_bind | default('127.0.0.1') }}"
         MAILPIT_SMTP_PORT: "{{ mailpit_smtp_port | default('1025') | string }}"
         MAILPIT_HTTP_PORT: "{{ mailpit_http_port | default('8025') | string }}"
-        # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate Mailpit even when
+        # Operator lever (extra var `deploy_force_recreate`, only the literal true): recreate Mailpit even when
         # its compose files, .env and image all match, as for OPA.
         FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
       register: _deploy

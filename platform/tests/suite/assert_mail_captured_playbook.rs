@@ -4,7 +4,8 @@
 //!   the subject, the catcher's URL, the HTTP status and the count of messages read. A message list that is `null`, or
 //!   a message with no `To`, is read as no match, not as a template error.
 //! - A message to the recipient with the subject passes on one read. The recipient matches any `To` address, ignoring
-//!   case. The subject matches as text, so a `+` in it is a plus sign, not a pattern.
+//!   case. The recipient is matched whole: an address that only extends it, or has text before it, is no match. The
+//!   subject matches as text, so a `+` in it is a plus sign, not a pattern.
 //! - With `mail_captured_since` set, a message created before that second does not match, and one created at or after
 //!   it does, to the second.
 //! - A malformed input is refused before any read, and the refusal names the input.
@@ -238,6 +239,30 @@ fn a_message_to_another_recipient_or_with_another_subject_is_no_match() {
         "{}",
         out.out
     );
+}
+
+#[test]
+fn a_recipient_that_only_extends_or_contains_the_wanted_address_is_no_match() {
+    // Arrange: each near miss is the only message in its own catcher, so it alone must not satisfy the check. One
+    // extends the wanted address past its end, and one has text before it.
+    for address in ["x@example.test.other", "ax@example.test"] {
+        let server = Server::start();
+        mount_list(
+            &server,
+            &json!([message("m1", &to(address), SUBJECT, CREATED)]),
+        );
+
+        // Act
+        let out = run(inputs(&server), false);
+
+        // Assert: red, with the wanted recipient named as missing.
+        assert!(!out.ok, "{address}: {}", out.out);
+        assert!(
+            out.out.contains(&format!("No message to {RECIPIENT}")),
+            "{address}: {}",
+            out.out
+        );
+    }
 }
 
 #[test]

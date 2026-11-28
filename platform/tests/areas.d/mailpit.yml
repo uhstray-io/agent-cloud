@@ -1,13 +1,17 @@
 # The local-dev mail catcher (AC-1123): the Mailpit service and its wiring (the deploy playbook, the local-dev
 # inventory and route, the local and shared Semaphore catalogs) and the shared task that asserts a message reached
 # it. The static tier (suite/mailpit.rs) reads each of those files as text or YAML. The playbook tier
-# (suite/assert_mail_captured_playbook.rs) runs the shared task, unchanged, against a fake catcher API.
+# (suite/assert_mail_captured_playbook.rs) runs the shared task, unchanged, against a fake catcher API. The same tier
+# (suite/deploy_mailpit_playbook.rs) runs the deploy playbook under --check to prove its local-only guards refuse.
 paths:
   - "platform/services/mailpit/**"
   - "platform/playbooks/deploy-mailpit.yml"
   - "platform/playbooks/tasks/assert-mail-captured.yml"
   - "platform/playbooks/bootstrap-local-dev.yml"
   - "platform/semaphore/templates.yml"
+  # Files the deploy playbook's chain loads (lanes test every_file_a_playbook_chain_loads_selects_its_module).
+  - "platform/playbooks/refuse-internal-extra-vars.yml"
+  - "platform/playbooks/preflight-target-group.yml"
   # Not listed: platform/inventory/local-dev.yml.example and platform/semaphore/templates-local.yml. No area claims
   # them today, so a change to either runs everything in the push and CI lanes, and the mailpit route and group
   # tests run then. Claiming them would take them off that fallback, and the repo-wide scan in
@@ -18,4 +22,4 @@ paths:
   - "platform/playbooks/filter_plugins/**"
 tiers:
   static: [mailpit]
-  playbook: [assert_mail_captured_playbook]
+  playbook: [assert_mail_captured_playbook, deploy_mailpit_playbook]
