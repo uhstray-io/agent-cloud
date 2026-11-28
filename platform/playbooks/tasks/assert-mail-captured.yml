@@ -1,0 +1,107 @@
+# assert-mail-captured.yml asserts that a message reached the local-dev Mailpit mail catcher.
+#
+# LOCAL-DEV ONLY. Mailpit (platform/services/mailpit) accepts every message and every AUTH credential, so a
+# message in it proves delivery to the local catcher and says nothing about production mail. The task is
+# read-only: it GETs the catcher's message list, retries until a matching message appears, then asserts. Its
+# read sets check_mode: false, so the check also runs under --check.
+#
+# Inputs. The caller sets them as include_tasks vars or as play vars. None is `_`-prefixed, because that
+# prefix is reserved for internals and an input is not one.
+#   mail_captured_api_url     required; the catcher's base URL, http:// or https:// (for example http://mailpit:8025)
+#   mail_captured_recipient   required, non-empty; a message matches when one of its To addresses equals it,
+#                             compared case-insensitively
+#   mail_captured_subject     required, non-empty; a message matches when its Subject contains it. The text is
+#                             taken literally, not as a pattern.
+#   mail_captured_since       optional, ISO 8601 UTC as YYYY-MM-DDTHH:MM:SSZ. When set, only messages Created at
+#                             or after that second match. Unset or empty means no time filter.
+#   mail_captured_limit       optional, default 50; how many of the newest messages the read asks for. The message
+#                             being looked for must be among them.
+#   mail_captured_retries     optional, default 10
+#   mail_captured_delay       optional, default 3 (seconds between reads)
+#
+# Why a per-run marker or a since-time. A message an earlier run left in the catcher would satisfy a check that
+# matched only the recipient and the subject. So the caller puts a per-run marker in mail_captured_subject, or
+# sets mail_captured_since to the time its run began, and only this run's message counts (plan 29, S2).
+# platform/playbooks/tasks/o11y-alert-probe.yml matches its Discord delivery on a per-run marker the same way.
+
+- name: Require an http or https API URL for the mail catcher
+  ansible.builtin.assert:
+    that: (mail_captured_api_url | default('') | string) is match('^https?://')
+    fail_msg: "mail_captured_api_url must be the http:// or https:// base URL of the mail catcher's API."
+    quiet: true
+
+- name: Require a recipient to look for
+  ansible.builtin.assert:
+    that: (mail_captured_recipient | default('') | string | length) > 0
+    fail_msg: "mail_captured_recipient must be a non-empty address."
+    quiet: true
+
+- name: Require a subject to look for
+  ansible.builtin.assert:
+    that: (mail_captured_subject | default('') | string | length) > 0
+    fail_msg: "mail_captured_subject must be non-empty; the caller puts a per-run marker in it."
+    quiet: true
+
+- name: Require a since-time in the fixed UTC form when one is given
+  ansible.builtin.assert:
+    that: (mail_captured_since | default('', true) | string) is match('^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)?\Z')
+    fail_msg: "mail_captured_since must be an ISO 8601 UTC time, YYYY-MM-DDTHH:MM:SSZ, or unset."
+    quiet: true
+
+# The read is not failed here. failed_when: false keeps the until loop polling, and the assert below owns the
+# failure, which names the message that did not arrive and the status of the last read. A read that is refused
+# or answers other than 200 is retried, and only a 200 read can supply a match.
+- name: Poll the mail catcher for a matching message
+  ansible.builtin.uri:
+    url: "{{ mail_captured_api_url }}/api/v1/messages?limit={{ mail_captured_limit | default(50) }}"
+    method: GET
+    status_code: [200]
+    return_content: true
+  check_mode: false
+  register: _mail_captured
+  failed_when: false
+  retries: "{{ mail_captured_retries | default(10) }}"
+  delay: "{{ mail_captured_delay | default(3) }}"
+  until: >-
+    (_mail_captured.status | default(0)) == 200 and
+    ((_mail_captured.json | default({}, true)).messages | default([], true)
+      | selectattr('To')
+      | subelements('To')
+      | selectattr('1.Address', 'match', '(?i)' ~ (mail_captured_recipient | string | regex_escape) ~ '\Z')
+      | selectattr('0.Subject', 'search', mail_captured_subject | string | regex_escape)
+      | selectattr('0.Created', 'ge', (mail_captured_since | default('', true) | string)[:19])
+      | map(attribute='0')
+      | unique(attribute='ID')
+      | list) | length > 0
+
+# The same filter chain as the until above, taken only from a read that answered 200. Mailpit lists the newest
+# messages first, but nothing here relies on that order: every matching message is kept, and the first one is
+# only reported.
+- name: Select the captured messages that match the recipient, the subject and the since-time
+  ansible.builtin.set_fact:
+    _mail_captured_match: >-
+      {{ (_mail_captured.json | default({}, true)).messages | default([], true)
+        | selectattr('To')
+        | subelements('To')
+        | selectattr('1.Address', 'match', '(?i)' ~ (mail_captured_recipient | string | regex_escape) ~ '\Z')
+        | selectattr('0.Subject', 'search', mail_captured_subject | string | regex_escape)
+        | selectattr('0.Created', 'ge', (mail_captured_since | default('', true) | string)[:19])
+        | map(attribute='0')
+        | unique(attribute='ID')
+        | list if (_mail_captured.status | default(0)) == 200 else [] }}
+
+- name: Require a captured message to the recipient with the subject
+  ansible.builtin.assert:
+    that: _mail_captured_match | length > 0
+    fail_msg: >-
+      No message to {{ mail_captured_recipient }} with subject containing '{{ mail_captured_subject }}'{{
+      (' since ' ~ mail_captured_since) if (mail_captured_since | default('', true) | string | length) > 0 else '' }}
+      arrived in the mail catcher at {{ mail_captured_api_url }} (HTTP {{ _mail_captured.status | default('none') }},
+      {{ (_mail_captured.json | default({}, true)).messages | default([], true) | length }} messages read).
+    quiet: true
+
+- name: Report the matching message by its count, ID and subject only
+  ansible.builtin.debug:
+    msg: >-
+      The mail catcher holds {{ _mail_captured_match | length }} message(s) to {{ mail_captured_recipient }} with the
+      subject marker; the first has ID {{ _mail_captured_match[0].ID }} and Subject {{ _mail_captured_match[0].Subject }}.
