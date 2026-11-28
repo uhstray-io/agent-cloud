@@ -572,8 +572,9 @@ def summarize(data):
     jobs = [j for j in data["jobs"] if j.get("type", "vzdump") == "vzdump"]
     job_guests = [(job, *_job_guests(job, existing)) for job in jobs]  # (job, selects, guests)
     node_rows, node_remove = _vzdump_defaults(data.get("vzdump_defaults_reads"))
-    # A job naming no storage writes to its node's /etc/vzdump.conf storage, else `local` (pve-manager PVE/VZDump.pm
-    # :74-79 and :646-648 at e5ac6d6f). This survey does not resolve that storage, so its guests' needs are unknown.
+    # A job naming no storage writes to its node's /etc/vzdump.conf storage, else `local`, or to a dump directory when
+    # one is set (pve-manager PVE/VZDump.pm:74-79 and :646-648 at e5ac6d6f). This survey does not resolve which, so
+    # its guests are treated on every storage like the guests of a job that does not prune.
     unplaced = {vmid for job, _, guests in job_guests if not job.get("storage") and _enabled(job)
                 for vmid in guests if vmid in existing}
     # Raw uri results: content reads loop over plan reads, prune reads over (read, retention).
@@ -609,7 +610,7 @@ def summarize(data):
         # living on that node take a retention. A guest that no longer exists takes none: its backup fails with
         # "unable to find VM" (pve-manager PVE/API2/VZDump.pm:101-106 at e5ac6d6f, PVE/VZDump.pm:907-908 at e5ac6d6f),
         # so no job of this cluster prunes it.
-        retention_of, protects_every_archive, unpruned = {}, set(), set()
+        retention_of, protects_every_archive, unpruned = {}, set(), set(unplaced)
         for job, _, guests in job_guests:
             if job.get("storage") == storage and _enabled(job):
                 guests = {vmid for vmid in guests
@@ -640,10 +641,9 @@ def summarize(data):
             if g["newest"] is None or ctime > g["newest"]:
                 g["newest"], g["newest_bytes"] = ctime, size
             # Prunable only when every retention backing this guest was previewed here and removes it, and no job
-            # backing it up is one that does not prune or one whose storage is unknown.
+            # backing it up is one that does not prune (or one whose storage is unknown, folded into unpruned).
             wanted = retention_of.get(vmid, set())
-            if (vmid not in unpruned and vmid not in unplaced and wanted
-                    and all(volid in previewed.get(x, set()) for x in wanted)):
+            if vmid not in unpruned and wanted and all(volid in previewed.get(x, set()) for x in wanted):
                 g["prunable"] += 1
                 g["prunable_bytes"] += size
         # A protected archive is kept on top of what keep-* keeps (pve-storage marks it protected,
@@ -651,7 +651,7 @@ def summarize(data):
         # so the need adds its bytes; a guest whose job protects every archive has no bound.
         needs, need_bytes = {}, {}
         for vmid, g in by_vmid.items():
-            if vmid in protects_every_archive or vmid in unpruned or vmid in unplaced:
+            if vmid in protects_every_archive or vmid in unpruned:
                 needs[vmid] = None
             elif vmid not in retention_of:  # no enabled job backs it up here, so nothing prunes it: every archive stays
                 needs[vmid], need_bytes[vmid] = g["archives"], g["bytes"]
