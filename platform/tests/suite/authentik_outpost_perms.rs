@@ -181,6 +181,12 @@ fn script_is_rendered_once_in_memory_and_both_steps_send_it_without_no_log() {
     );
     for name in [PROBE, REPAIR] {
         let task = &tasks[index_of(&tasks, name)];
+        let argv = argv_of(task);
+        assert!(
+            argv.ends_with(&["ak", "shell", "-c", "import sys; exec(sys.stdin.read())"]),
+            "{name}: must run the stdin script with `ak shell -c`; plain `ak shell` is an \
+             interactive console that drops blocks and exits 0, got {argv:?}"
+        );
         assert_eq!(
             stdin_of(task),
             "{{ _outpost_perms_script }}",

@@ -2,8 +2,11 @@
 # Converges the permission that lets the embedded outpost's service account view the proxy
 # providers attached to the outpost (AC-1135). deploy-authentik.yml renders this file in memory
 # once and sends it to the authentik-server container on stdin, so nothing is written to the host:
-#   <engine> exec -i -e OUTPOST_PERMS_MODE=<check|repair> authentik-server ak shell
-# `ak shell` runs the program from stdin, and sys.exit(n) becomes the command's exit code.
+#   <engine> exec -i -e OUTPOST_PERMS_MODE=<check|repair> authentik-server \
+#     ak shell -c 'import sys; exec(sys.stdin.read())'
+# The -c form runs the whole program, and sys.exit(n) becomes the command's exit code. Plain
+# `ak shell` would feed stdin to an interactive console instead, which drops any block not
+# followed by a blank line and exits 0 whatever the program did.
 # Why this exists: context/architecture.md, "Embedded outpost permissions (AC-1135)".
 #
 # It prints lines that start with "outpost-perms:", naming providers and booleans only.

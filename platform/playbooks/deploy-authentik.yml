@@ -460,6 +460,8 @@
     # and then every forward_auth gate answers 404. The probe changes nothing; the repair runs only
     # when the probe reports a missing grant, never under --check, and restarts nothing.
     # The script is rendered once, in memory, and sent on stdin: nothing is written to the host.
+    # `ak shell -c` executes it as one program; without -c, ak shell feeds stdin to an interactive
+    # console, which drops any block not followed by a blank line and exits 0 whatever happened.
     # Its exit codes are listed in its header.
     - name: "Outpost permissions: render the convergence script"
       ansible.builtin.set_fact:
@@ -472,7 +474,7 @@
       # Read-only (OUTPOST_PERMS_MODE=check), so it runs under --check too. Exit 75: an expected
       # provider is not attached yet, so it retries.
       ansible.builtin.command:
-        argv: ["{{ _engine }}", exec, -i, -e, OUTPOST_PERMS_MODE=check, authentik-server, ak, shell]
+        argv: ["{{ _engine }}", exec, -i, -e, OUTPOST_PERMS_MODE=check, authentik-server, ak, shell, -c, "import sys; exec(sys.stdin.read())"]
         stdin: "{{ _outpost_perms_script }}"
       register: _outpost_perms_probe
       changed_when: false
@@ -486,7 +488,7 @@
       # Only on the probe's "would repair" line, never under --check. Calls the outpost's own grant
       # and reads it back; exit 4 (still missing) fails the deploy.
       ansible.builtin.command:
-        argv: ["{{ _engine }}", exec, -i, -e, OUTPOST_PERMS_MODE=repair, authentik-server, ak, shell]
+        argv: ["{{ _engine }}", exec, -i, -e, OUTPOST_PERMS_MODE=repair, authentik-server, ak, shell, -c, "import sys; exec(sys.stdin.read())"]
         stdin: "{{ _outpost_perms_script }}"
       register: _outpost_perms_repair
       when: "not ansible_check_mode and 'outpost-perms: would repair' in _outpost_perms_probe.stdout"
