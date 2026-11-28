@@ -135,3 +135,9 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1235 (AC-1107).
 - **DERIVED:** Upload an ISO or any other binary through an HTTP API with `curl --form`, never with the `uri` module's `form-multipart` body. In that body (`ansible.module_utils.urls.prepare_multipart`, read on ansible-core 2.20.8) a part given as `content` has its line endings rewritten to `\r\n`; a part given as a `filename` alone is sent base64-encoded, which arrives as the file only if the receiver decodes `Content-Transfer-Encoding` (not verified for Proxmox), or, with `multipart_encoding: 7or8bit`, has its line endings rewritten too.
 - **APPLIES TO:** playbooks under `platform/playbooks/` that upload binary files through an HTTP API, such as the Windows seed upload in `provision-template.yml`. The Ubuntu seed upload in the same playbook still uses the `uri` body and is existing debt (AC-1110).
+
+### L-023 · 2026-11-27 · playbooks
+
+- **ACCEPTED:** #1239 (AC-927).
+- **DERIVED:** A preview of what a Proxmox backup job will prune follows vzdump's own conditions, not the job's keep-* settings alone. vzdump prunes only when the job's `remove` is on (pve-manager `PVE/VZDump.pm:1233` at `e5ac6d6f`). A job without its own `remove` takes the node's `/etc/vzdump.conf` value (`:597-606`), so the preview reads `GET nodes/<node>/vzdump/defaults` on each node, and a value it cannot read leaves the need unknown, never assumed on. A guest that no longer exists is never pruned by any job: its backup fails with "unable to find VM" (`:908`) inside the same `eval` that holds the prune (`:907-1272`), so its archives stay until they are deleted by hand.
+- **APPLIES TO:** playbooks and helpers under `platform/playbooks/` that read Proxmox backup jobs to forecast retention or free space, such as `survey-proxmox-backup-storage.yml` and `cleanup-proxmox-backup-archives.yml`.
