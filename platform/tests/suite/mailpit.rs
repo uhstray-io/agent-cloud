@@ -189,8 +189,23 @@ fn the_mailpit_group_holds_one_local_host_in_both_copies() {
 #[test]
 fn the_shared_task_reads_with_check_mode_false_and_never_logs_and_prefixes_its_internals() {
     // Arrange
-    let tasks = playbook::loads(&text::read(TASKS));
-    let tasks = tasks.as_array().expect("a task list");
+    let doc = playbook::loads(&text::read(TASKS));
+    let top = doc.as_array().expect("a task list");
+    // A block's own vars are internals too; its tasks are checked like top-level ones.
+    let mut tasks: Vec<&Value> = Vec::new();
+    for task in top {
+        tasks.push(task);
+        if let Some(inner) = task.get("block").and_then(Value::as_array) {
+            for key in task["vars"]
+                .as_object()
+                .into_iter()
+                .flat_map(|vars| vars.keys())
+            {
+                assert!(key.starts_with('_'), "block var {key} is not `_`-prefixed");
+            }
+            tasks.extend(inner);
+        }
+    }
 
     // Act + Assert: the one read sets check_mode false; no task sets no_log; each register and set_fact key is `_`-prefixed.
     let mut reads = 0;

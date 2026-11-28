@@ -16,11 +16,8 @@
 #   mailpit_bind                  published host address, default 127.0.0.1 (loopback only)
 #   mailpit_smtp_port             published host port for SMTP, default 1025
 #   mailpit_http_port             published host port for the web UI and API, default 8025
-#   mailpit_api_url               API base URL the verify play probes, default http://mailpit:8025
-#   mailpit_smtp_host             SMTP host the verify play probes, default mailpit
-#   mailpit_smtp_port_internal    SMTP port the verify play probes, default 1025
 #   deploy_force_recreate         survey lever, literal true only: recreate even when nothing changed
-#   container_engine, local_mode, local_monorepo_dir, monorepo_deploy_path, service_branch:
+#   container_engine, local_monorepo_dir, monorepo_deploy_path, service_branch:
 #                                 as for the other composable service deploys
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an internal
@@ -45,7 +42,6 @@
   any_errors_fatal: true
   vars:
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
-    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _branch: "{{ service_branch | default('main') }}"
 
   tasks:
@@ -92,7 +88,8 @@
         bash deploy.sh
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
-        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        # Always the local overlay: Phase 1 refused every host that is not a local-dev host.
+        LOCAL_MODE: "true"
         # Compose substitutions for the published host ports. Mailpit has no secrets; deploy.sh writes
         # these into a non-secret .env so a changed value recreates the container (write_env).
         MAILPIT_BIND: "{{ mailpit_bind | default('127.0.0.1') }}"
@@ -118,17 +115,13 @@
   gather_facts: false
   become: false
   any_errors_fatal: true
-  vars:
-    # Reachable by name on the local-dev network (this play runs in the Semaphore container).
-    _mailpit_api_url: "{{ mailpit_api_url | default('http://mailpit:8025') }}"
-    _mailpit_smtp_host: "{{ mailpit_smtp_host | default('mailpit') }}"
-    _mailpit_smtp_port: "{{ mailpit_smtp_port_internal | default(1025) }}"
-
+  # The play runs in the Semaphore container on the local-dev network, so it reaches Mailpit by its
+  # compose service name and container ports (compose.yml).
   tasks:
     # Verify is skipped under --check: the container it would probe is not started by a check run.
     - name: "Mailpit API answers 200 on /api/v1/info"
       ansible.builtin.uri:
-        url: "{{ _mailpit_api_url }}/api/v1/info"
+        url: "http://mailpit:8025/api/v1/info"
         status_code: [200]
       register: _mailpit_info
       retries: 10
@@ -138,14 +131,13 @@
 
     - name: "Mailpit SMTP port accepts a connection"
       ansible.builtin.wait_for:
-        host: "{{ _mailpit_smtp_host }}"
-        port: "{{ _mailpit_smtp_port }}"
+        host: mailpit
+        port: 1025
         timeout: 30
       when: not ansible_check_mode
 
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
-          Mailpit is up (local-dev only): SMTP on {{ _mailpit_smtp_host }}:{{ _mailpit_smtp_port }},
-          API at {{ _mailpit_api_url }}.
+          Mailpit is up (local-dev only): SMTP on mailpit:1025, API at http://mailpit:8025.
       when: not ansible_check_mode

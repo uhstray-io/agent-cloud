@@ -3,8 +3,8 @@
 # as mailpit:1025 (plain SMTP, no STARTTLS) on the local-dev network; the web UI and API are on
 # port 8025 of the same container.
 #
-# Runs as uid 65534 (nobody): the image's default user is root, and the owner ran it as 65534 and
-# confirmed the readyz check, SMTP delivery and the API listing (2026-11-27). The published ports
+# Runs as uid 65534 (nobody), because the image's default user is root; readyz, SMTP delivery and
+# the API all work as 65534 (README.md, "What it runs"). The published ports
 # bind loopback only: Mailpit warns that its API is reachable from any host that routes to an
 # interface it listens on, so the default keeps it off the network.
 #

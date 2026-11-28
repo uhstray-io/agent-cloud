@@ -50,36 +50,12 @@
 
 # The read is not failed here. failed_when: false keeps the until loop polling, and the assert below owns the
 # failure, which names the message that did not arrive and the status of the last read. A read that is refused
-# or answers other than 200 is retried, and only a 200 read can supply a match.
-- name: Poll the mail catcher for a matching message
-  ansible.builtin.uri:
-    url: "{{ mail_captured_api_url }}/api/v1/messages?limit={{ mail_captured_limit | default(50) }}"
-    method: GET
-    status_code: [200]
-    return_content: true
-  check_mode: false
-  register: _mail_captured
-  failed_when: false
-  retries: "{{ mail_captured_retries | default(10) }}"
-  delay: "{{ mail_captured_delay | default(3) }}"
-  until: >-
-    (_mail_captured.status | default(0)) == 200 and
-    ((_mail_captured.json | default({}, true)).messages | default([], true)
-      | selectattr('To')
-      | subelements('To')
-      | selectattr('1.Address', 'match', '(?i)' ~ (mail_captured_recipient | string | regex_escape) ~ '\Z')
-      | selectattr('0.Subject', 'search', mail_captured_subject | string | regex_escape)
-      | selectattr('0.Created', 'ge', (mail_captured_since | default('', true) | string)[:19])
-      | map(attribute='0')
-      | unique(attribute='ID')
-      | list) | length > 0
-
-# The same filter chain as the until above, taken only from a read that answered 200. Mailpit lists the newest
-# messages first, but nothing here relies on that order: every matching message is kept, and the first one is
-# only reported.
-- name: Select the captured messages that match the recipient, the subject and the since-time
-  ansible.builtin.set_fact:
-    _mail_captured_match: >-
+# or answers other than 200 is retried, and only a 200 read can supply a match. _mail_captured_found is
+# templated each time it is read, so the until re-filters every new read and the set_fact keeps the last one.
+# Every matching message is kept; nothing relies on the order the catcher lists them in.
+- name: Poll the mail catcher and keep the matching messages
+  vars:
+    _mail_captured_found: >-
       {{ (_mail_captured.json | default({}, true)).messages | default([], true)
         | selectattr('To')
         | subelements('To')
@@ -89,6 +65,23 @@
         | map(attribute='0')
         | unique(attribute='ID')
         | list if (_mail_captured.status | default(0)) == 200 else [] }}
+  block:
+    - name: Poll the mail catcher for a matching message
+      ansible.builtin.uri:
+        url: "{{ mail_captured_api_url }}/api/v1/messages?limit={{ mail_captured_limit | default(50) }}"
+        method: GET
+        status_code: [200]
+        return_content: true
+      check_mode: false
+      register: _mail_captured
+      failed_when: false
+      retries: "{{ mail_captured_retries | default(10) }}"
+      delay: "{{ mail_captured_delay | default(3) }}"
+      until: _mail_captured_found | length > 0
+
+    - name: Select the captured messages that match the recipient, the subject and the since-time
+      ansible.builtin.set_fact:
+        _mail_captured_match: "{{ _mail_captured_found }}"
 
 - name: Require a captured message to the recipient with the subject
   ansible.builtin.assert:
