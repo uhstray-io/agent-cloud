@@ -11,6 +11,7 @@
 
 use agent_cloud_tests::process::scrubbed;
 use agent_cloud_tests::repo;
+use agent_cloud_tests::yaml::Node;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -1399,6 +1400,82 @@ fn a_jobless_existing_guest_needs_all_its_bytes_once_with_its_protected_archive_
         out["storages"][0]["gib_needed_at_job_retention"],
         json!(4.0),
         "{out}"
+    );
+}
+
+#[test]
+fn a_guest_a_storageless_job_backs_up_has_an_unknown_need() {
+    // Arrange: guest 900 is backed up only by an enabled job that names no storage, so it writes to its node's
+    // default storage, which the survey does not resolve.
+    let archives = [archive(900, 0, 1, false), archive(900, 1, 1, false)];
+    let payload = backups_payload(
+        json!([{"vmid": 900, "name": "loner", "node": "n1"}]),
+        json!([{"id": "j", "type": "vzdump", "vmid": "900", "prune-backups": "keep-last=1"}]),
+        &archives,
+        vec![],
+        Some(json!([defaults_read("n1", 200, json!({"remove": 1}))])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: not "keeps every archive": where the job prunes is unknown, so the need is too.
+    let guest = guest_row(&out, 900);
+    assert_eq!(guest["retained_at_job_retention"], Value::Null, "{out}");
+    assert_unknown(&guest, &out);
+}
+
+#[test]
+fn the_playbook_reads_each_online_nodes_vzdump_defaults_and_hands_them_to_the_summarizer() {
+    // Arrange
+    let tasks = repo::tasks("platform/playbooks/survey-proxmox-backup-storage.yml");
+    let named = |name: &str| {
+        tasks
+            .iter()
+            .find(|t| t.get("name").and_then(Node::as_str) == Some(name))
+            .unwrap_or_else(|| panic!("no task named {name:?}"))
+            .clone()
+    };
+
+    // Act
+    let read = named("Read each online node's vzdump defaults");
+    let summarize = named("Summarize the backup storage");
+
+    // Assert: a GET per online node, a 403 or 500 reaching the summarizer as data, never printed, and its results
+    // under the key the summarizer reads.
+    let uri = read.get("ansible.builtin.uri").expect("a uri task");
+    assert!(
+        uri.get("url")
+            .and_then(Node::as_str)
+            .is_some_and(|u| u.ends_with("/vzdump/defaults")),
+        "{uri:?}"
+    );
+    let statuses: Vec<&str> = uri
+        .get("status_code")
+        .and_then(Node::as_seq)
+        .expect("a status_code list")
+        .iter()
+        .filter_map(Node::as_str)
+        .collect();
+    assert_eq!(statuses, ["200", "403", "500"], "{uri:?}");
+    assert_eq!(
+        read.get("loop").and_then(Node::as_str),
+        Some("{{ _online_nodes }}")
+    );
+    assert_eq!(
+        read.get("register").and_then(Node::as_str),
+        Some("_vzdump_defaults_reads")
+    );
+    assert_eq!(read.get("no_log"), Some(&Node::Bool(true)));
+    assert_eq!(read.get("check_mode"), Some(&Node::Bool(false)));
+    let stdin = summarize
+        .get("ansible.builtin.command")
+        .and_then(|c| c.get("stdin"))
+        .and_then(Node::as_str)
+        .expect("the summarize stdin");
+    assert!(
+        stdin.contains("'vzdump_defaults_reads': _vzdump_defaults_reads.results"),
+        "{stdin}"
     );
 }
 

@@ -572,6 +572,10 @@ def summarize(data):
     jobs = [j for j in data["jobs"] if j.get("type", "vzdump") == "vzdump"]
     job_guests = [(job, *_job_guests(job, existing)) for job in jobs]  # (job, selects, guests)
     node_rows, node_remove = _vzdump_defaults(data.get("vzdump_defaults_reads"))
+    # A job naming no storage writes to its node's /etc/vzdump.conf storage, else `local` (pve-manager PVE/VZDump.pm
+    # :74-79 and :646-648 at e5ac6d6f). This survey does not resolve that storage, so its guests' needs are unknown.
+    unplaced = {vmid for job, _, guests in job_guests if not job.get("storage") and _enabled(job)
+                for vmid in guests if vmid in existing}
     # Raw uri results: content reads loop over plan reads, prune reads over (read, retention).
     reads = {}
     for r in data["content_reads"]:
@@ -646,7 +650,7 @@ def summarize(data):
         # so the need adds its bytes; a guest whose job protects every archive has no bound.
         needs, need_bytes = {}, {}
         for vmid, g in by_vmid.items():
-            if vmid in protects_every_archive or vmid in unpruned:
+            if vmid in protects_every_archive or vmid in unpruned or vmid in unplaced:
                 needs[vmid] = None
             elif vmid not in retention_of:  # no enabled job backs it up here, so nothing prunes it: every archive stays
                 needs[vmid], need_bytes[vmid] = g["archives"], g["bytes"]
