@@ -12,6 +12,14 @@ production discovery path.
 
 ```bash
 brew bundle                                  # toolchain (Brewfile; podman-compose + jq required)
+```
+
+The podman machine must be rootful. The bootstrap mounts the VM's rootful engine socket into the local Semaphore container (see **Engine split** and the *Engine socket* note under *Known facts & decisions discovered in bootstrap bring-up*, below), and on a rootless machine that mount is refused, so the Semaphore container does not start. Set the machine up before the `podman machine start` below:
+
+- New machine: `podman machine init --rootful`.
+- Existing machine: `podman machine stop`, then `podman machine set --rootful`.
+
+```bash
 podman machine start                         # if not already running
 make local-bootstrap                         # secure foundation + local Semaphore
 make local-dns-resolver                      # Mac resolver (sudo)
@@ -222,6 +230,7 @@ health inventory. Check the rendered configuration for the selected environment.
 | ERPNext (P4) | 127.0.0.1:8080 | frontend; slim tier |
 | OPA | 127.0.0.1:8281 | declared profile; Guardrail-layer policy engine. Agents/control-plane reach it as `opa:8181` on local-dev; host diagnostics on 8281. Policy-as-code in `policies/`; `make local-deploy-opa`. Phase 1 unauthenticated (returns decisions, not secrets) |
 | o11y | 3002 / 9090 / 3100 | declared profile; grafana / prometheus / loki / alloy. Grafana behind Caddy at `grafana.agent-cloud.test` with Authentik OIDC. `make local-deploy-o11y` |
+| Mailpit | 127.0.0.1:1025 / 8025 | SMTP on 1025, web UI and API on 8025. Containers on `local-dev` send to `mailpit:1025` and call `http://mailpit:8025`. Accepts any message and any AUTH credential. Web UI behind Caddy at `mailpit.agent-cloud.test`, with no login gate. `make local-deploy-mailpit`; see *Mail catcher (Mailpit)* below |
 
 ## Engine split
 
@@ -351,6 +360,18 @@ through the deployment workflow.
 
 NetBox checks apply only if that legacy local app profile is configured; they do
 not establish production discovery readiness.
+
+## Mail catcher (Mailpit)
+
+Mailpit is a local-dev mail catcher. It keeps the mail that local-dev services send, and a developer reads it in a web UI or through its API. **Local only:** it accepts every message and every AUTH credential, so nothing in production may point at it. The deploy playbook (`platform/playbooks/deploy-mailpit.yml`) refuses any host not named `<name>-local`, and any connection that is not local, before it places the repo.
+
+Services on the `local-dev` network send SMTP to `mailpit:1025` (plain SMTP, no TLS) and reach the API at `http://mailpit:8025`. The published host ports bind loopback only: `127.0.0.1:1025` for SMTP and `127.0.0.1:8025` for the web UI and API. Caddy also routes the web UI at `mailpit.agent-cloud.test`, with no login gate in front of it.
+
+Deploy it with `make local-deploy-mailpit`, or with the `Deploy mailpit (Local)` template in the local Semaphore. The deploy recreates the container when its compose files, `.env` or image change, when the container is not running, or when `deploy_force_recreate` is `true`. The play then checks that `/api/v1/info` answers 200 and that the SMTP port accepts a connection. The service's own notes are in `platform/services/mailpit/deployment/README.md`.
+
+To check a message, a playbook that sends mail includes `platform/playbooks/tasks/assert-mail-captured.yml` with three inputs: `mail_captured_api_url` (for example `http://mailpit:8025`), `mail_captured_recipient` and `mail_captured_subject`. The task polls until a message to that address whose subject contains that text appears, then asserts. A message an earlier run left in the catcher would also match, so scope the check to its own run, with a per-run marker in `mail_captured_subject` or with `mail_captured_since` set to the time the run began (`YYYY-MM-DDTHH:MM:SSZ`). The task is read-only and also runs under `--check`.
+
+Messages live in the container's temporary database, with no volume, so a recreate drops them. Read what you need before you stop or redeploy it. `make local-service-down SERVICE=mailpit_svc` stops the container and keeps it (see *Stopping an idle service (and getting it back)*, above), but the next deploy recreates a stopped container, and its messages go with it. The store is capped at 500 messages (`MP_MAX_MESSAGES`).
 
 ## Triage
 
