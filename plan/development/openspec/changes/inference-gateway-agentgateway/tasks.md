@@ -937,10 +937,12 @@
       `production-internal-ca` (design sections "Decisions recorded 2026-11-21" and "Decisions
       recorded 2026-11-27", tasks group 10): launches 0 to 6 in task 10.5, 7 and 8 in task 10.7,
       9 and 10 in task 10.10. Answers to the 2026-10-26 additions: (a) each node gets its own
-      inventory name and group; (b) the connection uses the `vllm-tls` key from OpenBao, as the
-      fault drill does. This list replaces the order of the 2026-10-16 list. This task's pieces:
+      inventory name and group; (b) the connection is to use the `vllm-tls` key from OpenBao through
+      task 10.1's shared task, the way `o11y-fault-drill.yml` connects to its exporter hosts (its
+      key steps at `:380`, `:396`, `:634`). This list replaces the order of the 2026-10-16 list. This
+      task's pieces:
       items 1 to 4 in dgx-spark's Phase A window (launch 9, together with the head node's launch 7
-      and before the rotation drill, launch 8), each behind an inventory value that
+      and before the rotation drill, launch 8), each to be built behind an inventory value that
       keeps today's plain path until then; item 5 in Phase B (launch 10):
       1. the model's `https://` base URL and `tls: {root, hostname, cert, key}` (hostname
          `vllm-primary.<site>.<zone>`, cert and key the `agw-upstream` leaf);
