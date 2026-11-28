@@ -1445,9 +1445,9 @@
           container_engine=podman
           openbao_addr={{ _bao_url_net }}
           local_mode=true
-          mailpit_bind=127.0.0.1
-          mailpit_smtp_port=1025
-          mailpit_http_port=8025
+          mailpit_bind={{ hostvars['mailpit-local'].mailpit_bind | default('127.0.0.1') }}
+          mailpit_smtp_port={{ hostvars['mailpit-local'].mailpit_smtp_port | default(1025) }}
+          mailpit_http_port={{ hostvars['mailpit-local'].mailpit_http_port | default(8025) }}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
