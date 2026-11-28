@@ -1,0 +1,4 @@
+# Written by deploy.sh from its environment (the compose substitutions, no secret); regenerated
+# on every deploy. Listed so the rsync filter in tasks/place-monorepo.yml (':- .gitignore')
+# neither copies nor deletes it.
+.env
