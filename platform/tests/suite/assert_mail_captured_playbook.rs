@@ -243,26 +243,27 @@ fn a_message_to_another_recipient_or_with_another_subject_is_no_match() {
 
 #[test]
 fn a_recipient_that_only_extends_or_contains_the_wanted_address_is_no_match() {
-    // Arrange: each near miss is the only message in its own catcher, so it alone must not satisfy the check. One
-    // extends the wanted address past its end, and one has text before it.
-    for address in ["x@example.test.other", "ax@example.test"] {
-        let server = Server::start();
-        mount_list(
-            &server,
-            &json!([message("m1", &to(address), SUBJECT, CREATED)]),
-        );
+    // Arrange: one message extends the wanted address past its end, and one has text before it. A matcher that
+    // accepted either would find a message and turn the run green.
+    let server = Server::start();
+    mount_list(
+        &server,
+        &json!([
+            message("m1", &to("x@example.test.other"), SUBJECT, CREATED),
+            message("m2", &to("ax@example.test"), SUBJECT, CREATED),
+        ]),
+    );
 
-        // Act
-        let out = run(inputs(&server), false);
+    // Act
+    let out = run(inputs(&server), false);
 
-        // Assert: red, with the wanted recipient named as missing.
-        assert!(!out.ok, "{address}: {}", out.out);
-        assert!(
-            out.out.contains(&format!("No message to {RECIPIENT}")),
-            "{address}: {}",
-            out.out
-        );
-    }
+    // Assert: red, with the wanted recipient named as missing.
+    assert!(!out.ok, "{}", out.out);
+    assert!(
+        out.out.contains(&format!("No message to {RECIPIENT}")),
+        "{}",
+        out.out
+    );
 }
 
 #[test]
