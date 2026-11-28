@@ -1442,3 +1442,58 @@ fn a_defaults_response_never_prints_its_mailto_script_dumpdir_or_other_keys() {
         "{text}"
     );
 }
+
+#[test]
+fn node_local_previews_follow_the_pinned_node_and_shared_previews_every_job() {
+    // Arrange: three online nodes, each listing the node-local `local` (dir) and the shared `backups` (nfs).
+    // Job `pinned` names n1 and backs `local`; job `any` names no node and backs `local`; job `far` names n2
+    // and backs the shared `backups`.
+    let listing = |node: &str| {
+        json!({"item": node, "status": 200, "json": {"data": [
+            {"storage": "local", "content": "backup", "active": 1, "type": "dir", "shared": 0,
+             "total": TOTAL, "used": 0, "avail": TOTAL},
+            {"storage": "backups", "content": "backup", "active": 1, "type": "nfs", "shared": 1,
+             "total": TOTAL, "used": 0, "avail": TOTAL}
+        ]}})
+    };
+    let payload = json!({
+        "nodes": [{"node": "n1", "status": "online"}, {"node": "n2", "status": "online"},
+                  {"node": "n3", "status": "online"}],
+        "jobs": [
+            {"id": "pinned", "type": "vzdump", "storage": "local", "node": "n1", "prune-backups": "keep-last=2"},
+            {"id": "any", "type": "vzdump", "storage": "local", "prune-backups": "keep-last=3"},
+            {"id": "far", "type": "vzdump", "storage": "backups", "node": "n2", "prune-backups": "keep-last=4"}
+        ],
+        "storage_config": [],
+        "storage_listings": [listing("n1"), listing("n2"), listing("n3")]
+    });
+
+    // Act
+    let out = run("plan", &payload);
+
+    // Assert: `local` is previewed for the job pinned to n1 on n1 alone, and for the unpinned job on every node.
+    // `backups` is a shared storage, read once through n1, and it is previewed for the job pinned to n2, because
+    // every job on a shared storage can run on any node.
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let plan: Value = serde_json::from_slice(&out.stdout).expect("the plan is JSON");
+    let rows: Vec<Value> = plan["reads"]
+        .as_array()
+        .expect("plan reads")
+        .iter()
+        .map(|read| json!([read["node"], read["storage"], read["retentions"]]))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            json!(["n1", "local", ["keep-last=2", "keep-last=3"]]),
+            json!(["n1", "backups", ["keep-last=4"]]),
+            json!(["n2", "local", ["keep-last=3"]]),
+            json!(["n3", "local", ["keep-last=3"]]),
+        ],
+        "{plan}"
+    );
+}

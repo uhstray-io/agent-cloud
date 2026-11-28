@@ -273,18 +273,20 @@ def test_protected_archives_add_to_the_need_and_a_protecting_job_has_no_bound():
 
 def test_a_node_local_storage_takes_only_the_retention_of_jobs_that_run_on_its_node():
     vms = [{"vmid": 100, "node": "n1"}]  # guest 100 moved to n1; old archives stay on n2's local disk
-    jobs = [{"id": "j", "type": "vzdump", "storage": "local", "vmid": "100", "prune-backups": "keep-last=1"}]
+    jobs = [{"id": "j", "type": "vzdump", "storage": "local", "vmid": "100", "node": "n1",
+             "prune-backups": "keep-last=1"}]
     listings = [{"item": node, "status": 200, "json": {"data": [
         {"storage": "local", "content": "backup", "active": 1, **_status(10 * GIB, 5 * GIB, 0)}]}}
         for node in ("n1", "n2")]
     plan = survey.plan({"nodes": NODES, "jobs": jobs, "storage_listings": listings, "storage_config": []})
     old = [_archive("local", 100, day, GIB) for day in range(3)]
     reads = {r["node"]: r for r in plan["reads"]}
+    # Job j runs on n1 alone, so n2's read never asks for its retention: no preview is requested there.
+    assert reads["n1"]["retentions"] == ["keep-last=1"] and reads["n2"]["retentions"] == []
     summary = {"plan": plan, "vms": vms, "storage_config": [], "jobs": jobs,
                "content_reads": [{"item": reads["n1"], "status": 200, "json": {"data": []}},
                                  {"item": reads["n2"], "status": 200, "json": {"data": old}}],
-               "prune_reads": [{"item": [reads[n], "keep-last=1"], "status": 200,
-                                "json": {"data": [_mark(a) for a in old[:2]]}} for n in ("n1", "n2")]}
+               "prune_reads": [{"item": [reads["n1"], "keep-last=1"], "status": 200, "json": {"data": []}}]}
     stores = {s["read_on_node"]: s for s in survey.summarize(summary)["storages"]}
     assert stores["n2"]["prunable_archives"] == 0 and stores["n2"]["by_guest"][0]["job_retention"] == []
     assert stores["n1"]["retention_need_unknown_guests"] == [100]

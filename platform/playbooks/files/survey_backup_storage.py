@@ -175,12 +175,14 @@ def plan(data):
     if not [_name(n.get("node"), "node name") for n in data["nodes"] if n.get("status") == "online"]:
         raise Refusal("No Proxmox node is online.")
     configs = {c.get("storage"): c for c in data.get("storage_config") or []}
+    # storage ID -> {(retention, the job's node or "")}: a node-local storage reads only the jobs on its node.
     retentions = {}
     for job in data["jobs"]:
         # A job whose own remove is off never prunes, so no retention is previewed for it.
         if job.get("type", "vzdump") == "vzdump" and job.get("storage") and _enabled(job) \
                 and not ("remove" in job and _remove(job["remove"]) is False):
-            retentions.setdefault(_name(job["storage"], "job storage ID"), set()).add(_retention(job))
+            retentions.setdefault(_name(job["storage"], "job storage ID"), set()).add(
+                (_retention(job), str(job.get("node") or "")))
     reads, seen = [], set()
     for listing in data["storage_listings"]:  # raw uri results, one per online node
         node = _name(listing.get("item"), "node name")
@@ -198,7 +200,11 @@ def plan(data):
             seen.add(key)
             # Only the retentions of jobs on this storage are previewed; Proxmox errors on a preview with
             # no retention when the storage sets none, so the storage default is then never asked.
-            wanted = retentions.get(storage, set())
+            # A node-local storage takes only the jobs that run on its node (a job naming no node runs on every one).
+            pairs = retentions.get(storage, set())
+            if not _flag(row.get("shared")):
+                pairs = {(retention, job_node) for retention, job_node in pairs if job_node in ("", node)}
+            wanted = {retention for retention, _ in pairs}
             if not _storage_prunes(configs.get(storage)):
                 wanted = wanted - {DEFAULT_RETENTION}
             reads.append({"node": node, "storage": storage,
