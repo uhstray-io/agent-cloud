@@ -152,11 +152,15 @@ a new user their first login waits on this step passing.
 The Caddy `forward_auth` gates are served by Authentik's embedded outpost. The outpost loads an
 application only if its service account (`ak-outpost-*`) holds view permission on that proxy
 provider: `/api/v3/outposts/proxy/` filters by it. Authentik grants the permission in
-`Outpost.build_user_permissions`, from a worker task that runs when the outpost or its providers
-change. On a fresh instance that task ran before the providers the SSO-bindings blueprint
-attaches were committed (worker log: "Model does not exist" for a provider row that was later
-replaced), so the grant missed them and nothing ran it again. The outpost then loaded no
-application, and every gate answered 404. A server restart did not repair it.
+`Outpost.build_user_permissions`, from the worker task `outpost_post_save`. The signals that
+queue that task call `.delay()` at once, not on commit (`authentik/outposts/signals.py` in
+2024.12.3), and a blueprint is applied inside a transaction twice: once as a validation that is
+always rolled back, then for real inside `atomic()` (`authentik/blueprints/v1/importer.py`). A
+task queued inside either transaction can run before it commits. On a fresh instance the grant
+therefore ran against provider rows that were rolled back or not yet committed (worker log:
+"Model does not exist" for ProxyProvider pk 5, which no committed row holds; the live provider
+is pk 6), so it missed the final providers, and nothing runs it again. The outpost then loaded
+no application, and every gate answered 404. A server restart did not repair it.
 
 So Phase 3 of `deploy-authentik.yml` converges it before the `forward_auth` probe. A read-only
 probe runs `deployment/templates/converge-outpost-perms.py.j2` inside `authentik-server`

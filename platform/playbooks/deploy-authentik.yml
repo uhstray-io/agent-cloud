@@ -455,23 +455,25 @@
         fail_msg: "Outpost permissions: _enabled_apps must be the Phase 1 app list and authentik_app_catalog the catalog mapping"
         quiet: true
 
-    # Cause, from the forward_auth 404 and the worker log of a fresh local-dev instance: the
-    # embedded outpost's service account holds no view permission on the proxy providers attached
-    # to the outpost, so the outpost loads no application and the forward_auth endpoint answers 404.
-    # The grant is made by Outpost.build_user_permissions, which the worker runs from the outpost
-    # save task. That task ran before the final providers were committed ("Model does not exist"
-    # for ProxyProvider pk 5, while the live provider is pk 6), so the grant missed them, and
-    # nothing retriggers it. A server restart does not repair it; re-running the grant does.
-    # The probe changes nothing. Only when it reports a missing grant does the repair run, and
-    # never under --check. It converges the live grant; it does not restart the server.
+    # The embedded outpost's account can miss its view permission on the proxy providers on a fresh
+    # instance (a worker race; context/architecture.md, "Embedded outpost permissions (AC-1135)"),
+    # and then every forward_auth gate answers 404. The probe changes nothing; the repair runs only
+    # when the probe reports a missing grant, never under --check, and restarts nothing.
+    # The script is rendered once, in memory, and sent on stdin: nothing is written to the host.
+    # Its exit codes are listed in its header.
+    - name: "Outpost permissions: render the convergence script"
+      ansible.builtin.set_fact:
+        _outpost_perms_script: >-
+          {{ lookup('ansible.builtin.template',
+          playbook_dir ~ '/../services/authentik/deployment/templates/converge-outpost-perms.py.j2',
+          template_vars={'authentik_apps': _enabled_apps}) }}
+
     - name: "Outpost permissions: check the embedded outpost's view access to its providers (fresh-instance race, AC-1135)"
-      # Read-only: OUTPOST_PERMS_MODE=check, so the script never writes a grant, under --check too.
-      # The script reaches the container on stdin, rendered in memory by the template lookup, so
-      # nothing is written to the host. Exit 75 means an expected provider is not attached to the
-      # outpost yet, so the probe retries. Exit 3 (no build_user_permissions on this image) fails.
+      # Read-only (OUTPOST_PERMS_MODE=check), so it runs under --check too. Exit 75: an expected
+      # provider is not attached yet, so it retries.
       ansible.builtin.command:
         argv: ["{{ _engine }}", exec, -i, -e, OUTPOST_PERMS_MODE=check, authentik-server, ak, shell]
-        stdin: "{{ lookup('ansible.builtin.template', playbook_dir ~ '/../services/authentik/deployment/templates/converge-outpost-perms.py.j2', template_vars={'authentik_apps': _enabled_apps}) }}"
+        stdin: "{{ _outpost_perms_script }}"
       register: _outpost_perms_probe
       changed_when: false
       failed_when: _outpost_perms_probe.rc != 0
@@ -481,12 +483,11 @@
       check_mode: false
 
     - name: "Outpost permissions: grant the embedded outpost view access to its providers"
-      # Runs only when the probe printed "would repair", and never under --check. The same script
-      # runs with OUTPOST_PERMS_MODE=repair: it calls the outpost's own grant and reads it back.
-      # Exit 4 (still missing after the repair) fails the deploy.
+      # Only on the probe's "would repair" line, never under --check. Calls the outpost's own grant
+      # and reads it back; exit 4 (still missing) fails the deploy.
       ansible.builtin.command:
         argv: ["{{ _engine }}", exec, -i, -e, OUTPOST_PERMS_MODE=repair, authentik-server, ak, shell]
-        stdin: "{{ lookup('ansible.builtin.template', playbook_dir ~ '/../services/authentik/deployment/templates/converge-outpost-perms.py.j2', template_vars={'authentik_apps': _enabled_apps}) }}"
+        stdin: "{{ _outpost_perms_script }}"
       register: _outpost_perms_repair
       when: "not ansible_check_mode and 'outpost-perms: would repair' in _outpost_perms_probe.stdout"
       changed_when: "'outpost-perms: REPAIRED' in _outpost_perms_repair.stdout"

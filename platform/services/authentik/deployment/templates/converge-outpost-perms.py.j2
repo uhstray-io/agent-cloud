@@ -1,17 +1,10 @@
 #jinja2: trim_blocks: True, lstrip_blocks: True
 # Converges the permission that lets the embedded outpost's service account view the proxy
 # providers attached to the outpost (AC-1135). deploy-authentik.yml renders this file in memory
-# with the template lookup and sends the result to the authentik-server container on stdin, so
-# nothing is written to the host. The probe and the repair both run it that way:
+# once and sends it to the authentik-server container on stdin, so nothing is written to the host:
 #   <engine> exec -i -e OUTPOST_PERMS_MODE=<check|repair> authentik-server ak shell
 # `ak shell` runs the program from stdin, and sys.exit(n) becomes the command's exit code.
-#
-# Why this exists: the grant is made by Outpost.build_user_permissions, which the worker runs
-# from the outpost save task. On a fresh instance those tasks ran against provider rows that were
-# not committed yet (worker log: "Model does not exist" for ProxyProvider pk 5, while the live
-# provider is pk 6). The grant therefore missed the final providers, and nothing retriggers it.
-# With the grant missing, the outpost loads no application and the forward_auth endpoint answers
-# 404. A server restart does not repair it. Re-running the grant does.
+# Why this exists: context/architecture.md, "Embedded outpost permissions (AC-1135)".
 #
 # It prints lines that start with "outpost-perms:", naming providers and booleans only.
 # Exit codes:
@@ -41,7 +34,7 @@ from authentik.outposts.models import Outpost
 from authentik.providers.proxy.models import ProxyProvider
 
 PERM = "authentik_providers_proxy.view_proxyprovider"
-EXPECTED = {{ _forward_auth | to_json }}
+EXPECTED = sorted({{ _forward_auth | to_json }})
 MODE = os.environ.get("OUTPOST_PERMS_MODE", "check")
 
 if not hasattr(Outpost, "build_user_permissions"):
@@ -49,28 +42,25 @@ if not hasattr(Outpost, "build_user_permissions"):
     sys.exit(3)
 
 outpost = Outpost.objects.get(managed="goauthentik.io/outposts/embedded")
-attached = []
-for provider in outpost.providers.all():
-    attached.append(provider.name)
-not_attached = []
-for name in sorted(EXPECTED):
-    if name not in attached:
-        not_attached.append(name)
+attached = set(outpost.providers.values_list("name", flat=True))
+not_attached = [name for name in EXPECTED if name not in attached]
 if not_attached:
     print("outpost-perms: waiting for providers to be attached to the embedded outpost: " + ", ".join(not_attached))
     sys.exit(75)
 
-# A fresh user object for each read: has_perm caches on the instance, so a read after the grant
-# must not reuse an object that was read before it.
-fresh = User.objects.get(pk=outpost.user.pk)
-state = {}
-for name in sorted(EXPECTED):
-    state[name] = fresh.has_perm(PERM, ProxyProvider.objects.get(name=name))
-missing = []
-for name in sorted(state):
-    if not state[name]:
-        missing.append(name)
-if not missing:
+
+def grants():
+    # A fresh user object for each read: has_perm caches on the instance, so a read after the
+    # grant must not reuse an object that was read before it.
+    user = User.objects.get(pk=outpost.user.pk)
+    providers = {p.name: p for p in ProxyProvider.objects.filter(name__in=EXPECTED)}
+    # Indexed by EXPECTED, so a provider that is not a proxy provider raises instead of being
+    # left out of the state, where all() would read the missing entry as converged.
+    return {name: user.has_perm(PERM, providers[name]) for name in EXPECTED}
+
+
+state = grants()
+if all(state.values()):
     print("outpost-perms: converged " + json.dumps(state, sort_keys=True))
     sys.exit(0)
 if MODE != "repair":
@@ -79,15 +69,9 @@ if MODE != "repair":
 
 outpost.build_user_permissions(outpost.user)
 
-fresh = User.objects.get(pk=outpost.user.pk)
-state = {}
-for name in sorted(EXPECTED):
-    state[name] = fresh.has_perm(PERM, ProxyProvider.objects.get(name=name))
+state = grants()
 print("outpost-perms: REPAIRED " + json.dumps(state, sort_keys=True))
-still = []
-for name in sorted(state):
-    if not state[name]:
-        still.append(name)
+still = [name for name, granted in sorted(state.items()) if not granted]
 if still:
     print("outpost-perms: still missing after repair: " + ", ".join(still))
     sys.exit(4)

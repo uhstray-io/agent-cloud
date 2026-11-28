@@ -18,6 +18,7 @@ const ZZ_SSO: &str = "platform/services/authentik/deployment/templates/zz-sso-bi
 const PHASE3: &str = "Phase 3: Verify authentik";
 const SHAPE_CHECK: &str =
     "Outpost permissions: the Phase 1 app list and catalog have the expected shape";
+const RENDER: &str = "Outpost permissions: render the convergence script";
 const PROBE: &str = "Outpost permissions: check the embedded outpost's view access";
 const REPAIR: &str = "Outpost permissions: grant the embedded outpost view access";
 const RESULT: &str = "Outpost permissions: result";
@@ -90,14 +91,15 @@ fn str_field<'a>(task: &'a Node, key: &str) -> &'a str {
 fn convergence_steps_sit_in_phase3_in_order_before_the_forward_auth_wait() {
     let tasks = phase3_tasks();
     let shape = index_of(&tasks, SHAPE_CHECK);
+    let render = index_of(&tasks, RENDER);
     let probe = index_of(&tasks, PROBE);
     let repair = index_of(&tasks, REPAIR);
     let result = index_of(&tasks, RESULT);
     let wait = index_of(&tasks, WAIT);
     assert!(
-        shape < probe && probe < repair && repair < result && result < wait,
+        shape < render && render < probe && probe < repair && repair < result && result < wait,
         "{PHASE3}: the steps must run in this order, before the forward_auth wait: shape check \
-         (task {shape}), probe (task {probe}), repair (task {repair}), result (task {result}), \
+         (task {shape}), render (task {render}), probe (task {probe}), repair (task {repair}), result (task {result}), \
          wait (task {wait})"
     );
 }
@@ -125,12 +127,6 @@ fn probe_is_read_only_runs_under_check_mode_and_retries_only_on_75() {
     assert!(
         argv.contains(&"OUTPOST_PERMS_MODE=check"),
         "{PROBE}: the probe must run the script in check mode, got {argv:?}"
-    );
-    assert!(
-        probe
-            .get("no_log")
-            .is_none_or(|value| *value == Node::Bool(false)),
-        "{PROBE}: no_log is for credential tasks only; this task prints names and booleans"
     );
 }
 
@@ -161,37 +157,41 @@ fn repair_runs_only_outside_check_mode_on_a_reported_gap_and_reports_its_repair(
         argv.contains(&"OUTPOST_PERMS_MODE=repair"),
         "{REPAIR}: the repair must run the script in repair mode, got {argv:?}"
     );
-    assert!(
-        repair
-            .get("no_log")
-            .is_none_or(|value| *value == Node::Bool(false)),
-        "{REPAIR}: no_log is for credential tasks only; this task prints names and booleans"
-    );
 }
 
 #[test]
-fn both_steps_send_the_same_script_on_stdin_and_nothing_is_written_to_the_host() {
+fn script_is_rendered_once_in_memory_and_both_steps_send_it_without_no_log() {
     let text = read(PLAYBOOK);
     assert!(
         !text.contains("/tmp/converge-outpost-perms.py"),
         "{PLAYBOOK}: the script must not be written to the host; it is sent on stdin"
     );
     let tasks = phase3_tasks();
-    let probe = stdin_of(&tasks[index_of(&tasks, PROBE)]);
-    let repair = stdin_of(&tasks[index_of(&tasks, REPAIR)]);
-    assert_eq!(
-        probe, repair,
-        "{PHASE3}: the probe and the repair must send the same script"
-    );
+    let render = tasks[index_of(&tasks, RENDER)]
+        .get("ansible.builtin.set_fact")
+        .and_then(|args| args.get("_outpost_perms_script"))
+        .and_then(Node::as_str)
+        .unwrap_or_else(|| panic!("{RENDER}: no set_fact of _outpost_perms_script"));
     assert!(
-        probe.contains("lookup('ansible.builtin.template'")
-            && probe.contains("converge-outpost-perms.py.j2"),
-        "{PROBE}: the script must be rendered in memory from the template, got `{probe}`"
+        render.contains("lookup('ansible.builtin.template'")
+            && render.contains("converge-outpost-perms.py.j2")
+            && render.contains("template_vars={'authentik_apps': _enabled_apps}"),
+        "{RENDER}: the script must be rendered in memory from the template with authentik_apps \
+         passed from Phase 1 (undefined in Phase 3 when unset), got `{render}`"
     );
-    assert!(
-        probe.contains("template_vars={'authentik_apps': _enabled_apps}"),
-        "{PROBE}: authentik_apps must be passed from Phase 1; it is undefined in Phase 3 when unset"
-    );
+    for name in [PROBE, REPAIR] {
+        let task = &tasks[index_of(&tasks, name)];
+        assert_eq!(
+            stdin_of(task),
+            "{{ _outpost_perms_script }}",
+            "{name}: must send the rendered script on stdin"
+        );
+        assert!(
+            task.get("no_log")
+                .is_none_or(|value| *value == Node::Bool(false)),
+            "{name}: no_log is for credential tasks only; this task prints names and booleans"
+        );
+    }
 }
 
 #[test]
@@ -253,8 +253,16 @@ fn script_refuses_without_the_grant_and_rereads_after_the_repair() {
         .unwrap_or_else(|| panic!("{TEMPLATE}: the repair does not call build_user_permissions"));
     let after_repair = &text[call..];
     assert!(
-        after_repair.contains("has_perm(") && after_repair.contains("User.objects.get("),
-        "{TEMPLATE}: after the repair the state must be read again through a fresh user object"
+        after_repair.contains("state = grants()"),
+        "{TEMPLATE}: after the repair the state must be read again"
+    );
+    let reader = text
+        .find("def grants():")
+        .map(|at| &text[at..call])
+        .unwrap_or_else(|| panic!("{TEMPLATE}: no grants() reader before the repair"));
+    assert!(
+        reader.contains("User.objects.get(") && reader.contains("has_perm("),
+        "{TEMPLATE}: grants() must read has_perm through a fresh user object"
     );
     let lower = text.to_lowercase();
     assert!(
