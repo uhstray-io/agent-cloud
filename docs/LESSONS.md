@@ -135,3 +135,15 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1235 (AC-1107).
 - **DERIVED:** Upload an ISO or any other binary through an HTTP API with `curl --form`, never with the `uri` module's `form-multipart` body. In that body (`ansible.module_utils.urls.prepare_multipart`, read on ansible-core 2.20.8) a part given as `content` has its line endings rewritten to `\r\n`; a part given as a `filename` alone is sent base64-encoded, which arrives as the file only if the receiver decodes `Content-Transfer-Encoding` (not verified for Proxmox), or, with `multipart_encoding: 7or8bit`, has its line endings rewritten too.
 - **APPLIES TO:** playbooks under `platform/playbooks/` that upload binary files through an HTTP API, such as the Windows seed upload in `provision-template.yml`. The Ubuntu seed upload in the same playbook still uses the `uri` body and is existing debt (AC-1110).
+
+### L-023 · 2026-11-27 · playbooks
+
+- **ACCEPTED:** #1239 (AC-927).
+- **DERIVED:** A preview of what a Proxmox backup job will prune follows vzdump's `remove` option, not the job's keep-* settings alone. vzdump prunes only when `remove` is on (pve-manager `PVE/VZDump.pm:1233` at `e5ac6d6f`). A job without its own `remove` takes its node's `/etc/vzdump.conf` value, and the schema default (on) when that file sets none (`:597-606`; pve-guest-common `PVE/VZDump/Common.pm:352-357` at `17c2695a`). So the preview reads `GET nodes/<node>/vzdump/defaults` on each node, and a value it cannot read leaves the need unknown, never assumed on.
+- **APPLIES TO:** playbooks and helpers under `platform/playbooks/` that forecast backup retention or free space from Proxmox backup jobs, such as `survey-proxmox-backup-storage.yml`.
+
+### L-024 · 2026-11-27 · playbooks
+
+- **ACCEPTED:** #1239 (AC-927).
+- **DERIVED:** A guest that no longer exists in this cluster is never pruned by this cluster's backup jobs. A job that still lists it fails with "unable to find VM" (pve-manager `PVE/VZDump.pm:908` at `e5ac6d6f`) inside the same `eval` that holds the prune (`:907-1272`), so its archives stay until someone deletes them. On shared storage the vmid can belong to another cluster's guest, which that cluster's jobs do prune, so the rule holds only for this cluster's jobs.
+- **APPLIES TO:** playbooks and helpers under `platform/playbooks/` that forecast backup retention or free space, or choose archives to delete.

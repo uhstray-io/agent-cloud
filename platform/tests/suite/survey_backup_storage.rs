@@ -11,6 +11,7 @@
 
 use agent_cloud_tests::process::scrubbed;
 use agent_cloud_tests::repo;
+use agent_cloud_tests::yaml::Node;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -199,15 +200,20 @@ fn run(mode: &str, payload: &Value) -> std::process::Output {
         .clone()
 }
 
-/// The receipt of a payload the helper must summarize (exit 0), parsed.
-fn receipt(payload: &Value) -> Value {
-    let out = run("summarize", payload);
+/// The output of a payload the helper must accept in `mode` (exit 0), parsed.
+fn accepted(mode: &str, payload: &Value) -> Value {
+    let out = run(mode, payload);
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
-    serde_json::from_slice(&out.stdout).expect("the receipt is JSON")
+    serde_json::from_slice(&out.stdout).expect("the output is JSON")
+}
+
+/// The receipt of a payload the helper must summarize (exit 0), parsed.
+fn receipt(payload: &Value) -> Value {
+    accepted("summarize", payload)
 }
 
 /// The refusal text of a payload the helper must refuse (exit 1).
@@ -851,5 +857,708 @@ fn a_tree_without_flags_has_no_flags_and_a_status_without_checks_has_null_checks
         out["ceph_capacity"]["health"],
         json!({"status": "HEALTH_OK", "checks": null}),
         "{out}"
+    );
+}
+
+// The vzdump `remove` survey: a job's own remove, or the node default it takes, decides whether its guests are
+// pruned. Off or unknown makes a guest's need unknown and unprunable; a guest no job backs keeps every archive.
+
+const GIB: u64 = 1_073_741_824;
+const DAY: u64 = 86_400;
+const T0: u64 = 1_790_000_000;
+
+/// An archive of guest `vmid` on `backups`, `day` days after T0, `gib` GiB big; protected when `protected` is set.
+fn archive(vmid: u64, day: u64, gib: u64, protected: bool) -> Value {
+    json!({"volid": format!("backups:backup/vzdump-qemu-{vmid}-{day}.vma.zst"), "vmid": vmid,
+           "size": gib * GIB, "ctime": T0 + day * DAY, "protected": u8::from(protected)})
+}
+
+/// A prune-preview row that marks `volume` for removal.
+fn mark(volume: &Value) -> Value {
+    json!({"volid": volume["volid"], "mark": "remove"})
+}
+
+/// A node's vzdump defaults read: its `status`, and the body's `data` (not read unless the status is 200).
+fn defaults_read(node: &str, status: u16, data: Value) -> Value {
+    json!({"item": node, "status": status, "json": {"data": data}})
+}
+
+/// A payload over one shared backup storage, `backups`, read through n1: its `archives`, the cluster's `vms` and
+/// `jobs`, the prune previews as (retention, marked rows) pairs, and the nodes' vzdump defaults reads when given.
+fn backups_payload(
+    vms: Value,
+    jobs: Value,
+    archives: &[Value],
+    previews: Vec<(&str, Vec<Value>)>,
+    defaults: Option<Value>,
+) -> Value {
+    let item = json!({"node": "n1", "storage": "backups"});
+    let mut plan_read = item.clone();
+    plan_read["status"] =
+        json!({"type": "nfs", "shared": 1, "total": TOTAL, "used": 0, "avail": TOTAL});
+    let prune_reads: Vec<Value> = previews
+        .into_iter()
+        .map(|(retention, marks)| json!({"item": [item.clone(), retention], "status": 200, "json": {"data": marks}}))
+        .collect();
+    let mut payload = json!({
+        "plan": {"reads": [plan_read]}, "vms": vms, "jobs": jobs, "storage_config": [],
+        "content_reads": [{"item": item.clone(), "status": 200, "json": {"data": archives}}],
+        "prune_reads": prune_reads
+    });
+    if let Some(defaults) = defaults {
+        payload["vzdump_defaults_reads"] = defaults;
+    }
+    payload
+}
+
+/// The by_guest row of `vmid` on the one storage of a receipt.
+fn guest_row(out: &Value, vmid: u64) -> Value {
+    out["storages"][0]["by_guest"]
+        .as_array()
+        .expect("by_guest rows")
+        .iter()
+        .find(|row| row["vmid"].as_u64() == Some(vmid))
+        .cloned()
+        .unwrap_or_else(|| panic!("no by_guest row for {vmid}: {out}"))
+}
+
+/// Asserts a guest row has an unknown retention need and nothing counted prunable.
+fn assert_unknown(guest: &Value, out: &Value) {
+    assert_eq!(guest["prunable"], json!(0), "{out}");
+    assert_eq!(guest["gib_needed_at_job_retention"], Value::Null, "{out}");
+}
+
+#[test]
+fn a_job_with_remove_off_leaves_its_guest_unknown_unprunable_and_its_row_says_false() {
+    // Arrange: job `off` backs guest 801 up with remove 0, so Proxmox never prunes for it. Node n1 defaults to 1,
+    // but the job's own setting wins. The preview marks an archive that must still not count as prunable.
+    let archives = [
+        archive(801, 0, 1, false),
+        archive(801, 1, 1, false),
+        archive(801, 2, 1, false),
+    ];
+    let payload = backups_payload(
+        json!([{"vmid": 801, "name": "game", "node": "n1"}]),
+        json!([{"id": "off", "type": "vzdump", "storage": "backups", "vmid": "801",
+                "prune-backups": "keep-last=1", "remove": 0}]),
+        &archives,
+        vec![("keep-last=1", vec![mark(&archives[0])])],
+        Some(json!([defaults_read("n1", 200, json!({"remove": 1}))])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: the retention still shows, but the need is unknown and nothing is prunable; the job row says false.
+    let guest = guest_row(&out, 801);
+    assert_eq!(guest["job_retention"], json!(["keep-last=1"]), "{out}");
+    assert_eq!(guest["prunable"], json!(0), "{out}");
+    assert_eq!(guest["retained_at_job_retention"], Value::Null, "{out}");
+    assert_eq!(guest["gib_needed_at_job_retention"], Value::Null, "{out}");
+    assert_eq!(
+        out["storages"][0]["retention_need_unknown_guests"],
+        json!([801]),
+        "{out}"
+    );
+    assert_eq!(out["jobs"][0]["remove"], json!(false), "{out}");
+}
+
+#[test]
+fn a_job_with_remove_off_is_not_previewed_while_one_with_remove_on_or_unset_is() {
+    // Arrange: one shared backup storage read through n1, and the same retention on jobs that differ only in remove.
+    let listing = json!({"item": "n1", "status": 200, "json": {"data": [
+        {"storage": "backups", "content": "backup", "active": 1, "type": "nfs", "shared": 1,
+         "total": TOTAL, "used": 0, "avail": TOTAL}]}});
+    let plan_with = |job: Value| -> Value {
+        let payload = json!({"nodes": [{"node": "n1", "status": "online"}], "jobs": [job],
+                             "storage_config": [], "storage_listings": [listing.clone()]});
+        accepted("plan", &payload)
+    };
+    let make = |remove: Option<Value>| {
+        let mut job = json!({"id": "j", "type": "vzdump", "storage": "backups", "prune-backups": "keep-last=1"});
+        if let Some(remove) = remove {
+            job["remove"] = remove;
+        }
+        job
+    };
+
+    // Act and assert: an own remove of 0 contributes no retention to the preview; remove 1 and no remove do.
+    assert_eq!(
+        plan_with(make(Some(json!(0))))["reads"][0]["retentions"],
+        json!([])
+    );
+    assert_eq!(
+        plan_with(make(Some(json!(1))))["reads"][0]["retentions"],
+        json!(["keep-last=1"])
+    );
+    assert_eq!(
+        plan_with(make(None))["reads"][0]["retentions"],
+        json!(["keep-last=1"])
+    );
+}
+
+#[test]
+fn a_job_without_remove_takes_its_node_default_and_a_default_of_zero_leaves_its_guest_unknown() {
+    // Arrange: the job sets no remove, so it takes node n1's default, which is 0: Proxmox prunes nothing for it.
+    let archives = [archive(801, 0, 1, false), archive(801, 1, 1, false)];
+    let payload = backups_payload(
+        json!([{"vmid": 801, "name": "game", "node": "n1"}]),
+        json!([{"id": "nodef", "type": "vzdump", "storage": "backups", "vmid": "801",
+                "prune-backups": "keep-last=1"}]),
+        &archives,
+        vec![("keep-last=1", vec![mark(&archives[0])])],
+        Some(json!([defaults_read("n1", 200, json!({"remove": 0}))])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: the guest is unknown and unprunable, the job row names the node default, and the defaults row says false.
+    let guest = guest_row(&out, 801);
+    assert_unknown(&guest, &out);
+    assert_eq!(out["jobs"][0]["remove"], json!("node default"), "{out}");
+    assert_eq!(
+        out["vzdump_defaults"],
+        json!([{"node": "n1", "status": "read", "reason": null, "remove": false}]),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_node_default_of_one_bounds_the_guest_as_before() {
+    // Arrange: keep-last=2 with the node default at 1; the preview marks the oldest of three 1 GiB archives.
+    let archives = [
+        archive(801, 0, 1, false),
+        archive(801, 1, 1, false),
+        archive(801, 2, 1, false),
+    ];
+    let payload = backups_payload(
+        json!([{"vmid": 801, "name": "game", "node": "n1"}]),
+        json!([{"id": "nodef", "type": "vzdump", "storage": "backups", "vmid": "801",
+                "prune-backups": "keep-last=2"}]),
+        &archives,
+        vec![("keep-last=2", vec![mark(&archives[0])])],
+        Some(json!([defaults_read("n1", 200, json!({"remove": 1}))])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: two archives are kept, the oldest is prunable, and the need is the newest size times two.
+    let guest = guest_row(&out, 801);
+    assert_eq!(guest["job_retention"], json!(["keep-last=2"]), "{out}");
+    assert_eq!(guest["retained_at_job_retention"], json!(2), "{out}");
+    assert_eq!(guest["gib_needed_at_job_retention"], json!(2.0), "{out}");
+    assert_eq!(guest["prunable"], json!(1), "{out}");
+    assert_eq!(guest["prunable_gib"], json!(1.0), "{out}");
+    assert_eq!(out["jobs"][0]["remove"], json!("node default"), "{out}");
+}
+
+#[test]
+fn a_job_remove_of_one_wins_over_a_node_default_of_zero() {
+    // Arrange: the job sets remove 1 itself, and node n1's default is 0. The job's own setting decides.
+    let archives = [
+        archive(801, 0, 1, false),
+        archive(801, 1, 1, false),
+        archive(801, 2, 1, false),
+    ];
+    let payload = backups_payload(
+        json!([{"vmid": 801, "name": "game", "node": "n1"}]),
+        json!([{"id": "own", "type": "vzdump", "storage": "backups", "vmid": "801",
+                "prune-backups": "keep-last=2", "remove": 1}]),
+        &archives,
+        vec![("keep-last=2", vec![mark(&archives[0])])],
+        Some(json!([defaults_read("n1", 200, json!({"remove": 0}))])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: the guest is bounded and prunable, and the job row says true.
+    let guest = guest_row(&out, 801);
+    assert_eq!(guest["retained_at_job_retention"], json!(2), "{out}");
+    assert_eq!(guest["prunable"], json!(1), "{out}");
+    assert_eq!(out["jobs"][0]["remove"], json!(true), "{out}");
+}
+
+#[test]
+fn a_guest_takes_the_default_of_its_own_node_not_of_the_node_the_storage_is_read_through() {
+    // Arrange: the shared storage is read through n1. Guest 801 lives on n1 (default 1), guest 802 on n2 (default 0).
+    let archives: Vec<Value> = [801, 802]
+        .into_iter()
+        .flat_map(|vmid| {
+            [
+                archive(vmid, 0, 1, false),
+                archive(vmid, 1, 1, false),
+                archive(vmid, 2, 1, false),
+            ]
+        })
+        .collect();
+    let payload = backups_payload(
+        json!([{"vmid": 801, "name": "a", "node": "n1"}, {"vmid": 802, "name": "b", "node": "n2"}]),
+        json!([{"id": "both", "type": "vzdump", "storage": "backups", "vmid": "801,802",
+                "prune-backups": "keep-last=2"}]),
+        &archives,
+        vec![("keep-last=2", vec![mark(&archives[0]), mark(&archives[3])])],
+        Some(json!([
+            defaults_read("n1", 200, json!({"remove": 1})),
+            defaults_read("n2", 200, json!({"remove": 0}))
+        ])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: 801 is bounded and prunable; 802 is unknown and unprunable, though it sits on the storage n1 reads.
+    let on_n1 = guest_row(&out, 801);
+    assert_eq!(on_n1["retained_at_job_retention"], json!(2), "{out}");
+    assert_eq!(on_n1["prunable"], json!(1), "{out}");
+    let on_n2 = guest_row(&out, 802);
+    assert_eq!(on_n2["gib_needed_at_job_retention"], Value::Null, "{out}");
+    assert_eq!(on_n2["prunable"], json!(0), "{out}");
+    assert_eq!(
+        out["vzdump_defaults"],
+        json!([
+            {"node": "n1", "status": "read", "reason": null, "remove": true},
+            {"node": "n2", "status": "read", "reason": null, "remove": false}
+        ]),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_403_on_the_node_defaults_is_unavailable_with_its_reason_and_leaves_the_guest_unknown_with_exit_0()
+ {
+    // Arrange: the token may not read n1's vzdump defaults. The survey continues, so the run exits 0.
+    let archives = [archive(801, 0, 1, false), archive(801, 1, 1, false)];
+    let payload = backups_payload(
+        json!([{"vmid": 801, "name": "game", "node": "n1"}]),
+        json!([{"id": "nodef", "type": "vzdump", "storage": "backups", "vmid": "801",
+                "prune-backups": "keep-last=1"}]),
+        &archives,
+        vec![("keep-last=1", vec![mark(&archives[0])])],
+        Some(json!([defaults_read("n1", 403, Value::Null)])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: the row names the privilege it needs and no remove value; the guest stays unknown.
+    assert_eq!(
+        out["vzdump_defaults"],
+        json!([{"node": "n1", "status": "unavailable", "remove": null,
+                "reason": "HTTP 403: needs Datastore.Audit or Datastore.AllocateSpace on the node's default backup storage"}]),
+        "{out}"
+    );
+    let guest = guest_row(&out, 801);
+    assert_unknown(&guest, &out);
+}
+
+#[test]
+fn a_500_on_the_node_defaults_is_unavailable_with_http_500_and_leaves_the_guest_unknown() {
+    // Arrange: n1's vzdump defaults answer 500.
+    let archives = [archive(801, 0, 1, false), archive(801, 1, 1, false)];
+    let payload = backups_payload(
+        json!([{"vmid": 801, "name": "game", "node": "n1"}]),
+        json!([{"id": "nodef", "type": "vzdump", "storage": "backups", "vmid": "801",
+                "prune-backups": "keep-last=1"}]),
+        &archives,
+        vec![("keep-last=1", vec![mark(&archives[0])])],
+        Some(json!([defaults_read("n1", 500, Value::Null)])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert
+    assert_eq!(
+        out["vzdump_defaults"],
+        json!([{"node": "n1", "status": "unavailable", "reason": "HTTP 500", "remove": null}]),
+        "{out}"
+    );
+    let guest = guest_row(&out, 801);
+    assert_unknown(&guest, &out);
+}
+
+#[test]
+fn a_node_defaults_read_answering_another_status_refuses_the_survey_by_naming_the_node() {
+    // Arrange: n1's defaults answer 404, which the survey does not accept.
+    let payload = backups_payload(
+        json!([]),
+        json!([]),
+        &[],
+        vec![],
+        Some(json!([defaults_read("n1", 404, Value::Null)])),
+    );
+
+    // Act
+    let text = refusal(&payload);
+
+    // Assert
+    assert!(text.contains("node n1") && text.contains("404"), "{text}");
+}
+
+#[test]
+fn a_node_defaults_read_answering_200_without_a_dict_refuses_the_survey() {
+    // Arrange: n1's defaults answer 200 with no data object.
+    let payload = backups_payload(
+        json!([]),
+        json!([]),
+        &[],
+        vec![],
+        Some(json!([defaults_read("n1", 200, Value::Null)])),
+    );
+
+    // Act
+    let text = refusal(&payload);
+
+    // Assert
+    assert!(text.contains("no vzdump defaults for node n1"), "{text}");
+}
+
+#[test]
+fn absent_vzdump_defaults_reads_name_no_node_and_leave_a_job_without_its_own_remove_unknown() {
+    // Arrange: the payload carries no defaults read at all.
+    let archives = [archive(801, 0, 1, false), archive(801, 1, 1, false)];
+    let payload = backups_payload(
+        json!([{"vmid": 801, "name": "game", "node": "n1"}]),
+        json!([{"id": "nodef", "type": "vzdump", "storage": "backups", "vmid": "801",
+                "prune-backups": "keep-last=1"}]),
+        &archives,
+        vec![("keep-last=1", vec![mark(&archives[0])])],
+        None,
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: no node is listed, and the guest is unknown and unprunable.
+    assert_eq!(out["vzdump_defaults"], json!([]), "{out}");
+    let guest = guest_row(&out, 801);
+    assert_unknown(&guest, &out);
+}
+
+#[test]
+fn a_defaults_response_without_remove_reads_as_unknown_not_as_on_or_off() {
+    // Arrange: n1's defaults answer 200 with a data object that has no remove key (a release that leaves it out).
+    let archives = [archive(801, 0, 1, false), archive(801, 1, 1, false)];
+    let payload = backups_payload(
+        json!([{"vmid": 801, "name": "game", "node": "n1"}]),
+        json!([{"id": "nodef", "type": "vzdump", "storage": "backups", "vmid": "801",
+                "prune-backups": "keep-last=1"}]),
+        &archives,
+        vec![("keep-last=1", vec![mark(&archives[0])])],
+        Some(json!([defaults_read("n1", 200, json!({"mailto": "root"}))])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: the row is read with remove null, and the guest is unknown and unprunable.
+    assert_eq!(
+        out["vzdump_defaults"],
+        json!([{"node": "n1", "status": "read", "reason": null, "remove": null}]),
+        "{out}"
+    );
+    let guest = guest_row(&out, 801);
+    assert_unknown(&guest, &out);
+}
+
+#[test]
+fn a_malformed_job_remove_is_unknown_even_when_the_node_default_is_one() {
+    // Arrange: the job's own remove is "yes", which is neither 0 nor 1. The node default is 1, but the job's own value decides.
+    let archives = [archive(801, 0, 1, false), archive(801, 1, 1, false)];
+    let payload = backups_payload(
+        json!([{"vmid": 801, "name": "game", "node": "n1"}]),
+        json!([{"id": "odd", "type": "vzdump", "storage": "backups", "vmid": "801",
+                "prune-backups": "keep-last=1", "remove": "yes"}]),
+        &archives,
+        vec![("keep-last=1", vec![mark(&archives[0])])],
+        Some(json!([defaults_read("n1", 200, json!({"remove": 1}))])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: the job row is null, and the guest is unknown and unprunable.
+    assert_eq!(out["jobs"][0]["remove"], Value::Null, "{out}");
+    let guest = guest_row(&out, 801);
+    assert_unknown(&guest, &out);
+}
+
+#[test]
+fn a_job_remove_spelled_as_a_string_or_a_boolean_reads_as_proxmox_does() {
+    // Arrange: three guests, one job each, every job keeping one archive. Remove "0" and false are off; "1" is on.
+    let archives: Vec<Value> = [811, 812, 813]
+        .into_iter()
+        .flat_map(|vmid| [archive(vmid, 0, 1, false), archive(vmid, 1, 1, false)])
+        .collect();
+    let payload = backups_payload(
+        json!([{"vmid": 811, "name": "a", "node": "n1"}, {"vmid": 812, "name": "b", "node": "n1"},
+               {"vmid": 813, "name": "c", "node": "n1"}]),
+        json!([
+            {"id": "text0", "type": "vzdump", "storage": "backups", "vmid": "811", "prune-backups": "keep-last=1", "remove": "0"},
+            {"id": "bool0", "type": "vzdump", "storage": "backups", "vmid": "812", "prune-backups": "keep-last=1", "remove": false},
+            {"id": "text1", "type": "vzdump", "storage": "backups", "vmid": "813", "prune-backups": "keep-last=1", "remove": "1"}
+        ]),
+        &archives,
+        vec![(
+            "keep-last=1",
+            archives.iter().step_by(2).map(mark).collect(),
+        )],
+        Some(json!([defaults_read("n1", 200, json!({"remove": 1}))])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: the job rows read false, false and true; only the guest of the "on" job is prunable.
+    let rows: Vec<Value> = out["jobs"]
+        .as_array()
+        .expect("job rows")
+        .iter()
+        .map(|row| row["remove"].clone())
+        .collect();
+    assert_eq!(rows, [json!(false), json!(false), json!(true)], "{out}");
+    for vmid in [811, 812] {
+        let guest = guest_row(&out, vmid);
+        assert_unknown(&guest, &out);
+    }
+    let on = guest_row(&out, 813);
+    assert_eq!(on["retained_at_job_retention"], json!(1), "{out}");
+    assert_eq!(on["prunable"], json!(1), "{out}");
+}
+
+#[test]
+fn a_listed_vmid_that_no_longer_exists_on_shared_storage_takes_no_retention_and_all_its_bytes_are_needed()
+ {
+    // Arrange: guest 205 is gone from the cluster but listed by job `main`, which sets remove 1 itself, so only the
+    // existence rule can stop the job's preview marking the guest's archive prunable.
+    let archives = [
+        archive(205, 0, 2, false),
+        archive(205, 1, 2, false),
+        archive(205, 2, 2, false),
+    ];
+    let payload = backups_payload(
+        json!([]),
+        json!([{"id": "main", "type": "vzdump", "storage": "backups", "vmid": "205",
+                "prune-backups": "keep-last=1", "remove": 1}]),
+        &archives,
+        vec![("keep-last=1", vec![mark(&archives[0])])],
+        Some(json!([defaults_read("n1", 200, json!({"remove": 1}))])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: no retention and nothing prunable; all three archives (6 GiB) are needed, and the job names 205 as missing.
+    let guest = guest_row(&out, 205);
+    assert_eq!(guest["guest_exists"], json!(false), "{out}");
+    assert_eq!(guest["job_retention"], json!([]), "{out}");
+    assert_eq!(guest["prunable"], json!(0), "{out}");
+    assert_eq!(guest["retained_at_job_retention"], json!(3), "{out}");
+    assert_eq!(guest["gib_needed_at_job_retention"], json!(6.0), "{out}");
+    assert_eq!(
+        out["storages"][0]["retention_need_unknown_guests"],
+        json!([]),
+        "{out}"
+    );
+    assert_eq!(
+        out["storages"][0]["gib_needed_at_job_retention"],
+        json!(6.0),
+        "{out}"
+    );
+    assert_eq!(out["jobs"][0]["missing_guests"], json!([205]), "{out}");
+}
+
+#[test]
+fn a_jobless_existing_guest_needs_all_its_bytes_once_with_its_protected_archive_among_them() {
+    // Arrange: guest 900 exists on n1 and no job backs it up. Its newest archive is protected and 2 GiB.
+    let archives = [
+        archive(900, 0, 1, false),
+        archive(900, 1, 1, false),
+        archive(900, 2, 2, true),
+    ];
+    let payload = backups_payload(
+        json!([{"vmid": 900, "name": "loner", "node": "n1"}]),
+        json!([]),
+        &archives,
+        vec![],
+        Some(json!([defaults_read("n1", 200, json!({"remove": 1}))])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: nothing prunes it, so every archive stays; its 4 GiB are needed once, the protected bytes not twice.
+    let guest = guest_row(&out, 900);
+    assert_eq!(guest["job_retention"], json!([]), "{out}");
+    assert_eq!(guest["retained_at_job_retention"], json!(3), "{out}");
+    assert_eq!(guest["gib_needed_at_job_retention"], json!(4.0), "{out}");
+    assert_eq!(guest["prunable"], json!(0), "{out}");
+    assert_eq!(
+        out["storages"][0]["gib_needed_at_job_retention"],
+        json!(4.0),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_guest_a_storageless_job_backs_up_has_an_unknown_need() {
+    // Arrange: guest 900 is backed up only by an enabled job that names no storage, so it writes to its node's
+    // default storage, which the survey does not resolve.
+    let archives = [archive(900, 0, 1, false), archive(900, 1, 1, false)];
+    let payload = backups_payload(
+        json!([{"vmid": 900, "name": "loner", "node": "n1"}]),
+        json!([{"id": "j", "type": "vzdump", "vmid": "900", "prune-backups": "keep-last=1"}]),
+        &archives,
+        vec![],
+        Some(json!([defaults_read("n1", 200, json!({"remove": 1}))])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: not "keeps every archive": where the job prunes is unknown, so the need is too.
+    let guest = guest_row(&out, 900);
+    assert_eq!(guest["retained_at_job_retention"], Value::Null, "{out}");
+    assert_unknown(&guest, &out);
+}
+
+#[test]
+fn a_guest_a_storageless_job_backs_up_with_no_archive_here_is_listed_as_unknown() {
+    // Arrange: guest 900 has no archive on this storage, and an enabled job naming no storage backs it up.
+    let payload = backups_payload(
+        json!([{"vmid": 900, "name": "loner", "node": "n1"}]),
+        json!([{"id": "j", "type": "vzdump", "vmid": "900", "prune-backups": "keep-last=1"}]),
+        &[],
+        vec![],
+        Some(json!([defaults_read("n1", 200, json!({"remove": 1}))])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: the job could write here, so the storage's need is not complete without it.
+    assert_eq!(
+        out["storages"][0]["retention_need_unknown_guests"],
+        json!([900]),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_guest_a_storageless_job_also_backs_up_is_not_prunable_where_another_job_prunes_it() {
+    // Arrange: guest 900 is backed up here by a keep-last=1 job whose preview removes its older archive, and also by
+    // an enabled job that names no storage.
+    let archives = [archive(900, 0, 1, false), archive(900, 1, 1, false)];
+    let payload = backups_payload(
+        json!([{"vmid": 900, "name": "loner", "node": "n1"}]),
+        json!([
+            {"id": "here", "type": "vzdump", "vmid": "900", "storage": "backups", "prune-backups": "keep-last=1"},
+            {"id": "elsewhere", "type": "vzdump", "vmid": "900", "prune-backups": "keep-last=1"}
+        ]),
+        &archives,
+        vec![("keep-last=1", vec![mark(&archives[0])])],
+        Some(json!([defaults_read("n1", 200, json!({"remove": 1}))])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: the storage-less job's pruning is unknown, so nothing is counted prunable and the need is unknown.
+    assert_unknown(&guest_row(&out, 900), &out);
+}
+
+#[test]
+fn the_playbook_reads_each_online_nodes_vzdump_defaults_and_hands_them_to_the_summarizer() {
+    // Arrange
+    let tasks = repo::tasks("platform/playbooks/survey-proxmox-backup-storage.yml");
+    let named = |name: &str| {
+        tasks
+            .iter()
+            .find(|t| t.get("name").and_then(Node::as_str) == Some(name))
+            .unwrap_or_else(|| panic!("no task named {name:?}"))
+            .clone()
+    };
+
+    // Act
+    let read = named("Read each online node's vzdump defaults");
+    let summarize = named("Summarize the backup storage");
+
+    // Assert: a GET per online node, a 403 or 500 reaching the summarizer as data, never printed, and its results
+    // under the key the summarizer reads.
+    let uri = read.get("ansible.builtin.uri").expect("a uri task");
+    assert!(
+        uri.get("url")
+            .and_then(Node::as_str)
+            .is_some_and(|u| u.ends_with("/vzdump/defaults")),
+        "{uri:?}"
+    );
+    let statuses: Vec<&str> = uri
+        .get("status_code")
+        .and_then(Node::as_seq)
+        .expect("a status_code list")
+        .iter()
+        .filter_map(Node::as_str)
+        .collect();
+    assert_eq!(statuses, ["200", "403", "500"], "{uri:?}");
+    assert_eq!(
+        read.get("loop").and_then(Node::as_str),
+        Some("{{ _online_nodes }}")
+    );
+    assert_eq!(
+        read.get("register").and_then(Node::as_str),
+        Some("_vzdump_defaults_reads")
+    );
+    assert_eq!(read.get("no_log"), Some(&Node::Bool(true)));
+    assert_eq!(read.get("check_mode"), Some(&Node::Bool(false)));
+    let stdin = summarize
+        .get("ansible.builtin.command")
+        .and_then(|c| c.get("stdin"))
+        .and_then(Node::as_str)
+        .expect("the summarize stdin");
+    assert!(
+        stdin.contains("'vzdump_defaults_reads': _vzdump_defaults_reads.results"),
+        "{stdin}"
+    );
+}
+
+#[test]
+fn a_defaults_response_never_prints_its_mailto_script_dumpdir_or_other_keys() {
+    // Arrange: the node's defaults carry sentinel strings in every key the receipt must not print.
+    let payload = backups_payload(
+        json!([]),
+        json!([]),
+        &[],
+        vec![],
+        Some(json!([defaults_read(
+            "n1",
+            200,
+            json!({
+            "remove": 1, "mailto": "MAILTO-SENTINEL", "script": "SCRIPT-SENTINEL", "dumpdir": "DUMPDIR-SENTINEL",
+            "tmpdir": "TMPDIR-SENTINEL", "storage": "STORAGE-SENTINEL", "notes-template": "NOTES-SENTINEL"})
+        )])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: no sentinel is printed, and the row carries only node, status, reason and remove.
+    let text = out.to_string();
+    for sentinel in [
+        "MAILTO-SENTINEL",
+        "SCRIPT-SENTINEL",
+        "DUMPDIR-SENTINEL",
+        "TMPDIR-SENTINEL",
+        "STORAGE-SENTINEL",
+        "NOTES-SENTINEL",
+    ] {
+        assert!(!text.contains(sentinel), "{sentinel} printed: {text}");
+    }
+    assert_eq!(
+        out["vzdump_defaults"],
+        json!([{"node": "n1", "status": "read", "reason": null, "remove": true}]),
+        "{text}"
     );
 }
