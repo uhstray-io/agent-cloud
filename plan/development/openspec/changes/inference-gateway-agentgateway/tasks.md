@@ -933,6 +933,23 @@
       from OpenBao, the way the fault drill does, because Semaphore's own key is not
       authorized for that account. The build itself still waits on the operator's go. Not
       ticked.
+      2026-11-27 (AC-1022): leaf issuance, renewal and every launch are planned in
+      `production-internal-ca` (design sections "Decisions recorded 2026-11-21" and "Decisions
+      recorded 2026-11-27", tasks group 10): launches 0 to 6 in task 10.5, 7 and 8 in task 10.7,
+      9 and 10 in task 10.10. Answers to the 2026-10-26 additions: (a) each node gets its own
+      inventory name and group; (b) the connection uses the `vllm-tls` key from OpenBao, as the
+      fault drill does. This list replaces the order of the 2026-10-16 list. This task's pieces:
+      items 1 to 4 in dgx-spark's Phase A window (launch 9), each behind an inventory value that
+      keeps today's plain path until then; item 5 in Phase B (launch 10):
+      1. the model's `https://` base URL and `tls: {root, hostname, cert, key}` (hostname
+         `vllm-primary.<site>.<zone>`, cert and key the `agw-upstream` leaf);
+      2. Caddy's `/health` handler with an HTTPS transport (internal root, `tls_server_name`
+         `vllm-primary.<site>.<zone>`);
+      3. Rollback Inference Route's `direct` mode with the same transport;
+      4. the o11y `dgx-spark-vllm` scrape with `scheme: https` and `tls_config`;
+      5. the same callers presenting client leaves: `agw-upstream`, `caddy`, and the scrape's
+         client leaf, which task 10.9 decides.
+      Not started; not ticked.
 - [ ] 6.4 Validation gate: a request without a client certificate is refused at the
       gateway, proving scenario "A request without a client certificate is refused"; a
       throwaway client-profile leaf declared with a SAN on no allowlist entry (issued as in

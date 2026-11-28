@@ -671,6 +671,110 @@ open to review.
    (`scripts/semaphore-sync-inventory.py`) before the run that reads it. The numbered launch list
    goes with the build's first pull request.
 
+## Decisions recorded 2026-11-27: the leaf build's open decisions and launch list
+
+AC-1041. This settles the three states that decision (b) of 2026-11-21 left open (named there
+"open build decision (AC-1041)"), and completes decision (g) of 2026-11-21 with the numbered launch
+list. AC-1042, the credentials the delegated signing step connects with (decision (c) of
+2026-11-21), stays open: task 10.1's test settles it. No leaf is issued by this record.
+
+1. **(h) Switch versus the listener.** The two new listener rows (`vllm-server`, `image-server`)
+   declare the address the probe connects to as `<prefix>_bind` and `<prefix>_port` in site-config,
+   with no default port. That is a fourth difference from the existing rows, which carry
+   `default_port` (`platform/playbooks/vars/renew-listener-servers.yml:16`). With the switch off,
+   after the host's renewal the leaf's host makes one TLS connection to that declared address. A
+   completed TLS handshake fails that host's renewal and names the switch to turn on. A refused or
+   closed connection, or an answer that is not TLS, passes, and the leaf is checked on its files
+   only (`issue-internal-leaf.yml -e leaf_action=inspect`: the key matches the certificate, the key
+   file is `0600`, and the certificate verifies against its profile's root). The check reads whether
+   that one declared address answers TLS at that moment. It does not read any other port, or what
+   the listener serves after the run. With the switch on, the proof is the served serial, read at
+   the declared address and compared, unchanged from decision (b).
+
+2. **(i) Where agent-cloud reads `vllm_tls_require_client`.** From its own site-config copy: an
+   inventory value on the head node's host, off by default, which the operator declares to match
+   dgx-spark's switch. In every run with `vllm_tls` on, a probe of `vllm-server`'s listener holds
+   that copy honest. With the copy off, one request with no client certificate must be answered
+   over TLS, or the run fails naming the mismatch. With the copy on, the same request must be
+   refused, and the refusal is read the way the o11y client leaf proof reads one: an authentication
+   alert in the handshake or on the first read after it (phase `AUTH_ALERT_READ`,
+   `platform/playbooks/renew-internal-certs.yml:435-505`). The probe reads how the listener at the
+   declared address answers a request without a client certificate; it does not read dgx-spark's
+   configuration. `vllm_tls_require_client` on with `vllm_tls` off is refused at admission, by
+   reading the two declared values, because no listener requires client certificates without TLS;
+   like every admission refusal, it refuses the run before anything is issued. Alternative
+   rejected: *reading dgx-spark's switch from the node*, because the `vllm-tls` account is
+   certificates-only and this repository has no read of dgx-spark's configuration (declared by
+   dgx-spark, not checked here).
+
+3. **(j) The leaf the gateway process presents.** Three parts.
+   - Launch 10's `Deploy agentgateway (Dev)` is a real run whatever its dry run shows. A dry run
+     skips `deploy.sh`. A real run compares the running container's `io.agent-cloud.inputs-sha256`
+     label with the digest of the current inputs, `./certs` included, and recreates the container
+     on a difference (`platform/services/agentgateway/deployment/deploy.sh:84`, `:102-125`,
+     `:182-201`). Its `deploy-result` line reads that comparison: the container was created from
+     the current files. This resolves the CodeRabbit thread on #1218 (review of 0970d2cf).
+   - From Phase B the renewal's reload for `agw-upstream` is the container restart
+     (`<engine> restart agentgateway`, `platform/playbooks/renew-internal-certs.yml:735-739`), run
+     once per host. A restart keeps the label written at create, because the label rides the
+     overlay of `compose up -d --force-recreate` only (`deploy.sh:182-201`), so the label is not
+     the proof after a renewal. The proof reads three things: the gateway's readiness after the
+     restart; the engine's recorded start time of the container, which must be later than the swap
+     of `current`; and a handshake from the gateway host presenting the new files and verifying
+     `vllm-primary.<site>.<zone>`, which shows vLLM accepts them. It does not read the serial the
+     process presents.
+   - What a started gateway presents is established once, before launch 10, by task 5.4a's drill,
+     extended. Against a local upstream that requires a client certificate and records the serial
+     presented, the drill records: (1) after a start, the gateway presents the leaf `current` held
+     at start; (2) after a swap and a restart, it presents the new one; (3) whether it reloads
+     model-side files on change without a restart; (4) that the engine's start time changes on a
+     restart. Launch 10 waits on that record. If (1) or (2) fails, Phase B does not proceed and the
+     decision returns to this design. Reload `none` replaces the restart only as decision (b) of
+     2026-11-21 says.
+
+4. **(k) Every production launch.** One numbered list, 0 to 10. Each launch is lane C; manual
+   launches follow ledger 3.20 and 3.22; `Deploy step-ca (Dev)` renders the name policy before any
+   issuance (ledger 10.20). Release scope: launches 0 to 6 and the reply to dgx-spark ship in
+   milestone v0.18.0 (tasks 10.5 and 10.6); launches 7 to 10 wait on dgx-spark serving TLS. The
+   switch values `vllm_tls`, `image_server_tls` and `vllm_tls_require_client` are declared by the
+   operator in the site-config inventory; nothing in this list reads them from the nodes.
+   0. The operator-side inventory sync (`scripts/semaphore-sync-inventory.py`, preview, then
+      `--apply`) after every site-config change, before the run that reads it. The changes: task
+      10.4's declaration (before launch 1); each node's switch (launch 7); the Phase A inventory
+      values (before launch 9); task 10.9's declaration (before launch 10's step-ca run);
+      `vllm_tls_require_client` (launch 10).
+   1. `Deploy step-ca (Dev)`: dry run, then real run. It renders the name policy with
+      six new names (the five node SANs and `upstream.gateway.<site>.<zone>`) before any
+      issuance; the run's name count rises by six.
+   2. `Issue Internal Leaf (Dev)` on the head node's group, `leaf_name=vllm-server`: dry run, real
+      run, then `leaf_action=inspect`.
+   3. The same for `vllm-lifecycle` on the head node's group.
+   4. The same for `image-server` on the second node's group.
+   5. The same for `agw-upstream` on the gateway host's group.
+   6. `Renew Internal Certs (Dev)` in check mode: every new leaf is classified and none is refused.
+      The next scheduled run is the first real renewal.
+   7. After dgx-spark serves TLS on a node: one site-config change turns that node's switch on
+      (`vllm_tls` or `image_server_tls`), launch 0's sync, then `Renew Internal Certs (Dev)` with
+      `--tags verify` reads the served serial at the declared address.
+   8. The rotation drill with dgx-spark (its task 3.4): `Renew Internal Certs (Dev)` with
+      `renew_threshold=1`.
+   9. In dgx-spark's Phase A window (its task 3.3), after the Phase A inventory values and launch
+      0's sync: `Deploy agentgateway (Dev)`, `Manage Caddy Sites (Dev)` and `Deploy o11y (Dev)`,
+      each dry run first; `Rollback Inference Route (Dev)` `gateway-config` as a dry run only, once
+      the read of route task 6.2's run 5370 is made.
+   10. Phase B, in order:
+       (a) task 10.9: the scrape's client leaf is named with its renewal proof class (open until
+       then, task 10.9), declared, launch 0's sync, `Deploy step-ca (Dev)` dry run then real run,
+       and `Issue Internal Leaf (Dev)` for it on the o11y host's group (dry run, real run,
+       `leaf_action=inspect`);
+       (b) task 5.4a's extended drill recorded (decision (j));
+       (c) before dgx-spark's mutual-TLS restart (its task 4.3): `Deploy agentgateway (Dev)` as a
+       real run whatever its dry run shows, `Manage Caddy Sites (Dev)` with the `caddy` leaf on the
+       `/health` and `direct` transports, and `Deploy o11y (Dev)` with the scrape's client leaf,
+       each dry run first;
+       (d) after dgx-spark's 4.3: the `vllm_tls_require_client` change, launch 0's sync,
+       `Renew Internal Certs (Dev)` with `--tags verify`, and gateway task 6.4's remaining legs.
+
 ## Open Questions
 
 All four questions below were answered on 2026-09-28; see "Decisions recorded
