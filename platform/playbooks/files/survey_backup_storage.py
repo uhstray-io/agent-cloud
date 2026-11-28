@@ -37,7 +37,8 @@ GIB = 1024 ** 3
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 RETENTION = re.compile(r"^(keep-(all|last|hourly|daily|weekly|monthly|yearly)=[0-9]+)(,keep-[a-z]+=[0-9]+)*$")
 DEFAULT_RETENTION = "storage-default"
-# The steps of a summarize run, in order. Each part sets its step as it starts, so a refusal names the part that failed.
+# The steps of a run, in order: reading the input, then plan or the parts of summarize. Each sets its step as it
+# starts, so a refusal names the part that failed.
 STEPS = ("input", "plan", "vms", "jobs", "reads", "storages", "cephfs", "shared-backends", "ceph-capacity", "osd",
          "health", "disks")
 KEY_NAME = re.compile(r"[A-Za-z0-9_.-]{1,40}")
