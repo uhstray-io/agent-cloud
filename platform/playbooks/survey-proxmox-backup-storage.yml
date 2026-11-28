@@ -9,8 +9,10 @@
 #   - what a prune at each enabled job's own retention would remove (Proxmox's prune preview);
 #   - the space a job's retention needs, estimated at the newest archive size plus protected
 #     archives, reported as unknown when the retention keeps everything, a storage default is
-#     not set, a job protects every archive, or the guest has no archive there yet; the
-#     storage total sums only the guests whose need is known;
+#     not set, a job protects every archive, a job that does not prune backs the guest up (its
+#     remove is off, or its remove cannot be read), or the guest has no archive there yet; a guest
+#     that no enabled job backs up keeps every archive, so its need is all its bytes; the storage
+#     total sums only the guests whose need is known;
 #   - bytes on the storage that no listed volume explains (partial files, foreign data);
 #   - for a PBS storage, sizes_are_logical: its snapshot sizes share chunks, so its unexplained
 #     and prunable bytes are reported as unknown (null);
@@ -45,8 +47,9 @@
 # printed, which names storages, guests, CephFS filesystems and pools, Ceph OSDs and hosts, and node
 # disks, but never a server, export, mount path, volume ID, note, WWN, token or Ceph health message.
 # A storage the token may not read (403) is refused by the planner or summarizer with a one-line
-# reason. A node's disk list that the token may not read (403), and a Ceph listing that answers 403
-# or 500 (the OSD tree and health read also 404 or 501), are reported as unavailable, not refused.
+# reason. A node's disk list that the token may not read (403), a node's vzdump defaults that answer
+# 403 or 500, and a Ceph listing that answers 403 or 500 (the OSD tree and health read also 404 or 501),
+# are reported as unavailable, not refused; of a vzdump defaults response only `remove` is ever printed.
 # Any other failed read fails its no_log task without detail.
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
@@ -159,6 +162,22 @@
       no_log: true
       check_mode: false
 
+    # A job without its own `remove` takes its node's vzdump default, from the node's /etc/vzdump.conf or the
+    # schema default (pve-manager PVE/VZDump.pm:597-606 at e5ac6d6f), so each online node's defaults are read.
+    # The endpoint needs Datastore.Audit or Datastore.AllocateSpace on the defaults' storage (pve-manager
+    # PVE/API2/VZDump.pm:182-262 at e5ac6d6f). A 403 or a 500 is reported by the summarizer as unavailable
+    # with that node's remove unknown, not refused.
+    - name: Read each online node's vzdump defaults
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ item }}/vzdump/defaults"
+        status_code: [200, 403, 500]
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _online_nodes }}"
+      register: _vzdump_defaults_reads
+      no_log: true
+      check_mode: false
+
     - name: Plan which backup storages to read and which retentions to preview
       ansible.builtin.command:
         argv: [python3, "{{ _survey }}", plan]
@@ -250,6 +269,7 @@
               'content_reads': _content_reads.results,
               'prune_reads': _prune_reads.results,
               'disk_reads': _disk_reads.results,
+              'vzdump_defaults_reads': _vzdump_defaults_reads.results,
               'ceph_reads': _ceph_reads.results | default([]),
               'ceph_capacity_reads': _ceph_capacity_reads.results | default([])} | to_json }}
       register: _summary_run
