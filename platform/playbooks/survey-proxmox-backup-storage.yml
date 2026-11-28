@@ -16,9 +16,10 @@
 #   - bytes on the storage that no listed volume explains (partial files, foreign data);
 #   - for a PBS storage, sizes_are_logical: its snapshot sizes share chunks, so its unexplained
 #     and prunable bytes are reported as unknown (null);
-#   - storage IDs that look like the same filesystem (same server and export, same path, one
-#     path inside the other, identical total and used bytes, or the same CephFS filesystem; two
-#     CephFS storages are paired by filesystem name only, never by bytes), whose usage must be read together;
+#   - storage IDs that look like the same filesystem (same server and export, same server and share with
+#     different subdirectories, same path, one path inside the other, identical total and used bytes, or the
+#     same CephFS filesystem; two CephFS storages are paired by filesystem name only, never by bytes), whose
+#     usage must be read together; a dir storage that is its own mount point inside another is not paired with it;
 #   - every backup job's schedule, node, storage, retention and guests it names that no longer exist;
 #   - the newest archive per guest on each storage, so a guest's last backup is visible across storages;
 #   - whether each CephFS storage shares a filesystem on this cluster's Ceph with another (an external

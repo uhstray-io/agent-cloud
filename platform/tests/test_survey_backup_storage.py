@@ -486,6 +486,26 @@ def test_a_node_local_storage_on_two_nodes_is_not_reported_as_one_filesystem():
     assert [b["storages"] for b in survey.summarize(summary)["shared_backends"]] == [["local", "scratch"]]
 
 
+@pytest.mark.parametrize(("value", "expected"), [
+    (None, None),                                # absent: Proxmox takes no mount point
+    ("no", None), ("Off", None), ("0", None), (False, None),  # a false boolean, in any case: none
+    ("yes", "/srv/inner"), ("On", "/srv/inner"), ("1", "/srv/inner"), (True, "/srv/inner"),  # true: its own path
+    ("/mnt/disk/", "/mnt/disk"), ("off-site", "off-site"),    # any other string: the mount point's path
+])
+def test_is_mountpoint_reads_as_pve_storage_does(value, expected):
+    cfg = {"storage": "inner", "type": "dir", "path": "/srv/inner"}
+    if value is not None:
+        cfg["is_mountpoint"] = value
+    assert survey._mount_point(cfg) == expected
+
+
+def test_only_a_dir_storage_can_be_its_own_filesystem_inside_another():
+    outer = {"storage": "outer", "type": "dir", "path": "/srv"}
+    inner = {"storage": "inner", "type": "nfs", "path": "/srv/inner", "is_mountpoint": "yes"}
+    assert survey._same_backend(outer, inner) == "one path inside the other"
+    assert survey._same_backend(inner, outer) == "one path inside the other"
+
+
 def test_the_survey_runs_only_at_the_reviewed_commit():
     plays = yaml.safe_load((ROOT / "platform/playbooks/survey-proxmox-backup-storage.yml").read_text())
     gate = plays[1]

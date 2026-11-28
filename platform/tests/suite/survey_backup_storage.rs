@@ -1781,3 +1781,152 @@ fn the_survey_playbook_makes_only_get_requests_and_its_play_defaults_uri_to_get(
         "no uri task was found, so the GET check proved nothing"
     );
 }
+
+/// The receipt of two storages `first` and `second` on node n1 that each list the same relative archive, 30 GiB,
+/// with used bytes of 100 GiB and 40 GiB. The used bytes differ, so no identical-bytes pair is inferred: the
+/// `shared_backends` shown are the ones the config and the paths decide. `kind` and `shared` are the type and the
+/// shared flag that every status row carries.
+fn pair_receipt(first: &str, second: &str, config: Value, kind: &str, shared: u8) -> Value {
+    let row = |storage: &str, used: u64| {
+        json!({"storage": storage, "content": "backup", "active": 1, "type": kind, "shared": shared,
+               "total": TOTAL, "used": used, "avail": TOTAL - used})
+    };
+    let listing = json!({"item": "n1", "status": 200, "json": {"data": [
+        row(first, 100 * GIB), row(second, 40 * GIB)]}});
+    let planned = run(
+        "plan",
+        &json!({"nodes": [{"node": "n1", "status": "online"}], "jobs": [],
+                "storage_config": config, "storage_listings": [listing]}),
+    );
+    assert!(
+        planned.status.success(),
+        "{}",
+        String::from_utf8_lossy(&planned.stdout)
+    );
+    let plan: Value = serde_json::from_slice(&planned.stdout).expect("the plan is JSON");
+    let content: Vec<Value> = plan["reads"]
+        .as_array()
+        .expect("plan reads")
+        .iter()
+        .map(|read| {
+            let storage = read["storage"].as_str().expect("a storage ID");
+            json!({"item": read, "status": 200, "json": {"data": [
+                {"volid": format!("{storage}:backup/vzdump-qemu-1-0.vma.zst"), "vmid": 1,
+                 "size": 30 * GIB, "ctime": T0}]}})
+        })
+        .collect();
+    receipt(
+        &json!({"plan": plan, "vms": [], "jobs": [], "storage_config": config,
+                    "content_reads": content, "prune_reads": []}),
+    )
+}
+
+#[test]
+fn a_dir_storage_that_is_its_own_mount_point_inside_another_is_not_paired_with_it() {
+    // Arrange: `inner` sits at /srv/inner, inside `outer` at /srv, and names its own path as its mount point.
+    let config = json!([
+        {"storage": "outer", "type": "dir", "path": "/srv"},
+        {"storage": "inner", "type": "dir", "path": "/srv/inner", "is_mountpoint": "yes"}
+    ]);
+
+    // Act
+    let out = pair_receipt("outer", "inner", config, "dir", 0);
+
+    // Assert: its files sit on a filesystem of their own, so no pair is listed.
+    assert_eq!(out["shared_backends"], json!([]), "{out}");
+}
+
+#[test]
+fn a_dir_storage_whose_mount_point_lies_strictly_inside_the_outer_path_is_not_paired_with_it() {
+    // Arrange: `inner` at /srv/inner names /srv/mnt as its mount point, a path strictly inside `outer` at /srv.
+    let config = json!([
+        {"storage": "outer", "type": "dir", "path": "/srv"},
+        {"storage": "inner", "type": "dir", "path": "/srv/inner", "is_mountpoint": "/srv/mnt"}
+    ]);
+
+    // Act
+    let out = pair_receipt("outer", "inner", config, "dir", 0);
+
+    // Assert
+    assert_eq!(out["shared_backends"], json!([]), "{out}");
+}
+
+#[test]
+fn a_mount_point_at_or_above_the_outer_path_keeps_the_pair() {
+    // Arrange: `inner` names / as its mount point, above `outer` at /srv, so both paths sit on one filesystem.
+    let config = json!([
+        {"storage": "outer", "type": "dir", "path": "/srv"},
+        {"storage": "inner", "type": "dir", "path": "/srv/inner", "is_mountpoint": "/"}
+    ]);
+
+    // Act
+    let out = pair_receipt("outer", "inner", config, "dir", 0);
+
+    // Assert: one path inside the other. The listings hold 30 GiB each, so 60 of the 100 GiB used is listed.
+    assert_eq!(
+        out["shared_backends"],
+        json!([{"storages": ["outer", "inner"], "reason": "one path inside the other", "combined_unaccounted_gib": 40.0}]),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_dir_storage_with_an_absent_or_no_mount_point_keeps_the_pair() {
+    for inner in [
+        json!({"storage": "inner", "type": "dir", "path": "/srv/inner", "is_mountpoint": "no"}),
+        json!({"storage": "inner", "type": "dir", "path": "/srv/inner"}),
+    ] {
+        // Arrange
+        let config = json!([{"storage": "outer", "type": "dir", "path": "/srv"}, inner]);
+
+        // Act
+        let out = pair_receipt("outer", "inner", config, "dir", 0);
+
+        // Assert
+        assert_eq!(
+            out["shared_backends"],
+            json!([{"storages": ["outer", "inner"], "reason": "one path inside the other", "combined_unaccounted_gib": 40.0}]),
+            "{out}"
+        );
+    }
+}
+
+#[test]
+fn two_cifs_ids_on_one_share_with_different_subdirectories_count_both_listings_in_full() {
+    // Arrange: `a` and `b` mount two directories of one share, each of which lists its own 30 GiB archive.
+    let config = json!([
+        {"storage": "a", "type": "cifs", "server": "CIFS-SERVER-SENTINEL", "share": "backups", "subdir": "/one"},
+        {"storage": "b", "type": "cifs", "server": "CIFS-SERVER-SENTINEL", "share": "backups", "subdir": "/two"}
+    ]);
+
+    // Act
+    let out = pair_receipt("a", "b", config, "cifs", 1);
+
+    // Assert: a pair under its own reason, with both listings summed (60 of the 100 GiB used is listed), and the
+    // server never printed.
+    assert_eq!(
+        out["shared_backends"],
+        json!([{"storages": ["a", "b"], "reason": "same server and share, different subdirectories", "combined_unaccounted_gib": 40.0}]),
+        "{out}"
+    );
+    assert!(!out.to_string().contains("CIFS-SERVER-SENTINEL"), "{out}");
+}
+
+#[test]
+fn two_cifs_ids_on_one_share_and_subdirectory_are_one_export_and_count_their_listing_once() {
+    // Arrange: `a` and `b` mount the same directory of one share, so they list the same archive.
+    let config = json!([
+        {"storage": "a", "type": "cifs", "server": "CIFS-SERVER-SENTINEL", "share": "backups", "subdir": "/one"},
+        {"storage": "b", "type": "cifs", "server": "CIFS-SERVER-SENTINEL", "share": "backups", "subdir": "/one"}
+    ]);
+
+    // Act
+    let out = pair_receipt("a", "b", config, "cifs", 1);
+
+    // Assert: the same export, with its one 30 GiB listing counted once (100 - 30 = 70 GiB unexplained).
+    assert_eq!(
+        out["shared_backends"],
+        json!([{"storages": ["a", "b"], "reason": "same server and export", "combined_unaccounted_gib": 70.0}]),
+        "{out}"
+    );
+}

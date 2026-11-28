@@ -242,7 +242,9 @@ def _backend(cfg):
     if kind == "nfs":
         return ("nfs", cfg.get("server"), cfg.get("export"))
     if kind == "cifs":
-        return ("cifs", cfg.get("server"), cfg.get("share"))
+        # A CIFS storage mounts //<server>/<share><subdir> (pve-storage CIFSPlugin.pm :15-23 and :80-87 at 3ac027fd),
+        # so two IDs on one share with different subdirs list different directories.
+        return ("cifs", cfg.get("server"), cfg.get("share"), cfg.get("subdir") or "")
     if kind == "pbs":
         return ("pbs", cfg.get("server"), cfg.get("datastore"))
     return None
@@ -256,14 +258,52 @@ def _path_of(cfg):
     return None
 
 
+# pve-common's boolean spellings (PVE/JSONSchema.pm parse_boolean, HEAD, read 2026-11-27 at :1062-1067), any case.
+BOOL_TRUE = re.compile(r"1|on|yes|true", re.IGNORECASE)
+BOOL_FALSE = re.compile(r"0|off|no|false", re.IGNORECASE)
+
+
+def _mount_point(cfg):
+    """Where a dir storage's externally managed mount point is, or None when Proxmox takes none.
+
+    pve-storage DirPlugin.pm (3ac027fd, :62-68 and :110-118, parse_is_mountpoint): an absent option means none; a true
+    boolean means the storage's own path; a false boolean means none; any other string is the mount point's path.
+    """
+    value = cfg.get("is_mountpoint")
+    if value is None:
+        return None
+    text = ("1" if value else "0") if isinstance(value, bool) else str(value)
+    if BOOL_TRUE.fullmatch(text):
+        return _path_of(cfg)
+    if BOOL_FALSE.fullmatch(text):
+        return None
+    return text.rstrip("/")
+
+
+def _own_filesystem(inner, outer_path):
+    """Whether a dir storage inside another's path is a filesystem of its own, whose files the outer listing lacks.
+
+    That holds when its mount point is its own path, or lies strictly inside the outer path. A mount point at or above
+    the outer path leaves the two on one filesystem. Only a dir storage can be one (its files sit in its path).
+    """
+    if inner.get("type") != "dir":
+        return False
+    mount = _mount_point(inner)
+    return mount is not None and (mount == _path_of(inner) or mount.startswith(outer_path + "/"))
+
+
 def _same_backend(a, b):
-    if _backend(a) and _backend(a) == _backend(b):
+    ba, bb = _backend(a), _backend(b)
+    if ba and ba == bb:
         return "same server and export"
+    if ba and bb and ba[0] == "cifs" and bb[0] == "cifs" and ba[:3] == bb[:3]:
+        return "same server and share, different subdirectories"
     pa, pb = _path_of(a), _path_of(b)
     if pa and pb and pa == pb:
         return "same path"
     if pa and pb and (pa.startswith(pb + "/") or pb.startswith(pa + "/")):
-        return "one path inside the other"
+        inner, outer_path = (a, pb) if pa.startswith(pb + "/") else (b, pa)
+        return None if _own_filesystem(inner, outer_path) else "one path inside the other"
     return None
 
 
@@ -762,7 +802,7 @@ def summarize(data):
             elif reason in ("same server and export", "same path"):
                 # One directory under two IDs lists the same files: count each relative path once.
                 listed = sum(max(a_files.get(f, 0), b_files.get(f, 0)) for f in a_files.keys() | b_files.keys())
-            elif reason == "one path inside the other":
+            elif reason in ("one path inside the other", "same server and share, different subdirectories"):
                 listed = sum(a_files.values()) + sum(b_files.values())  # different directories, different files
             else:
                 listed = None  # inferred from byte counts alone: whether the listings overlap is unknown
