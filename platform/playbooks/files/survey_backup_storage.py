@@ -565,6 +565,11 @@ def _removes(job, node, node_remove):
     return node_remove.get(node)
 
 
+def _placed(vmid, existing, shared, node):
+    """Whether a job can back a guest up to a storage: the guest exists, and the storage is shared or on its node."""
+    return vmid in existing and (shared or existing[vmid].get("node") == node)
+
+
 def summarize(data):
     existing = {int(v["vmid"]): v for v in data["vms"] if _is_vmid(v.get("vmid", ""))}
     names = {vmid: v.get("name") for vmid, v in existing.items()}
@@ -574,7 +579,7 @@ def summarize(data):
     node_rows, node_remove = _vzdump_defaults(data.get("vzdump_defaults_reads"))
     # A job naming no storage writes to its node's /etc/vzdump.conf storage, else `local`, or to a dump directory when
     # one is set (pve-manager PVE/VZDump.pm:74-79 and :646-648 at e5ac6d6f). This survey does not resolve which, so
-    # its guests are treated on every storage like the guests of a job that does not prune.
+    # on each storage those guests could write to (placed below) they are treated like a non-pruning job's guests.
     unplaced = {vmid for job, _, guests in job_guests if not job.get("storage") and _enabled(job)
                 for vmid in guests if vmid in existing}
     # Raw uri results: content reads loop over plan reads, prune reads over (read, retention).
@@ -610,13 +615,11 @@ def summarize(data):
         # living on that node take a retention. A guest that no longer exists takes none: its backup fails with
         # "unable to find VM" (pve-manager PVE/API2/VZDump.pm:101-106 at e5ac6d6f, PVE/VZDump.pm:907-908 at e5ac6d6f),
         # so no job of this cluster prunes it.
-        # A storage-less job's guests could write here: any guest on a shared storage, a local guest otherwise.
-        unplaced_here = {vmid for vmid in unplaced if shared or existing[vmid].get("node") == node}
+        unplaced_here = {vmid for vmid in unplaced if _placed(vmid, existing, shared, node)}
         retention_of, protects_every_archive, unpruned = {}, set(), set(unplaced_here)
         for job, _, guests in job_guests:
             if job.get("storage") == storage and _enabled(job):
-                guests = {vmid for vmid in guests
-                          if vmid in existing and (shared or existing[vmid].get("node") == node)}
+                guests = {vmid for vmid in guests if _placed(vmid, existing, shared, node)}
                 for vmid in guests:
                     retention_of.setdefault(vmid, set()).add(_retention(job))
                     # A job that does not prune (remove off, or not known) makes its guest's need unknown, not prunable.
