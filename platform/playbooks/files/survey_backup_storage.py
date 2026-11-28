@@ -608,9 +608,8 @@ def summarize(data):
         retention_of, protects_every_archive, unpruned = {}, set(), set()
         for job, _, guests in job_guests:
             if job.get("storage") == storage and _enabled(job):
-                if not shared:
-                    guests = {vmid for vmid in guests if existing.get(vmid, {}).get("node") == node}
-                guests = {vmid for vmid in guests if vmid in existing}
+                guests = {vmid for vmid in guests
+                          if vmid in existing and (shared or existing[vmid].get("node") == node)}
                 for vmid in guests:
                     retention_of.setdefault(vmid, set()).add(_retention(job))
                     # A job that does not prune (remove off, or not known) makes its guest's need unknown, not prunable.
@@ -684,7 +683,7 @@ def summarize(data):
             # A backed-up guest with no archive here yet has no size to multiply: unknown, not zero.
             "retention_need_unknown_guests": sorted(
                 {vmid for vmid, kept in needs.items() if kept is None}
-                | {vmid for vmid in retention_of if vmid in existing and vmid not in by_vmid}),
+                | {vmid for vmid in retention_of if vmid not in by_vmid}),
             "retentions_previewed": sorted(p["retention"] for p in r["prunes"]),
             "by_guest": rows,
         })

@@ -199,15 +199,20 @@ fn run(mode: &str, payload: &Value) -> std::process::Output {
         .clone()
 }
 
-/// The receipt of a payload the helper must summarize (exit 0), parsed.
-fn receipt(payload: &Value) -> Value {
-    let out = run("summarize", payload);
+/// The output of a payload the helper must accept in `mode` (exit 0), parsed.
+fn accepted(mode: &str, payload: &Value) -> Value {
+    let out = run(mode, payload);
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
-    serde_json::from_slice(&out.stdout).expect("the receipt is JSON")
+    serde_json::from_slice(&out.stdout).expect("the output is JSON")
+}
+
+/// The receipt of a payload the helper must summarize (exit 0), parsed.
+fn receipt(payload: &Value) -> Value {
+    accepted("summarize", payload)
 }
 
 /// The refusal text of a payload the helper must refuse (exit 1).
@@ -916,6 +921,12 @@ fn guest_row(out: &Value, vmid: u64) -> Value {
         .unwrap_or_else(|| panic!("no by_guest row for {vmid}: {out}"))
 }
 
+/// Asserts a guest row has an unknown retention need and nothing counted prunable.
+fn assert_unknown(guest: &Value, out: &Value) {
+    assert_eq!(guest["prunable"], json!(0), "{out}");
+    assert_eq!(guest["gib_needed_at_job_retention"], Value::Null, "{out}");
+}
+
 #[test]
 fn a_job_with_remove_off_leaves_its_guest_unknown_unprunable_and_its_row_says_false() {
     // Arrange: job `off` backs guest 801 up with remove 0, so Proxmox never prunes for it. Node n1 defaults to 1,
@@ -960,13 +971,7 @@ fn a_job_with_remove_off_is_not_previewed_while_one_with_remove_on_or_unset_is()
     let plan_with = |job: Value| -> Value {
         let payload = json!({"nodes": [{"node": "n1", "status": "online"}], "jobs": [job],
                              "storage_config": [], "storage_listings": [listing.clone()]});
-        let out = run("plan", &payload);
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stdout)
-        );
-        serde_json::from_slice(&out.stdout).expect("the plan is JSON")
+        accepted("plan", &payload)
     };
     let make = |remove: Option<Value>| {
         let mut job = json!({"id": "j", "type": "vzdump", "storage": "backups", "prune-backups": "keep-last=1"});
@@ -1009,8 +1014,7 @@ fn a_job_without_remove_takes_its_node_default_and_a_default_of_zero_leaves_its_
 
     // Assert: the guest is unknown and unprunable, the job row names the node default, and the defaults row says false.
     let guest = guest_row(&out, 801);
-    assert_eq!(guest["prunable"], json!(0), "{out}");
-    assert_eq!(guest["gib_needed_at_job_retention"], Value::Null, "{out}");
+    assert_unknown(&guest, &out);
     assert_eq!(out["jobs"][0]["remove"], json!("node default"), "{out}");
     assert_eq!(
         out["vzdump_defaults"],
@@ -1146,8 +1150,7 @@ fn a_403_on_the_node_defaults_is_unavailable_with_its_reason_and_leaves_the_gues
         "{out}"
     );
     let guest = guest_row(&out, 801);
-    assert_eq!(guest["prunable"], json!(0), "{out}");
-    assert_eq!(guest["gib_needed_at_job_retention"], Value::Null, "{out}");
+    assert_unknown(&guest, &out);
 }
 
 #[test]
@@ -1173,8 +1176,7 @@ fn a_500_on_the_node_defaults_is_unavailable_with_http_500_and_leaves_the_guest_
         "{out}"
     );
     let guest = guest_row(&out, 801);
-    assert_eq!(guest["prunable"], json!(0), "{out}");
-    assert_eq!(guest["gib_needed_at_job_retention"], Value::Null, "{out}");
+    assert_unknown(&guest, &out);
 }
 
 #[test]
@@ -1232,8 +1234,7 @@ fn absent_vzdump_defaults_reads_name_no_node_and_leave_a_job_without_its_own_rem
     // Assert: no node is listed, and the guest is unknown and unprunable.
     assert_eq!(out["vzdump_defaults"], json!([]), "{out}");
     let guest = guest_row(&out, 801);
-    assert_eq!(guest["prunable"], json!(0), "{out}");
-    assert_eq!(guest["gib_needed_at_job_retention"], Value::Null, "{out}");
+    assert_unknown(&guest, &out);
 }
 
 #[test]
@@ -1259,8 +1260,7 @@ fn a_defaults_response_without_remove_reads_as_unknown_not_as_on_or_off() {
         "{out}"
     );
     let guest = guest_row(&out, 801);
-    assert_eq!(guest["prunable"], json!(0), "{out}");
-    assert_eq!(guest["gib_needed_at_job_retention"], Value::Null, "{out}");
+    assert_unknown(&guest, &out);
 }
 
 #[test]
@@ -1282,8 +1282,7 @@ fn a_malformed_job_remove_is_unknown_even_when_the_node_default_is_one() {
     // Assert: the job row is null, and the guest is unknown and unprunable.
     assert_eq!(out["jobs"][0]["remove"], Value::Null, "{out}");
     let guest = guest_row(&out, 801);
-    assert_eq!(guest["prunable"], json!(0), "{out}");
-    assert_eq!(guest["gib_needed_at_job_retention"], Value::Null, "{out}");
+    assert_unknown(&guest, &out);
 }
 
 #[test]
@@ -1322,8 +1321,7 @@ fn a_job_remove_spelled_as_a_string_or_a_boolean_reads_as_proxmox_does() {
     assert_eq!(rows, [json!(false), json!(false), json!(true)], "{out}");
     for vmid in [811, 812] {
         let guest = guest_row(&out, vmid);
-        assert_eq!(guest["prunable"], json!(0), "{out}");
-        assert_eq!(guest["gib_needed_at_job_retention"], Value::Null, "{out}");
+        assert_unknown(&guest, &out);
     }
     let on = guest_row(&out, 813);
     assert_eq!(on["retained_at_job_retention"], json!(1), "{out}");
