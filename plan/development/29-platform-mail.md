@@ -8,7 +8,7 @@ Author: Joseph A. Wisneski IV <stray@uhstray.io>
 
 **Date:** 2026-11-27
 
-**Status:** ACCEPTED 2026-11-27 (Joseph). Units S1 to S9, Plane AC-1122 to AC-1130. Production actions are approved one at a time.
+**Status:** ACCEPTED 2026-11-27 by the operator. Units S1 to S9, Plane AC-1122 to AC-1130. Production actions are approved one at a time.
 
 **Plane:** module `proton-smtp`, milestone `v0.18.0`. S1 is AC-1122, S2 is AC-1123, S3 is AC-1124, S4 is AC-1125, S5 is AC-1126, S6 is AC-1127, S7 is AC-1128, S8 is AC-1129 and S9 is AC-1130. The DigitalOcean work is AC-1131 to AC-1133, module `digitalocean-foundation`, milestone `v0.19.0`.
 
@@ -280,4 +280,4 @@ Each action is asked of the coordinator session first and approved one at a time
 
 | Date | Change |
 |---|---|
-| 2026-11-27 | Accepted by Joseph, from the batch plan's approved Draft 2. |
+| 2026-11-27 | Accepted by the operator, from the batch plan's approved Draft 2. |
