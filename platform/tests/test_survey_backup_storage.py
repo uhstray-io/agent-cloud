@@ -57,6 +57,11 @@ def _mark(archive):
             "vmid": archive["vmid"], "type": "qemu"}
 
 
+def _defaults(*nodes, remove=1):
+    """The vzdump defaults reads of the named nodes: each answers 200 with `remove` as its default."""
+    return [{"item": node, "status": 200, "json": {"data": {"remove": remove}}} for node in nodes]
+
+
 def _payload():
     plan = survey.plan({"nodes": NODES, "jobs": JOBS, "storage_listings": [_listing("n1"), _listing("n2")],
                         "storage_config": STORAGE_CONFIG})
@@ -68,10 +73,11 @@ def _payload():
     reads = {r["storage"]: r for r in plan["reads"]}
     return {
         "plan": plan,
-        "vms": [{"vmid": 200, "name": "semaphore"}, {"vmid": 201, "name": "caddy"},
-                {"vmid": 103, "name": "game"}],
+        "vms": [{"vmid": 200, "name": "semaphore", "node": "n1"}, {"vmid": 201, "name": "caddy", "node": "n1"},
+                {"vmid": 103, "name": "game", "node": "n1"}],
         "storage_config": STORAGE_CONFIG,
         "jobs": JOBS,
+        "vzdump_defaults_reads": _defaults("n1", "n2"),
         "content_reads": [
             {"item": reads["backups"], "status": 200, "json": {"data": backups}},
             {"item": reads["isos"], "status": 200, "json": {"data": isos}},
@@ -93,6 +99,7 @@ def _one_store(jobs, vms, archives, storage_config=(), previews=None):
                         "storage_config": list(storage_config)})
     read = plan["reads"][0]
     summary = {"plan": plan, "vms": vms, "storage_config": list(storage_config), "jobs": jobs,
+               "vzdump_defaults_reads": _defaults("n1", "n2"),
                "content_reads": [{"item": read, "status": 200, "json": {"data": archives}}],
                "prune_reads": [{"item": [read, retention], "status": 200, "json": {"data": rows}}
                                for retention, rows in (previews or {}).items()]}
@@ -117,10 +124,13 @@ def test_summary_explains_where_the_space_went():
     assert backups["unaccounted_gib"] == 25.0   # 100 used - 75 listed
     # keep-last=10 would remove archive 1 of guest 200, but guest 200's job keeps it at keep-last=8
     assert backups["prunable_archives"] == 1 and backups["prunable_gib"] == 10.0
-    # keep-last=8 for 200 and 205 at their newest size, keep-last=10 for 103
-    assert backups["gib_needed_at_job_retention"] == 8 * 10 + 8 * 20 + 10 * 5
+    # keep-last=8 for 200 at its newest size, keep-last=10 for 103; destroyed 205 takes no retention, so both
+    # of its archives stay: 2 x 20 GiB
+    assert backups["gib_needed_at_job_retention"] == 8 * 10 + 2 * 20 + 10 * 5
     guest = {g["vmid"]: g for g in backups["by_guest"]}
     assert guest[205]["guest_exists"] is False and guest[205]["name"] is None
+    assert guest[205]["job_retention"] == [] and guest[205]["retained_at_job_retention"] == 2
+    assert guest[205]["gib_needed_at_job_retention"] == 40.0 and guest[205]["prunable"] == 0
     assert guest[103]["retained_at_job_retention"] == 10 and guest[103]["job_retention"] == ["keep-last=10"]
     assert guest[200]["prunable"] == 1 and guest[200]["job_retention"] == ["keep-last=8"]
     assert backups["retention_need_unknown_guests"] == [201]  # job "main" backs it up; no archive to size
@@ -195,7 +205,8 @@ def test_a_pool_job_backs_up_every_guest_in_its_pool():
     assert result["jobs"][0]["missing_guests"] == []
     guest = {g["vmid"]: g for g in result["storages"][0]["by_guest"]}
     assert guest[301]["retained_at_job_retention"] == 2 and guest[302]["retained_at_job_retention"] == 2
-    assert guest[303]["retained_at_job_retention"] == 0 and guest[303]["job_retention"] == []
+    # guest 303 is backed up by no job, so nothing prunes it and its one archive stays
+    assert guest[303]["retained_at_job_retention"] == 1 and guest[303]["job_retention"] == []
 
 
 def test_an_all_job_takes_its_node_and_leaves_out_the_excluded_guests():
@@ -207,7 +218,8 @@ def test_an_all_job_takes_its_node_and_leaves_out_the_excluded_guests():
     _, result = _one_store(jobs, vms, archives)
     assert result["jobs"][0]["selects"] == "all" and result["jobs"][0]["guests"] == 2
     guest = {g["vmid"]: g["retained_at_job_retention"] for g in result["storages"][0]["by_guest"]}
-    assert guest == {200: 3, 201: 0, 202: 0, 203: 3}
+    # 201 is excluded and 202 lives on another node: no job backs either up, so each keeps its one archive
+    assert guest == {200: 3, 201: 1, 202: 1, 203: 3}
 
 
 @pytest.mark.parametrize("separator", [",", ";", " "])
@@ -286,6 +298,7 @@ def test_pbs_sizes_are_logical_so_unexplained_and_reclaimable_bytes_are_unknown(
     plan = survey.plan({"nodes": NODES, "jobs": jobs, "storage_listings": [listing], "storage_config": []})
     archives = [_archive("pbs", 300, day, 30 * GIB) for day in range(2)]
     summary = {"plan": plan, "vms": [{"vmid": 300, "node": "n1"}], "storage_config": [], "jobs": jobs,
+               "vzdump_defaults_reads": _defaults("n1"),
                "content_reads": [{"item": plan["reads"][0], "status": 200, "json": {"data": archives}}],
                "prune_reads": [{"item": [plan["reads"][0], "keep-last=1"], "status": 200,
                                 "json": {"data": [_mark(archives[0])]}}]}

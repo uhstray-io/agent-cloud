@@ -7,16 +7,19 @@ Two modes, JSON on stdin, JSON on stdout:
              read, which prune retentions to dry-run on each, and whether to read the Ceph listing
              (`ceph`, the one gate for it). A shared storage is read once.
   summarize  {plan, vms, storage_config, jobs, content_reads, prune_reads, disk_reads, ceph_reads,
-              ceph_capacity_reads}
-             -> the receipt the playbook prints. disk_reads, ceph_reads and ceph_capacity_reads are optional,
-             so a payload without them still summarizes (their sections then read "not read" or are empty).
+              ceph_capacity_reads, vzdump_defaults_reads}
+             -> the receipt the playbook prints. disk_reads, ceph_reads, ceph_capacity_reads and vzdump_defaults_reads
+             are optional, so a payload without them still summarizes (their sections then read "not read" or are
+             empty, and a node whose vzdump defaults were not read has an unknown remove).
 
 The receipt carries storage IDs, guest IDs and names, sizes, dates and job settings, the CephFS
 filesystems and pools, each Ceph OSD's fill and host with each host's total, the cluster's Ceph health
 status and check codes (never a check's message), and each node's disks: device path, size, model,
 vendor, serial, Proxmox's `used` tag, the in-use flag that tag implies, and OSD id. A CephFS storage
 shares a filesystem with another when their filesystem names agree: the storage's `fs-name`, or the
-cluster's only filesystem.
+cluster's only filesystem. Each job row names the job's own `remove`, or "node default" when the job takes its
+node's, and each node's `remove` default is listed with its read's status. Of a defaults response only `remove` is
+ever printed: never its mailto, script, dumpdir, tmpdir or any other key.
 A storage whose filesystem resolves neither way is unknown, and so is what it shares; it is never
 listed as another storage's sharer, so a resolved storage lists only the resolved storages it shares with. The receipt
 never carries a server address, export, mount path, volume ID, note text, WWN, SMART health, token,
@@ -124,6 +127,17 @@ def _enabled(job):
     return job.get("enabled", 1) not in (0, "0")
 
 
+def _remove(value):
+    """A vzdump `remove` as the API may spell it: True or False, or None when it is neither 0, 1 nor a boolean."""
+    if isinstance(value, bool):
+        return value
+    if type(value) is int and value in (0, 1):
+        return value == 1
+    if value in ("0", "1"):
+        return value == "1"
+    return None
+
+
 def _is_vmid(text):
     return re.fullmatch(r"[0-9]+", str(text)) is not None
 
@@ -163,7 +177,9 @@ def plan(data):
     configs = {c.get("storage"): c for c in data.get("storage_config") or []}
     retentions = {}
     for job in data["jobs"]:
-        if job.get("type", "vzdump") == "vzdump" and job.get("storage") and _enabled(job):
+        # A job whose own remove is off never prunes, so no retention is previewed for it.
+        if job.get("type", "vzdump") == "vzdump" and job.get("storage") and _enabled(job) \
+                and not ("remove" in job and _remove(job["remove"]) is False):
             retentions.setdefault(_name(job["storage"], "job storage ID"), set()).add(_retention(job))
     reads, seen = [], set()
     for listing in data["storage_listings"]:  # raw uri results, one per online node
@@ -508,12 +524,54 @@ def _disks(disk_reads):
     return sorted(nodes, key=lambda n: n["node"])
 
 
+def _vzdump_defaults(reads):
+    """Each online node's vzdump defaults as Proxmox answers them: (receipt rows, {node: remove}).
+
+    Only `remove` is read out of a defaults response, and only it reaches the receipt. A node whose defaults
+    are not read, or that answers 403 or 500, has an unknown `remove` (null), never an assumed one. Absent
+    reads mean no node was read, so the receipt has no rows and every lookup is unknown.
+    """
+    rows = []
+    for read in reads or []:
+        node = _name(read.get("item"), "node name")
+        status = read.get("status")
+        if status == 403:
+            rows.append({"node": node, "status": "unavailable", "remove": None,
+                         "reason": "HTTP 403: needs Datastore.Audit or Datastore.AllocateSpace on the node's default "
+                                   "backup storage"})
+        elif status == 500:
+            rows.append({"node": node, "status": "unavailable", "remove": None, "reason": "HTTP 500"})
+        elif status != 200:
+            raise Refusal(f"Proxmox answered {status} reading the vzdump defaults of node {node}.")
+        else:
+            body = (read.get("json") or {}).get("data")
+            if not isinstance(body, dict):
+                raise Refusal(f"Proxmox returned no vzdump defaults for node {node}; nothing was summarized.")
+            # A release that leaves `remove` out reads as unknown, not off
+            # (pve-manager PVE/VZDump.pm:312-340 at e5ac6d6f).
+            rows.append({"node": node, "status": "read", "reason": None, "remove": _remove(body.get("remove"))})
+    rows.sort(key=lambda row: row["node"])
+    return rows, {row["node"]: row["remove"] for row in rows}
+
+
+def _removes(job, node, node_remove):
+    """Whether Proxmox prunes for a job on a guest living on `node`: True, False, or None when that is not known.
+
+    A job's own `remove` decides. A job without one takes its node's vzdump default (pve-manager
+    PVE/VZDump.pm:597-606 at e5ac6d6f), which is None when that node's defaults were not read.
+    """
+    if "remove" in job:
+        return _remove(job["remove"])
+    return node_remove.get(node)
+
+
 def summarize(data):
     existing = {int(v["vmid"]): v for v in data["vms"] if _is_vmid(v.get("vmid", ""))}
     names = {vmid: v.get("name") for vmid, v in existing.items()}
     config = {c.get("storage"): c for c in data["storage_config"]}
     jobs = [j for j in data["jobs"] if j.get("type", "vzdump") == "vzdump"]
     job_guests = [(job, *_job_guests(job, existing)) for job in jobs]  # (job, selects, guests)
+    node_rows, node_remove = _vzdump_defaults(data.get("vzdump_defaults_reads"))
     # Raw uri results: content reads loop over plan reads, prune reads over (read, retention).
     reads = {}
     for r in data["content_reads"]:
@@ -544,14 +602,20 @@ def summarize(data):
             previewed[prune["retention"]] = {row["volid"] for row in marks if row.get("mark") == "remove"}
         # A guest's retentions are those of the enabled vzdump jobs on this storage that back it up. A job backs
         # up and prunes a guest on the node it lives on, so on a node-local storage only the guests
-        # living on that node take a retention.
-        retention_of, protects_every_archive = {}, set()
+        # living on that node take a retention. A guest that no longer exists takes none: its backup fails with
+        # "unable to find VM" (pve-manager PVE/API2/VZDump.pm:101-106 at e5ac6d6f, PVE/VZDump.pm:907-908 at e5ac6d6f),
+        # so no job of this cluster prunes it.
+        retention_of, protects_every_archive, unpruned = {}, set(), set()
         for job, _, guests in job_guests:
             if job.get("storage") == storage and _enabled(job):
                 if not shared:
                     guests = {vmid for vmid in guests if existing.get(vmid, {}).get("node") == node}
+                guests = {vmid for vmid in guests if vmid in existing}
                 for vmid in guests:
                     retention_of.setdefault(vmid, set()).add(_retention(job))
+                    # A job that does not prune (remove off, or not known) makes its guest's need unknown, not prunable.
+                    if _removes(job, existing[vmid].get("node"), node_remove) is not True:
+                        unpruned.add(vmid)
                 if _flag(job.get("protected")):  # vzdump --protected: pruning never removes these
                     protects_every_archive |= guests
         cfg = config.get(storage)
@@ -572,18 +636,25 @@ def summarize(data):
             g["oldest"] = ctime if g["oldest"] is None else min(g["oldest"], ctime)
             if g["newest"] is None or ctime > g["newest"]:
                 g["newest"], g["newest_bytes"] = ctime, size
-            # Prunable only when every retention backing this guest was previewed here and removes it.
+            # Prunable only when every retention backing this guest was previewed here and removes it, and no job
+            # backing it up is one that does not prune.
             wanted = retention_of.get(vmid, set())
-            if wanted and all(volid in previewed.get(x, set()) for x in wanted):
+            if vmid not in unpruned and wanted and all(volid in previewed.get(x, set()) for x in wanted):
                 g["prunable"] += 1
                 g["prunable_bytes"] += size
         # A protected archive is kept on top of what keep-* keeps (pve-storage marks it protected,
         # and prune_mark_backup_group counts only unmarked archives),
         # so the need adds its bytes; a guest whose job protects every archive has no bound.
-        needs = {vmid: None if vmid in protects_every_archive else _archives_kept(retention_of.get(vmid, set()), cfg)
-                 for vmid in by_vmid}
-        need_bytes = {vmid: g["newest_bytes"] * needs[vmid] + g["protected_bytes"]
-                      for vmid, g in by_vmid.items() if needs[vmid] is not None}
+        needs, need_bytes = {}, {}
+        for vmid, g in by_vmid.items():
+            if vmid in protects_every_archive or vmid in unpruned:
+                needs[vmid] = None
+            elif vmid not in retention_of:  # no enabled job backs it up here, so nothing prunes it: every archive stays
+                needs[vmid], need_bytes[vmid] = g["archives"], g["bytes"]
+            else:
+                needs[vmid] = _archives_kept(retention_of[vmid], cfg)
+                if needs[vmid] is not None:
+                    need_bytes[vmid] = g["newest_bytes"] * needs[vmid] + g["protected_bytes"]
         rows = []
         for g in sorted(by_vmid.values(), key=lambda g: -g["bytes"]):
             kept = needs[g["vmid"]]
@@ -664,12 +735,15 @@ def summarize(data):
                          "retention": _retention(job), "mode": job.get("mode"),
                          "selects": selects, "guests": len(guests),
                          # only a vmid list can name a guest that is gone
-                         "missing_guests": sorted(v for v in guests if v not in names)})
+                         "missing_guests": sorted(v for v in guests if v not in names),
+                         # the job's own remove; a job without one takes its node's default, which the receipt names
+                         "remove": _remove(job["remove"]) if "remove" in job else "node default"})
     return {"storages": storages, "shared_backends": shared_backends, "jobs": job_rows,
             "guests": _guests(storages),
             "cephfs": cephfs,
             "ceph_capacity": _ceph_capacity(config, data.get("ceph_capacity_reads", [])),
-            "disks": _disks(data.get("disk_reads", []))}
+            "disks": _disks(data.get("disk_reads", [])),
+            "vzdump_defaults": node_rows}
 
 
 def main(argv=None, stdin=sys.stdin, stdout=sys.stdout):
