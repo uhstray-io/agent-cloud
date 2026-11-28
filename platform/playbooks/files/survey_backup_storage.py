@@ -308,7 +308,43 @@ def _cephfs_configs(config):
                   key=lambda c: str(c.get("storage")))
 
 
-def _cephfs(config, ceph_reads):
+CEPH_FRACTION_FROM = 13  # the first Ceph release whose pool percent_used is a fraction of 1
+
+
+def _ceph_major(version):
+    """The major release a Ceph version names: the digits before its first dot, or None when it names none."""
+    match = re.match(r"([0-9]+)\.", version) if isinstance(version, str) else None
+    return int(match.group(1)) if match else None
+
+
+def _percent_scale(capacity_reads):
+    """How a pool's percent_used reads, as (the receipt's name for the scale, whether to multiply by 100 or None).
+
+    Ceph 13 or later sends a fraction of 1 (src/mon/PGMap.cc v13.2.0 :881), so it is multiplied by 100 here. Ceph 12
+    sent a percent already (src/mon/PGMap.cc v12.2.13 :839), so it is read as reported. The release is read from every
+    OSD leaf of the OSD tree (`nodes/<node>/ceph/osd`, only when it answered 200), each of which carries
+    `ceph_version_short` (pve-manager PVE/API2/Ceph/OSD.pm at e5ac6d6f :190-192). Any doubt is unknown (None), never a
+    guessed scale: no tree, an empty tree, a leaf with no readable version, or releases on both sides of 13.
+    """
+    osd_read = next((r for r in capacity_reads or [] if not r.get("skipped") and _is_osd_item(r.get("item"))), None)
+    tree = (osd_read.get("json") or {}).get("data") if osd_read and osd_read.get("status") == 200 else None
+    root = tree.get("root") if isinstance(tree, dict) else None
+    if not isinstance(root, dict):
+        return "unknown: the Ceph OSD tree was not read", None
+    leaves = _osd_leaves(root, None, [])
+    if not leaves:
+        return "unknown: the Ceph OSD tree lists no OSD", None
+    majors = [_ceph_major(leaf.get("ceph_version_short")) for leaf, _ in leaves]
+    if None in majors:
+        return "unknown: an OSD reports no Ceph version", None
+    if min(majors) >= CEPH_FRACTION_FROM:
+        return "fraction, scaled (Ceph 13 or later)", True
+    if max(majors) < CEPH_FRACTION_FROM:
+        return "percent, as reported (Ceph 12 or earlier)", False
+    return "unknown: OSDs report Ceph releases on both sides of 13", None
+
+
+def _cephfs(config, ceph_reads, capacity_reads):
     """Each CephFS storage's filesystem, its data pools and the storages that share it, and those pools' usage.
 
     A storage with a monitor list (`monhost`) names another cluster: it is listed as external with no
@@ -364,19 +400,21 @@ def _cephfs(config, ceph_reads):
                 if other is not row and other["filesystem"] == row["filesystem"])
     named = {pool for row in rows for pool in row["data_pools"]}
     # Proxmox sets bytes_used and percent_used only when ceph df has stats for the pool; without them both are unknown.
-    # From Ceph 13 on, percent_used is a fraction of 1 (src/mon/PGMap.cc: used / (used + avail)) and Proxmox passes
-    # it on unscaled, so it is multiplied by 100 here. Ceph 12 sent it already multiplied, so on a Ceph 12 cluster
-    # ceph_percent_used reads 100 times too high: a value over 100 shows it, one of 100 or less cannot.
+    # percent_used is a percent on Ceph 12 or earlier (src/mon/PGMap.cc v12.2.13 :839, used * 100) and a fraction of 1
+    # on Ceph 13 or later (v13.2.0 :881, used), and Proxmox passes it on unscaled. So the release decides the scale
+    # (_percent_scale, read from the OSD tree), and where that release is unknown ceph_percent_used is null.
     # bytes_used and percent_used are Ceph's own pool figures (ceph df). What they count depends on the Ceph release
     # and on whether every OSD reports per-pool stats, and Proxmox does not say which, so both keep Ceph's name in
     # the receipt and are not comparable with a storage's used_gib. size is Proxmox's
     # pool size: replicas for a replicated pool, data plus coding chunks for an erasure-coded one, so type is printed.
+    scale, multiply = _percent_scale(capacity_reads)
     usage = [{"pool": p.get("pool_name"),
               "ceph_used_gib": None if p.get("bytes_used") is None else _gib(p["bytes_used"]),
-              "ceph_percent_used": None if p.get("percent_used") is None else round(float(p["percent_used"]) * 100, 1),
+              "ceph_percent_used": None if p.get("percent_used") is None or multiply is None
+              else round(float(p["percent_used"]) * (100 if multiply else 1), 1),
               "type": p.get("type"), "size": p.get("size")}
              for p in sorted(pools, key=lambda p: str(p.get("pool_name"))) if p.get("pool_name") in named]
-    return {"status": status, "reason": reason, "storages": rows, "pools": usage}
+    return {"status": status, "reason": reason, "storages": rows, "pools": usage, "percent_scale": scale}
 
 
 CEPH_STATUS_ITEM = "cluster/ceph/status"
@@ -697,7 +735,7 @@ def summarize(data):
         files = {str(v.get("volid")).split(":", 1)[-1]: int(v.get("size") or 0) for v in volumes}
         measured.append((storages[-1], (total, used, files)))
 
-    cephfs = _cephfs(config, data.get("ceph_reads", []))
+    cephfs = _cephfs(config, data.get("ceph_reads", []), data.get("ceph_capacity_reads", []))
     cephfs_rows = {row["storage"]: row for row in cephfs["storages"]}
     shared_backends = []
     for (a, (a_total, a_used, a_files)), (b, (b_total, b_used, b_files)) in combinations(measured, 2):

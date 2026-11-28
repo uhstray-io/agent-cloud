@@ -29,8 +29,10 @@
 #     stats, which Proxmox does not say, so neither compares with a storage's used bytes), type and size
 #     (replicas, or data plus coding chunks when erasure-coded) (a CephFS with a monitor list names an
 #     external cluster and is not read);
-#   - the pool percent is right from Ceph 13 on; Ceph 12 sent it already multiplied by 100, so on a
-#     Ceph 12 cluster it reads 100 times too high (a value over 100 shows it; 100 or less cannot);
+#   - a pool's percent is read on the Ceph release each OSD reports (its version in the OSD tree): Ceph 13 or
+#     later sends a fraction of 1, multiplied by 100 here (src/mon/PGMap.cc v13.2.0 :881), and Ceph 12 or earlier
+#     sends a percent, read as reported (v12.2.13 :839); with no OSD tree read, an OSD with no readable version,
+#     or releases on both sides of 13, the percent is unknown (null) and the receipt's percent_scale says why;
 #   - a Proxmox release from before pve-manager's 2026-05 change lists only a filesystem's first data
 #     pool; its rows then say data_pools_complete false, since more pools may exist than are named;
 #   - a disabled storage of any type is left out of every storage and CephFS figure, whatever its

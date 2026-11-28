@@ -127,9 +127,10 @@ fn cephfs_storages_on_one_filesystem_list_each_other_and_an_external_one_names_n
     // Act
     let out = summarize(payload);
 
-    // Assert: the whole cephfs section, the pool's usage rounded as given, and no sentinel printed.
+    // Assert: the whole cephfs section, the pool's percent null because no OSD tree was read to name the Ceph
+    // release, and no sentinel printed.
     assert!(
-        out.contains(r#""cephfs": {"status": "read", "reason": null, "storages": [{"storage": "cephA", "external": false, "filesystem": "cephfs", "filesystem_source": "only filesystem", "data_pools": ["cephfs_data"], "data_pools_complete": true, "shares_filesystem_with": ["cephB"]}, {"storage": "cephB", "external": false, "filesystem": "cephfs", "filesystem_source": "only filesystem", "data_pools": ["cephfs_data"], "data_pools_complete": true, "shares_filesystem_with": ["cephA"]}, {"storage": "cephExt", "external": true, "filesystem": null, "filesystem_source": "external", "data_pools": [], "data_pools_complete": null, "shares_filesystem_with": []}], "pools": [{"pool": "cephfs_data", "ceph_used_gib": 1.0, "ceph_percent_used": 37.4, "type": "replicated", "size": 3}]}"#),
+        out.contains(r#""cephfs": {"status": "read", "reason": null, "storages": [{"storage": "cephA", "external": false, "filesystem": "cephfs", "filesystem_source": "only filesystem", "data_pools": ["cephfs_data"], "data_pools_complete": true, "shares_filesystem_with": ["cephB"]}, {"storage": "cephB", "external": false, "filesystem": "cephfs", "filesystem_source": "only filesystem", "data_pools": ["cephfs_data"], "data_pools_complete": true, "shares_filesystem_with": ["cephA"]}, {"storage": "cephExt", "external": true, "filesystem": null, "filesystem_source": "external", "data_pools": [], "data_pools_complete": null, "shares_filesystem_with": []}], "pools": [{"pool": "cephfs_data", "ceph_used_gib": 1.0, "ceph_percent_used": null, "type": "replicated", "size": 3}], "percent_scale": "unknown: the Ceph OSD tree was not read"}"#),
         "{out}"
     );
     for sentinel in ["MONHOST-SENTINEL", "PATH-SENTINEL", "SUBDIR-SENTINEL"] {
@@ -154,7 +155,7 @@ fn a_ceph_listing_the_token_may_not_read_makes_cephfs_unavailable_and_names_sys_
 
     // Assert: the section is unavailable with the privilege it needs; the storage is still listed, with no filesystem.
     assert!(
-        out.contains(r#""cephfs": {"status": "unavailable", "reason": "HTTP 403: needs Sys.Audit or Datastore.Audit on /", "storages": [{"storage": "cephA", "external": false, "filesystem": null, "filesystem_source": "unresolved", "data_pools": [], "data_pools_complete": null, "shares_filesystem_with": null}], "pools": []}"#),
+        out.contains(r#""cephfs": {"status": "unavailable", "reason": "HTTP 403: needs Sys.Audit or Datastore.Audit on /", "storages": [{"storage": "cephA", "external": false, "filesystem": null, "filesystem_source": "unresolved", "data_pools": [], "data_pools_complete": null, "shares_filesystem_with": null}], "pools": [], "percent_scale": "unknown: the Ceph OSD tree was not read"}"#),
         "{out}"
     );
 }
@@ -462,7 +463,7 @@ fn a_filesystem_listed_with_only_the_older_data_pool_field_names_that_pool_and_s
     assert_eq!(row["data_pools_complete"], json!(false), "{out}");
     assert_eq!(
         out["cephfs"]["pools"],
-        json!([{"pool": "a_data", "ceph_used_gib": 1.0, "ceph_percent_used": 50.0, "type": "replicated", "size": 3}]),
+        json!([{"pool": "a_data", "ceph_used_gib": 1.0, "ceph_percent_used": null, "type": "replicated", "size": 3}]),
         "{out}"
     );
 }
@@ -1496,4 +1497,200 @@ fn node_local_previews_follow_the_pinned_node_and_shared_previews_every_job() {
         ],
         "{plan}"
     );
+}
+
+/// `ceph_tree()` with each OSD's `ceph_version_short` set in OSD id order (osd.0, osd.1, osd.2); `None` removes it.
+fn tree_with_versions(versions: [Option<&str>; 3]) -> Value {
+    let mut tree = ceph_tree();
+    for ((host, osd), version) in [(0, 0), (0, 1), (1, 0)].into_iter().zip(versions) {
+        let leaf = tree["root"]["children"][host]["children"][osd]
+            .as_object_mut()
+            .expect("an OSD object");
+        match version {
+            Some(version) => {
+                leaf.insert("ceph_version_short".to_owned(), json!(version));
+            }
+            None => {
+                leaf.remove("ceph_version_short");
+            }
+        }
+    }
+    tree
+}
+
+/// A payload over one CephFS storage whose only pool `a_data` reports `percent_used`, Ceph's own figure. The OSD tree
+/// is read as `osd` when given, and not read when it is `None`.
+fn scale_payload(percent_used: Value, osd: Option<Value>) -> Value {
+    let mut payload = cephfs_payload(
+        &[("cephA", 10_737_418_240)],
+        json!([{"storage": "cephA", "type": "cephfs", "content": "backup", "fs-name": "fsA"}]),
+        json!([{"name": "fsA", "data_pools": ["a_data"]}]),
+    );
+    payload["ceph_reads"][1]["json"]["data"] = json!([{"pool_name": "a_data", "bytes_used": 1073741824,
+        "percent_used": percent_used, "type": "replicated", "size": 3}]);
+    if let Some(osd) = osd {
+        payload["ceph_capacity_reads"] = json!([osd, status_read(200, ceph_status())]);
+    }
+    payload
+}
+
+#[test]
+fn a_pool_percent_is_scaled_when_every_osd_runs_ceph_13_or_later() {
+    // Arrange: every OSD runs a Ceph 19 release, so the pool's percent_used is Ceph's fraction of 1 (0.3736).
+    let osd = osd_read(
+        200,
+        tree_with_versions([Some("19.2.0"), Some("19.2.0"), Some("19.1.1")]),
+    );
+    let payload = scale_payload(json!(0.3736), Some(osd));
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: the fraction is multiplied by 100 and rounded to one decimal, and the scale names that.
+    assert_eq!(
+        out["cephfs"]["percent_scale"],
+        json!("fraction, scaled (Ceph 13 or later)"),
+        "{out}"
+    );
+    assert_eq!(
+        out["cephfs"]["pools"][0]["ceph_percent_used"],
+        json!(37.4),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_pool_percent_is_read_as_reported_on_ceph_12_and_scaled_from_13_on() {
+    // Arrange: first every OSD on Ceph 12.2.13, whose pool percent_used is already a percent (37.36); then
+    // every OSD on Ceph 13.2.0, the first release whose percent_used is a fraction (0.3736).
+    let twelve = scale_payload(
+        json!(37.36),
+        Some(osd_read(
+            200,
+            tree_with_versions([Some("12.2.13"), Some("12.2.13"), Some("12.2.13")]),
+        )),
+    );
+    let thirteen = scale_payload(
+        json!(0.3736),
+        Some(osd_read(
+            200,
+            tree_with_versions([Some("13.2.0"), Some("13.2.0"), Some("13.2.0")]),
+        )),
+    );
+
+    // Act
+    let (twelve, thirteen) = (receipt(&twelve), receipt(&thirteen));
+
+    // Assert: 12 is not multiplied, 13 is; both print 37.4.
+    assert_eq!(
+        twelve["cephfs"]["percent_scale"],
+        json!("percent, as reported (Ceph 12 or earlier)"),
+        "{twelve}"
+    );
+    assert_eq!(
+        twelve["cephfs"]["pools"][0]["ceph_percent_used"],
+        json!(37.4),
+        "{twelve}"
+    );
+    assert_eq!(
+        thirteen["cephfs"]["percent_scale"],
+        json!("fraction, scaled (Ceph 13 or later)"),
+        "{thirteen}"
+    );
+    assert_eq!(
+        thirteen["cephfs"]["pools"][0]["ceph_percent_used"],
+        json!(37.4),
+        "{thirteen}"
+    );
+}
+
+#[test]
+fn a_pool_percent_is_null_when_the_osds_run_releases_on_both_sides_of_13() {
+    // Arrange: osd.0 on Ceph 12, osd.1 and osd.2 on Ceph 19. Neither scale is right for every OSD's report.
+    let payload = scale_payload(
+        json!(0.3736),
+        Some(osd_read(
+            200,
+            tree_with_versions([Some("12.2.13"), Some("19.2.0"), Some("19.2.0")]),
+        )),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: the percent is unknown, not guessed, and the scale says why.
+    assert_eq!(
+        out["cephfs"]["percent_scale"],
+        json!("unknown: OSDs report Ceph releases on both sides of 13"),
+        "{out}"
+    );
+    assert_eq!(
+        out["cephfs"]["pools"][0]["ceph_percent_used"],
+        json!(null),
+        "{out}"
+    );
+    assert_eq!(
+        out["cephfs"]["pools"][0]["ceph_used_gib"],
+        json!(1.0),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_pool_percent_is_null_when_an_osd_reports_no_readable_ceph_version() {
+    // Arrange: osd.1 carries no version at all, then osd.0 carries one that names no major release.
+    for versions in [
+        [Some("19.2.0"), None, Some("19.2.0")],
+        [Some("v19.2"), Some("19.2.0"), Some("19.2.0")],
+    ] {
+        let payload = scale_payload(
+            json!(0.3736),
+            Some(osd_read(200, tree_with_versions(versions))),
+        );
+
+        // Act
+        let out = receipt(&payload);
+
+        // Assert
+        assert_eq!(
+            out["cephfs"]["percent_scale"],
+            json!("unknown: an OSD reports no Ceph version"),
+            "{out}"
+        );
+        assert_eq!(
+            out["cephfs"]["pools"][0]["ceph_percent_used"],
+            json!(null),
+            "{out}"
+        );
+    }
+}
+
+#[test]
+fn a_pool_percent_is_null_when_the_osd_tree_was_not_read_or_names_no_osd() {
+    // Arrange: no OSD tree read at all; the tree answers 403; and a tree with a root but no OSD in it.
+    let empty = json!({"root": {"type": "root", "name": "default", "children": []}});
+    for (osd, reason) in [
+        (None, "unknown: the Ceph OSD tree was not read"),
+        (
+            Some(osd_read(403, Value::Null)),
+            "unknown: the Ceph OSD tree was not read",
+        ),
+        (
+            Some(osd_read(200, empty)),
+            "unknown: the Ceph OSD tree lists no OSD",
+        ),
+    ] {
+        let payload = scale_payload(json!(0.3736), osd);
+
+        // Act
+        let out = receipt(&payload);
+
+        // Assert: the percent is null, never the figure as Ceph sent it.
+        assert_eq!(out["cephfs"]["percent_scale"], json!(reason), "{out}");
+        assert_eq!(
+            out["cephfs"]["pools"][0]["ceph_percent_used"],
+            json!(null),
+            "{out}"
+        );
+    }
 }
