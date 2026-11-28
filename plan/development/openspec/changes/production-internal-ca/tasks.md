@@ -90,6 +90,8 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       request (decision 1 of 2026-09-28), with a Dev variant; it refuses a SAN that is not
       in the declared vLLM leaf and returns the certificate and bundle through the channel
       agreed with the dgx-spark session
+      2026-11-27: superseded by the design's decisions of 2026-11-21 (lead paragraph); not
+      built.
 - [x] 2.5 BATS: the provisioner step is idempotent in shape (reads before it adds), the
       reset refuses without confirmation, production inventory values render the loopback
       bind and ACME off. Done 2026-09-29 as pytest (`test_step_ca_deploy.py`, 17 cases,
@@ -281,10 +283,15 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       `tls.hostname` will use and the flags dgx-spark owns (`--ssl-certfile`,
       `--ssl-keyfile`, `--enable-ssl-refresh`, and for mutual TLS `--ssl-cert-reqs` with
       `--ssl-ca-certs` set to the internal root); nothing on the nodes is changed from here
+      2026-11-27: to be delivered by issuance on the nodes and the reply of tasks 10.5 and 10.6,
+      not through a channel.
 - [ ] 5.4a The `agw-upstream` client leaf on the gateway host (decision 3 of 2026-09-28),
       issued like `agw-verifier`; rendered into the model's `tls.cert`/`tls.key`.
       unverified: whether agentgateway v1.5.0 reloads model-side TLS files on change;
       record it from the local drill and choose reload or restart in the renewal action
+      2026-11-27: to be issued by launch 5 of decision (k); the drill is to be extended by task
+      10.11 (decision (j)) to record what a started and a restarted gateway presents, and launch 10
+      waits on it.
 - [ ] 5.5 Validation gate: scenario "A client leaf authenticates"; the gateway-side
       scenarios (no client certificate refused, another client leaf refused, allowlisted
       verifier served, undeclared entry refused at render) are proven by the companion's
@@ -446,3 +453,58 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
 - [ ] 9.4 Validation gate: scenario "No deprecated directive remains"; `openspec validate
       production-internal-ca` passes; on archive, retain the outcome (worked / dead end /
       corrected) into bank `agent-cloud-750a33b9`
+
+## 10. Certificates-only consumers on the DGX Spark nodes (decisions of 2026-11-21 and 2026-11-27)
+
+- [ ] 10.1 Code: the per-host connection key for certificates-only consumers (decision (c) of
+      2026-11-21) in `issue-internal-leaf.yml` and `renew-internal-certs.yml`, one shared task,
+      with tests that the key is removed in `always:`, is used for those hosts only, and that the
+      signing step delegated to the CA host still connects with the CA host's own credentials
+      (AC-1042).
+- [ ] 10.2 Code: the bundle written by issuance and renewal on a certificates-only host (decision
+      (c) of 2026-11-21).
+- [ ] 10.3 Code, in `renew-internal-certs.yml` and `vars/renew-listener-servers.yml` (decisions
+      (h) to (j), each named there as built by this task): the two node listener rows, admitted
+      while their switch is off, with no `default_port`, refused at admission when `<prefix>_bind`
+      or `<prefix>_port` is undeclared; the switch-off TLS check on the declared address (any TLS
+      answer fails, no answer fails naming the address) and the inspect checks, both gated like the
+      listener proofs; the no-certificate prover extended to take address, port and verified name
+      separately, the `vllm_tls_require_client` probe that uses it, and the admission refusal of
+      that switch on with `vllm_tls` off; with that switch on, the `vllm-server` listener proof
+      presenting the head node's `vllm-lifecycle` leaf; the node client class and the gateway
+      upstream class (decision (b) of 2026-11-21), each gated on its own switch, not on the
+      gateway's listener TLS (`renew-internal-certs.yml:343-352`), the gateway upstream class taking
+      reload `restart` from Phase B; the node client proof's handshake made from the head node to
+      `vllm-server`'s declared `<prefix>_bind`:`<prefix>_port`; and the gateway upstream proof
+      (readiness, a handshake from the gateway host to that same declared address through the
+      listener prover, and the container's start time against a swap time recorded on the gateway
+      host). Tests for each
+      refusal, for the switch-off checks and for the probe's three results.
+- [ ] 10.4 site-config: the two consumer hosts and groups, the connection key var, the two node
+      rows' bind and port values, and the four `internal_leaves` entries with every switch off
+      (and `vllm_tls_require_client` off). Merged by the operator, after 10.3 has merged.
+- [ ] 10.5 Launches 0 to 6 of decision (k), in order; record each task id and the inspect output.
+- [ ] 10.6 Hand dgx-spark the reply: names, leaf directory `image-server` confirmed, `current`
+      relative, the bundle path (decision (d) of 2026-11-21), inspect results. dgx-spark's image
+      node test (W3-3) and its task 2.2 wait on it.
+- [ ] 10.7 Launch 7 of decision (k) for each node after dgx-spark serves TLS there (the head
+      node's together with launch 9, task 10.10), then launch 8 once, after launch 9.
+- [ ] 10.8 Validation gate: each new leaf shows in the renewal's expiry lines in Loki (one
+      `kind="cert"` line per certificate the run read, `renew-internal-certs.yml:78-84`), and one
+      renewal run, read per host, passes every new leaf through the check its class reads
+      (decision (b) of 2026-11-21 and decisions (h) to (j)).
+- [ ] 10.9 Build decision: which client leaf o11y's `dgx-spark-vllm` scrape presents in Phase B.
+      Before it is declared, name its renewal proof class; if no admitted class fits, add the proof
+      path to the design and to `renew-internal-certs.yml` first, because the renewal refuses the
+      run, before anything is issued on any host, when a declared leaf has no proof path
+      (`renew-internal-certs.yml:66-69`, `:299-303`). Then declare it in
+      `internal_leaves` (site-config) and run launch 10 (a). Do not assume the existing
+      `o11y-inference-probe` leaf fits. This addresses the CodeRabbit finding on #1218 deferred to
+      this pull request (thread `PRRT_kwDOMLqEhM66cMKu`).
+- [ ] 10.10 Launches 9 and 10 of decision (k): 9 in dgx-spark's Phase A window, together with the
+      head node's launch 7 and before launch 8; 10 in Phase B after task 10.11.
+- [ ] 10.11 Drill: task 5.4a's local drill, extended (decision (j)). Against a local upstream that
+      requires a client certificate and records the serial presented, record that a started
+      gateway presents the leaf `current` held at start, that after a swap and a restart it presents
+      the new one, whether it reloads model-side files on change without a restart, and that the
+      engine's start time changes on a restart. Launch 10 waits on this record.
