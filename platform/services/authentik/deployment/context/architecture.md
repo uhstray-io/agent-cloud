@@ -159,8 +159,9 @@ always rolled back, then for real inside `atomic()` (`authentik/blueprints/v1/im
 task queued inside either transaction can run before it commits. On a fresh instance the grant
 therefore ran against provider rows that were rolled back or not yet committed (worker log:
 "Model does not exist" for ProxyProvider pk 5, which no committed row holds; the live provider
-is pk 6), so it missed the final providers, and nothing runs it again. The outpost then loaded
-no application, and every gate answered 404. A server restart did not repair it.
+is pk 6), so it missed the final providers. The outpost then loaded no application, and every
+gate answered 404. A server restart did not repair it: nothing re-ran the grant in the nine minutes
+observed after it.
 
 So Phase 3 of `deploy-authentik.yml` converges it before the `forward_auth` probe. A read-only
 probe runs `deployment/templates/converge-outpost-perms.py.j2` inside `authentik-server`
