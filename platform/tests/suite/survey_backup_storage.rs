@@ -1426,6 +1426,29 @@ fn a_guest_a_storageless_job_backs_up_has_an_unknown_need() {
 }
 
 #[test]
+fn a_guest_a_storageless_job_also_backs_up_is_not_prunable_where_another_job_prunes_it() {
+    // Arrange: guest 900 is backed up here by a keep-last=1 job whose preview removes its older archive, and also by
+    // an enabled job that names no storage.
+    let archives = [archive(900, 0, 1, false), archive(900, 1, 1, false)];
+    let payload = backups_payload(
+        json!([{"vmid": 900, "name": "loner", "node": "n1"}]),
+        json!([
+            {"id": "here", "type": "vzdump", "vmid": "900", "storage": "backups", "prune-backups": "keep-last=1"},
+            {"id": "elsewhere", "type": "vzdump", "vmid": "900", "prune-backups": "keep-last=1"}
+        ]),
+        &archives,
+        vec![("keep-last=1", vec![mark(&archives[0])])],
+        Some(json!([defaults_read("n1", 200, json!({"remove": 1}))])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: the storage-less job's pruning is unknown, so nothing is counted prunable and the need is unknown.
+    assert_unknown(&guest_row(&out, 900), &out);
+}
+
+#[test]
 fn the_playbook_reads_each_online_nodes_vzdump_defaults_and_hands_them_to_the_summarizer() {
     // Arrange
     let tasks = repo::tasks("platform/playbooks/survey-proxmox-backup-storage.yml");

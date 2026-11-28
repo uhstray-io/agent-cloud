@@ -640,9 +640,10 @@ def summarize(data):
             if g["newest"] is None or ctime > g["newest"]:
                 g["newest"], g["newest_bytes"] = ctime, size
             # Prunable only when every retention backing this guest was previewed here and removes it, and no job
-            # backing it up is one that does not prune.
+            # backing it up is one that does not prune or one whose storage is unknown.
             wanted = retention_of.get(vmid, set())
-            if vmid not in unpruned and wanted and all(volid in previewed.get(x, set()) for x in wanted):
+            if (vmid not in unpruned and vmid not in unplaced and wanted
+                    and all(volid in previewed.get(x, set()) for x in wanted)):
                 g["prunable"] += 1
                 g["prunable_bytes"] += size
         # A protected archive is kept on top of what keep-* keeps (pve-storage marks it protected,
