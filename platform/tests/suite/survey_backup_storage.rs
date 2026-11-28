@@ -11,6 +11,7 @@
 
 use agent_cloud_tests::process::scrubbed;
 use agent_cloud_tests::repo;
+use agent_cloud_tests::text;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -18,17 +19,13 @@ const HELPER: &str = "platform/playbooks/files/survey_backup_storage.py";
 
 /// Runs `summarize` on `payload` and returns its stdout. The helper must exit 0.
 fn summarize(payload: &str) -> String {
-    let home = TempDir::new().expect("a temporary home");
-    let script = repo::path(HELPER);
-    let out = scrubbed("python3", home.path())
-        .args(["-I", script.to_str().expect("utf-8 path"), "summarize"])
-        .write_stdin(payload)
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    String::from_utf8(out).expect("utf-8 stdout")
+    let out = run("summarize", payload);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    String::from_utf8(out.stdout).expect("utf-8 stdout")
 }
 
 #[test]
@@ -187,13 +184,14 @@ fn a_disks_serial_prints_and_its_wwn_and_health_never_do() {
     );
 }
 
-/// Runs the helper in `mode` (`plan` or `summarize`) on a JSON payload and returns the whole process output, whatever the exit code.
-fn run(mode: &str, payload: &Value) -> std::process::Output {
+/// Runs the helper in `mode` on `stdin` text, which need not be JSON, and returns the whole process output, whatever
+/// the exit code.
+fn run(mode: &str, stdin: &str) -> std::process::Output {
     let home = TempDir::new().expect("a temporary home");
     let script = repo::path(HELPER);
     scrubbed("python3", home.path())
         .args(["-I", script.to_str().expect("utf-8 path"), mode])
-        .write_stdin(payload.to_string())
+        .write_stdin(stdin)
         .assert()
         .get_output()
         .clone()
@@ -201,18 +199,12 @@ fn run(mode: &str, payload: &Value) -> std::process::Output {
 
 /// The receipt of a payload the helper must summarize (exit 0), parsed.
 fn receipt(payload: &Value) -> Value {
-    let out = run("summarize", payload);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    serde_json::from_slice(&out.stdout).expect("the receipt is JSON")
+    serde_json::from_str(&summarize(&payload.to_string())).expect("the receipt is JSON")
 }
 
-/// The refusal text of a payload the helper must refuse (exit 1).
-fn refusal(payload: &Value) -> String {
-    let out = run("summarize", payload);
+/// The refusal text of `stdin` run in `mode`, which the helper must refuse (exit 1).
+fn refusal_in(mode: &str, stdin: &str) -> String {
+    let out = run(mode, stdin);
     assert_eq!(
         out.status.code(),
         Some(1),
@@ -224,6 +216,11 @@ fn refusal(payload: &Value) -> String {
         .as_str()
         .expect("a refusal string")
         .to_owned()
+}
+
+/// The refusal text of a payload the helper must refuse (exit 1).
+fn refusal(payload: &Value) -> String {
+    refusal_in("summarize", &payload.to_string())
 }
 
 const TOTAL: u64 = 107_374_182_400;
@@ -485,7 +482,7 @@ fn the_planner_reads_no_disabled_storage_even_when_its_status_row_says_active() 
     });
 
     // Act
-    let out = run("plan", &payload);
+    let out = run("plan", &payload.to_string());
 
     // Assert: only `on` is planned.
     assert!(
@@ -852,4 +849,190 @@ fn a_tree_without_flags_has_no_flags_and_a_status_without_checks_has_null_checks
         json!({"status": "HEALTH_OK", "checks": null}),
         "{out}"
     );
+}
+
+/// The step names the helper declares, in order: the strings of its `STEPS` tuple.
+fn helper_steps() -> Vec<String> {
+    let source = text::read(HELPER);
+    let open = "STEPS = (";
+    let start = source.find(open).expect("a STEPS tuple") + open.len();
+    let end = start
+        + source[start..]
+            .find(')')
+            .expect("the end of the STEPS tuple");
+    source[start..end]
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A payload the helper summarizes (exit 0): one own CephFS storage `cephA` and two node-local directory storages
+/// `a` and `b` on n1, each with an empty content read, both Ceph reads answered, and an empty disk listing.
+fn base_payload() -> Value {
+    json!({
+        "plan": {"reads": [
+            {"node": "n1", "storage": "cephA", "status": {"type": "cephfs", "shared": 1, "total": TOTAL, "used": 1, "avail": TOTAL - 1}},
+            {"node": "n1", "storage": "a", "status": {"type": "dir", "shared": 0, "total": TOTAL, "used": 2, "avail": TOTAL - 2}},
+            {"node": "n1", "storage": "b", "status": {"type": "dir", "shared": 0, "total": TOTAL, "used": 3, "avail": TOTAL - 3}}
+        ]},
+        "vms": [], "jobs": [], "prune_reads": [],
+        "storage_config": [
+            {"storage": "cephA", "type": "cephfs", "content": "backup"},
+            {"storage": "a", "type": "dir", "content": "backup"},
+            {"storage": "b", "type": "dir", "content": "backup"}
+        ],
+        "content_reads": [
+            {"item": {"node": "n1", "storage": "cephA"}, "status": 200, "json": {"data": []}},
+            {"item": {"node": "n1", "storage": "a"}, "status": 200, "json": {"data": []}},
+            {"item": {"node": "n1", "storage": "b"}, "status": 200, "json": {"data": []}}
+        ],
+        "ceph_reads": [
+            {"item": "fs", "status": 200, "json": {"data": []}},
+            {"item": "pool", "status": 200, "json": {"data": []}}
+        ],
+        "ceph_capacity_reads": [osd_read(200, ceph_tree()), status_read(200, ceph_status())],
+        "disk_reads": [{"item": "n1", "status": 200, "json": {"data": []}}]
+    })
+}
+
+#[test]
+fn a_refusal_for_unexpected_data_names_the_step_that_failed_and_its_error_class() {
+    // Arrange: one row per step of the helper. Each row breaks one part of `base_payload`, so the step it names is
+    // the part broken. `input` sends text that is not JSON; `plan` runs the plan mode on a payload without `nodes`.
+    let without = |key: &str| {
+        let mut payload = base_payload();
+        payload.as_object_mut().expect("an object").remove(key);
+        payload.to_string()
+    };
+    let mut storages_row = base_payload();
+    storages_row["plan"] = json!({});
+    let mut cephfs_row = base_payload();
+    cephfs_row["ceph_reads"] = json!(["not-a-read"]);
+    let mut shared_row = base_payload();
+    shared_row["storage_config"][1]["path"] = json!(5);
+    let mut capacity_row = base_payload();
+    capacity_row["ceph_capacity_reads"] = json!(["not-a-read"]);
+    let mut osd_row = base_payload();
+    osd_row["ceph_capacity_reads"][0] = osd_read(
+        200,
+        json!({"root": {"type": "osd", "id": 1, "name": "osd.1", "total_space": 1, "bytes_used": 1,
+                        "percent_used": "x"}}),
+    );
+    let mut health_row = base_payload();
+    health_row["ceph_capacity_reads"][1] =
+        json!({"item": "cluster/ceph/status", "status": 200, "json": "x"});
+    let mut disks_row = base_payload();
+    disks_row["disk_reads"] = json!(["not-a-read"]);
+    // (step, mode, stdin, the refusal's text after its prefix)
+    let rows: Vec<(&str, &str, String, &str)> = vec![
+        (
+            "input",
+            "summarize",
+            "not json".to_owned(),
+            "input: JSONDecodeError",
+        ),
+        (
+            "plan",
+            "plan",
+            json!({"storage_listings": [], "jobs": [], "storage_config": []}).to_string(),
+            "plan: KeyError nodes",
+        ),
+        ("vms", "summarize", without("vms"), "vms: KeyError vms"),
+        ("jobs", "summarize", without("jobs"), "jobs: KeyError jobs"),
+        (
+            "reads",
+            "summarize",
+            without("content_reads"),
+            "reads: KeyError content_reads",
+        ),
+        (
+            "storages",
+            "summarize",
+            storages_row.to_string(),
+            "storages: KeyError reads",
+        ),
+        (
+            "cephfs",
+            "summarize",
+            cephfs_row.to_string(),
+            "cephfs: AttributeError",
+        ),
+        (
+            "shared-backends",
+            "summarize",
+            shared_row.to_string(),
+            "shared-backends: AttributeError",
+        ),
+        (
+            "ceph-capacity",
+            "summarize",
+            capacity_row.to_string(),
+            "ceph-capacity: AttributeError",
+        ),
+        ("osd", "summarize", osd_row.to_string(), "osd: ValueError"),
+        (
+            "health",
+            "summarize",
+            health_row.to_string(),
+            "health: AttributeError",
+        ),
+        (
+            "disks",
+            "summarize",
+            disks_row.to_string(),
+            "disks: AttributeError",
+        ),
+    ];
+    let labels: Vec<String> = rows.iter().map(|row| row.0.to_owned()).collect();
+    assert_eq!(labels, helper_steps(), "one row per STEPS label, in order");
+
+    for (step, mode, stdin, tail) in rows {
+        // Act
+        let text = refusal_in(mode, &stdin);
+
+        // Assert: the refusal is the exact text naming this step and class.
+        let expected = format!("Proxmox returned data this survey does not recognise: {tail}");
+        assert_eq!(text, expected, "step {step}");
+    }
+}
+
+#[test]
+fn a_value_in_the_data_never_prints_in_the_refusal() {
+    // Arrange: a content-read volume whose size is a string int() cannot read. int() quotes that string in its
+    // message, and the refusal must not carry it.
+    let mut payload = base_payload();
+    payload["content_reads"][0]["json"]["data"] = json!([
+        {"volid": "cephA:backup/vzdump-qemu-200.vma.zst", "vmid": 200, "size": "SENTINEL-VALUE-9f3", "ctime": 1790000000}
+    ]);
+
+    // Act
+    let text = refusal(&payload);
+
+    // Assert
+    assert_eq!(
+        text, "Proxmox returned data this survey does not recognise: storages: ValueError",
+        "{text}"
+    );
+    assert!(!text.contains("SENTINEL"), "{text}");
+}
+
+#[test]
+fn a_key_that_is_data_prints_as_a_placeholder() {
+    // Arrange: a prune preview names a storage with no content read, so the lookup's key is a tuple built from data.
+    let mut payload = base_payload();
+    payload["prune_reads"] = json!([
+        {"item": [{"node": "n1", "storage": "KEY-SENTINEL-7x"}, "keep-last=1"], "status": 200, "json": {"data": []}}
+    ]);
+
+    // Act
+    let text = refusal(&payload);
+
+    // Assert: the key is not printed, only the placeholder.
+    assert_eq!(
+        text, "Proxmox returned data this survey does not recognise: reads: KeyError <key>",
+        "{text}"
+    );
+    assert!(!text.contains("KEY-SENTINEL"), "{text}");
 }

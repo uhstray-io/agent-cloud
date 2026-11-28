@@ -623,6 +623,58 @@ fn a_storage_status_reply_missing_a_field_is_refused_with_the_assert_message() {
 }
 
 #[test]
+fn the_free_space_line_prints_free_used_and_total_and_says_not_reported_for_a_missing_field() {
+    // Each reply is the storage status the play reads. The first has no free figure and a null used figure, so the line
+    // must say "not reported" for both. The second has zero free and a used figure, so it must print both. The third has
+    // a null free figure and no used or total figure, so all three must say "not reported". The fourth has a null total
+    // figure and a free and a used figure, so only the total says "not reported". The override takes priority over the
+    // status mock that `mount_reads` mounts.
+    for (status, expected) in [
+        (
+            json!({"active": 1, "total": 2000, "used": null, "content": "iso,vztmpl"}),
+            &["not reported bytes free", "not reported bytes used"][..],
+        ),
+        (
+            json!({"active": 1, "avail": 0, "total": 2000, "used": 500, "content": "iso,vztmpl"}),
+            &["0 bytes free", "500 bytes used of 2000 bytes"][..],
+        ),
+        (
+            json!({"active": 1, "avail": null, "content": "iso,vztmpl"}),
+            &[
+                "not reported bytes free",
+                "not reported bytes used of not reported bytes",
+            ][..],
+        ),
+        (
+            json!({"active": 1, "avail": 5, "total": null, "used": 3, "content": "iso,vztmpl"}),
+            &["5 bytes free", "3 bytes used of not reported bytes"][..],
+        ),
+    ] {
+        // Arrange
+        let server = Server::start();
+        server.mount(
+            reply(
+                "GET",
+                "/api2/json/nodes/n1/storage/s1/status",
+                200,
+                json!({"data": status}),
+            )
+            .with_priority(1),
+        );
+        mount_reads(&server, json!([]), json!([]), &full_grants());
+
+        // Act: a dry run, so no write is sent and the report is the only output that matters.
+        let out = run_declared(&server, two_isos(), true);
+
+        // Assert: green, and each expected figure is on the line.
+        assert!(out.ok, "{}", out.out);
+        for text in expected {
+            assert!(out.out.contains(text), "{}", out.out);
+        }
+    }
+}
+
+#[test]
 fn the_https_assert_refuses_a_plain_http_api_url() {
     // Arrange: the play's own HTTPS assert, alone, with the API URL as an inventory var.
     let assert_https = task(&fetch_play(), "Require Proxmox API over HTTPS");

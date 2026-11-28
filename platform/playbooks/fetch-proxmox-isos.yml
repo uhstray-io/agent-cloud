@@ -39,8 +39,9 @@
 # run shows it: check the first run's task output before trusting a re-verify. After the downloads the run re-reads
 # each storage and asserts every declared volid is there.
 #
-# Storage: the run prints each declared storage's free space before any write. The API gives no size for a remote
-# file, so the run cannot tell whether a download fits. Free space is reported, never gated.
+# Storage: the run prints each declared storage's free, used and total space before any write, and "not reported"
+# for a figure Proxmox leaves out. The API gives no size for a remote file, so the run cannot tell whether a download
+# fits. Free space is reported, never gated.
 #
 # Check mode (a dry run) sends only GET requests. It prints the same report with "would fetch" for an absent ISO and
 # "would re-verify" for a present one, and writes nothing.
@@ -242,12 +243,14 @@
           - _storage_reads.results | selectattr('json.data.content', 'defined') | selectattr('json.data.content', 'search', '(^|,)iso(,|$)') | list | length == _storage_keys | length
         fail_msg: "Refused: a declared storage is not active, or does not accept ISO content (check its content types in Proxmox)."
 
-    # The API gives no size for a remote file, so the free space is shown and never compared with a download.
+    # Proxmox may leave any of the three out of the reply, or send null; either prints "not reported", never 0.
     - name: Report each declared storage's free space before any write
       ansible.builtin.debug:
         msg: >-
-          {{ item }}: {{ _storage_reads.results[_storage_index].json.data.avail | default(0) }} bytes free
-          of {{ _storage_reads.results[_storage_index].json.data.total | default(0) }} bytes.
+          {%- set d = _storage_reads.results[_storage_index].json.data -%}
+          {{ item }}: {{ d.avail if d.avail is defined and d.avail is not none else 'not reported' }} bytes free,
+          {{ d.used if d.used is defined and d.used is not none else 'not reported' }} bytes used
+          of {{ d.total if d.total is defined and d.total is not none else 'not reported' }} bytes.
           The API gives no size for a remote ISO, so this run does not compare the two.
       loop: "{{ _storage_keys }}"
       loop_control:
