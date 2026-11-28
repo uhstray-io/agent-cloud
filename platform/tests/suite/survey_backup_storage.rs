@@ -1426,6 +1426,28 @@ fn a_guest_a_storageless_job_backs_up_has_an_unknown_need() {
 }
 
 #[test]
+fn a_guest_a_storageless_job_backs_up_with_no_archive_here_is_listed_as_unknown() {
+    // Arrange: guest 900 has no archive on this storage, and an enabled job naming no storage backs it up.
+    let payload = backups_payload(
+        json!([{"vmid": 900, "name": "loner", "node": "n1"}]),
+        json!([{"id": "j", "type": "vzdump", "vmid": "900", "prune-backups": "keep-last=1"}]),
+        &[],
+        vec![],
+        Some(json!([defaults_read("n1", 200, json!({"remove": 1}))])),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: the job could write here, so the storage's need is not complete without it.
+    assert_eq!(
+        out["storages"][0]["retention_need_unknown_guests"],
+        json!([900]),
+        "{out}"
+    );
+}
+
+#[test]
 fn a_guest_a_storageless_job_also_backs_up_is_not_prunable_where_another_job_prunes_it() {
     // Arrange: guest 900 is backed up here by a keep-last=1 job whose preview removes its older archive, and also by
     // an enabled job that names no storage.

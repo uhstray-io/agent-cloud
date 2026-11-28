@@ -610,7 +610,9 @@ def summarize(data):
         # living on that node take a retention. A guest that no longer exists takes none: its backup fails with
         # "unable to find VM" (pve-manager PVE/API2/VZDump.pm:101-106 at e5ac6d6f, PVE/VZDump.pm:907-908 at e5ac6d6f),
         # so no job of this cluster prunes it.
-        retention_of, protects_every_archive, unpruned = {}, set(), set(unplaced)
+        # A storage-less job's guests could write here: any guest on a shared storage, a local guest otherwise.
+        unplaced_here = {vmid for vmid in unplaced if shared or existing[vmid].get("node") == node}
+        retention_of, protects_every_archive, unpruned = {}, set(), set(unplaced_here)
         for job, _, guests in job_guests:
             if job.get("storage") == storage and _enabled(job):
                 guests = {vmid for vmid in guests
@@ -688,7 +690,8 @@ def summarize(data):
             # A backed-up guest with no archive here yet has no size to multiply: unknown, not zero.
             "retention_need_unknown_guests": sorted(
                 {vmid for vmid, kept in needs.items() if kept is None}
-                | {vmid for vmid in retention_of if vmid not in by_vmid}),
+                | {vmid for vmid in retention_of if vmid not in by_vmid}
+                | unplaced_here),
             "retentions_previewed": sorted(p["retention"] for p in r["prunes"]),
             "by_guest": rows,
         })
