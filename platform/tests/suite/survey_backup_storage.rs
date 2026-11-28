@@ -11,6 +11,7 @@
 
 use agent_cloud_tests::process::scrubbed;
 use agent_cloud_tests::repo;
+use agent_cloud_tests::yaml::{self, Node};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -1693,4 +1694,90 @@ fn a_pool_percent_is_null_when_the_osd_tree_was_not_read_or_names_no_osd() {
             "{out}"
         );
     }
+}
+
+const SURVEY_PLAYBOOK: &str = "platform/playbooks/survey-proxmox-backup-storage.yml";
+const SURVEY_PLAY: &str = "Survey Proxmox backup storage";
+const URI_KEYS: [&str; 3] = ["uri", "ansible.builtin.uri", "ansible.legacy.uri"];
+
+/// The uri entry of a mapping under any spelling of the module's key: a task's uri call, or a module_defaults entry.
+fn uri_entry(node: &Node) -> Option<&Node> {
+    URI_KEYS.iter().find_map(|key| node.get(key))
+}
+
+/// Every way one play, block or task names a uri method other than GET, or names one this check cannot read: a
+/// module_defaults entry, a uri call's `method` or the task's `args:` method, or a free-form uri argument string.
+fn uri_method_problems(node: &Node) -> Vec<String> {
+    let name = node
+        .get("name")
+        .and_then(Node::as_str)
+        .unwrap_or("<unnamed>");
+    let mut problems = vec![];
+    if let Some(entry) = node.get("module_defaults").and_then(uri_entry) {
+        if let Some(method) = entry
+            .get("method")
+            .filter(|method| method.as_str() != Some("GET"))
+        {
+            problems.push(format!(
+                "{name}: module_defaults sets uri method {method:?}"
+            ));
+        }
+    }
+    match uri_entry(node) {
+        None | Some(Node::Null) => {}
+        Some(call @ Node::Map(_)) => {
+            let args_method = node.get("args").and_then(|args| args.get("method"));
+            for method in [call.get("method"), args_method].into_iter().flatten() {
+                if method.as_str() != Some("GET") {
+                    problems.push(format!("{name}: a uri call sets method {method:?}"));
+                }
+            }
+        }
+        Some(_) => problems.push(format!(
+            "{name}: a uri call is not a mapping, so its method cannot be read"
+        )),
+    }
+    problems
+}
+
+#[test]
+fn the_survey_playbook_makes_only_get_requests_and_its_play_defaults_uri_to_get() {
+    // Arrange: every play, block and task of the playbook, depth first.
+    let doc =
+        yaml::load_one(&repo::path(SURVEY_PLAYBOOK)).expect("the survey playbook has a document");
+    let nodes = yaml::tasks(&doc);
+
+    // Act and assert: the survey play's module_defaults name GET for uri, the one method this survey may send.
+    let play = nodes
+        .iter()
+        .find(|node| node.get("name").and_then(Node::as_str) == Some(SURVEY_PLAY))
+        .expect("the survey play is in the playbook");
+    let uri_default = play
+        .get("module_defaults")
+        .and_then(uri_entry)
+        .expect("the survey play sets uri in its module_defaults");
+    assert_eq!(
+        uri_default.get("method"),
+        Some(&Node::Str("GET".to_owned())),
+        "{uri_default:?}"
+    );
+
+    // No play, block or task at any depth names another method, and the walk saw uri calls to check at all.
+    let problems: Vec<String> = nodes
+        .iter()
+        .flat_map(|node| uri_method_problems(node))
+        .collect();
+    assert_eq!(
+        problems,
+        Vec::<String>::new(),
+        "the survey playbook must only GET"
+    );
+    let calls = nodes
+        .iter()
+        .filter(|node| uri_entry(node).is_some())
+        .count();
+    assert!(
+        calls > 0,
+        "no uri task was found, so the GET check proved nothing"
+    );
 }
