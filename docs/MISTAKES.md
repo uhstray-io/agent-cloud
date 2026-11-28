@@ -116,6 +116,7 @@ and why.
 | 2.39 | A "no user is signed in after a refused callback" test asked with the pre-sign-in cookie, which could never show a user; a callback that stored the user and then refused stayed green | False-green test | 2 | Test (`callback_with_a_wrong_nonce_is_refused` and `callback_with_a_token_signed_by_another_key_is_refused` probe with the cookie the refusal sets; leak mutant red) |
 | 2.40 | A port PR (#1186) returned five times: checks copied from their originals that could not fail (an emptiness check that, on macOS, read a directory the hook never used; an overlap check that passed on a sequential hook; lock checks that read an unreadable directory as empty), and comparisons weaker than the originals (`trim_end` and `lines()` where BATS compared `$(cat)`; a skip turned into a panic) | False-green test | 1 | Convention (this instance: one mutant per ported test of `pre_push_uv.rs`, each red after strengthening) |
 | 2.41 | A stop-point test passed when the play died one task before the stop; its assertions held either way (widens 2.28) | Wrong-reason pass | 1 | Test for one playbook (`cloudflare_dry_run_backend_playbook.rs`); other stop-point tests Convention |
+| 2.42 | An end-to-end check ran a deploy script through `python3 -` where the playbook runs `ak shell`, an interactive console that drops blocks and exits 0; the check passed and the script skipped its check-mode guard (widens 2.22) | Wrong-reason pass | 1 | Test (`authentik_outpost_perms.rs` pins `ak shell -c`); class Convention |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -3556,6 +3557,32 @@ sequential turned it red.
 **The rule.** A test that a run stops at a given point asserts something only that point produces (its recorded step result, its own message) and asserts no failure (`fatal:`) happened before it. Disable the stop once and watch the test go red.
 
 **Enforced by.** Test, for this playbook: `assert_stopped` in `platform/tests/suite/cloudflare_dry_run_backend_playbook.rs`, used by `a_stale_backend_stops_the_dry_run` and `a_missing_backend_stops_the_dry_run`; disabling `end_play` turns both red. Other stop-point tests: Convention.
+
+### 2.42 An end-to-end check ran a deploy script through `python3 -` where the playbook runs `ak shell` (widens 2.22)
+
+**Occurrences: 1** — 2026-11-27
+
+**What happened.** The AC-1135 fix sends a Python script on stdin to
+`podman exec -i authentik-server ak shell`. Before writing it, two probe programs were piped into `ak shell` in
+the local container and exited 3 and 0, and that was taken as proof that `ak shell` runs a stdin program. The
+end-to-end check of the playbook tasks then replaced the engine with a stand-in that ran the script with
+`python3 -`, so all six scenarios passed. A security review of the branch read
+`authentik/core/management/commands/shell.py`: without `-c`, `ak shell` hands stdin to `code.interact`, an
+interactive console. The console drops any block that is not followed by a blank line and exits 0 at the end of
+input. The script's check-mode guard was such a block, so the grant ran on every deploy, `--check` included, and
+its still-missing exit never fired. Reproduced in the local container: a two-block program lost its second block
+and exited 0 through `ak shell`, and exited 4 through `ak shell -c 'import sys; exec(sys.stdin.read())'`.
+
+**Root cause.** The stand-in replaced the one program that decided how the script runs. The two probe programs
+had a single top-level block each, the one shape the console runs the same way as a file.
+
+**The rule.** A test that stands in for the program that executes the code under test (an interpreter, a shell,
+a management command) must run the same program, or the change must also run once through the real one before
+it is called proven. A probe of how a program reads its input uses the constructs the real payload uses, here
+several top-level compound statements.
+
+**Enforced by.** Test for this instance (`platform/tests/suite/authentik_outpost_perms.rs` pins
+`ak shell -c 'import sys; exec(sys.stdin.read())'` on both tasks). The class: Convention.
 
 ## 3. Acting on live state
 
