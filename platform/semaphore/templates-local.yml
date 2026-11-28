@@ -41,6 +41,10 @@ templates:
   - name: "Deploy OPA (Local)"
     playbook: platform/playbooks/deploy-opa.yml
 
+  # Mailpit — local-dev mail catcher. Captures every message: local-dev only, never in production.
+  - name: "Deploy mailpit (Local)"
+    playbook: platform/playbooks/deploy-mailpit.yml
+
   - name: "Reconcile Plane Members (Local)"
     playbook: platform/playbooks/reconcile-plane-members.yml
     survey_vars:
@@ -386,6 +390,6 @@ templates:
       - name: target_service
         title: Target group
         # Only groups with a health_url in the generated local inventory can pass (task 7.9).
-        description: Inventory group of the service to check (declared locally - step_ca_svc, authentik_svc, o11y_svc, agentgateway_svc, opa_svc)
+        description: Inventory group of the service to check (declared locally - step_ca_svc, authentik_svc, o11y_svc, agentgateway_svc, opa_svc, mailpit_svc)
         type: string
         required: true

@@ -181,6 +181,10 @@ all:
             # A plain proxy with NO edge gate: OPA's Phase 1 stays unauthenticated, and this route
             # adds server authentication only. Upstream opa:8181 is in-network plain HTTP.
             - { host: "opa.agent-cloud.test", upstream: "opa:8181" }
+            # Mailpit — the web view of the captured local-dev mail (platform/services/mailpit). Local-dev only,
+            # never in production. A plain proxy with NO edge gate: Mailpit has no login of its own. Upstream
+            # mailpit:8025 is in-network plain HTTP.
+            - { host: "mailpit.agent-cloud.test", upstream: "mailpit:8025" }
 
     # Authentik — central IdP / SSO. Server+worker+Postgres+Redis; serves HTTP
     # on :9000 behind Caddy (TLS). Deploy: make local-deploy-authentik. The
@@ -235,6 +239,21 @@ all:
           container_engine: podman
           opa_bind: 127.0.0.1
           opa_port: 8281
+
+    # Mailpit — local-dev mail catcher (platform/services/mailpit). Services send mail to mailpit:1025 on the
+    # local-dev network; the web view is the Caddy route above. Never in production: deploy-mailpit.yml refuses
+    # any host not named <name>-local.
+    mailpit_svc:
+      hosts:
+        mailpit-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: mailpit
+          monorepo_deploy_path: platform/services/mailpit/deployment
+          container_engine: podman
+          mailpit_bind: 127.0.0.1
+          mailpit_smtp_port: 1025
+          mailpit_http_port: 8025
 
     # launch gate — the gate between the agents and Semaphore (skynet-launch-containment, Phase 3). Port 18443
     # because Caddy holds 127.0.0.1:8443; the container listens on 8443, which the local probes reach by the
