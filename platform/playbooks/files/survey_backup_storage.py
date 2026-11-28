@@ -21,7 +21,8 @@ A storage whose filesystem resolves neither way is unknown, and so is what it sh
 listed as another storage's sharer, so a resolved storage lists only the resolved storages it shares with. The receipt
 never carries a server address, export, mount path, volume ID, note text, WWN, SMART health, token,
 a Ceph health message, or a monitor or manager map (addresses).
-A refusal exits 1 with {"refusal": "..."} so the play can print why without the input.
+A refusal exits 1 with {"refusal": "..."} so the play can print why without the input. A refusal for data the
+survey does not recognise names the step that failed and the error's class, never a value.
 """
 
 from __future__ import annotations
@@ -36,6 +37,18 @@ GIB = 1024 ** 3
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 RETENTION = re.compile(r"^(keep-(all|last|hourly|daily|weekly|monthly|yearly)=[0-9]+)(,keep-[a-z]+=[0-9]+)*$")
 DEFAULT_RETENTION = "storage-default"
+# The steps of a summarize run, in order. Each part sets its step as it starts, so a refusal names the part that failed.
+STEPS = ("input", "plan", "vms", "jobs", "reads", "storages", "cephfs", "shared-backends", "ceph-capacity", "osd",
+         "health", "disks")
+KEY_NAME = re.compile(r"[A-Za-z0-9_.-]{1,40}")
+_STEP = STEPS[0]
+
+
+def _at(label):
+    """Record the step about to run. A label outside STEPS is a bug in this file, so it asserts."""
+    assert label in STEPS
+    global _STEP
+    _STEP = label
 
 
 class Refusal(Exception):
@@ -434,6 +447,7 @@ def _ceph_capacity(config, reads):
         return _capacity_not_read("the Ceph OSD tree and health were not read")
     reason = _ceph_problem({"osd": osd_read, "status": status_read})
     osds, hosts, flags, fullest_osd, health = [], [], [], None, None
+    _at("osd")
     if osd_read.get("status") == 200:
         tree = (osd_read.get("json") or {}).get("data")
         root = tree.get("root") if isinstance(tree, dict) else None
@@ -465,6 +479,7 @@ def _ceph_capacity(config, reads):
         if known:
             percent, osd, host = max(known, key=lambda k: (k[0], -k[1]))
             fullest_osd = {"osd": osd, "host": host, "percent_used": round(percent, 1)}
+    _at("health")
     if status_read.get("status") == 200:
         data = (status_read.get("json") or {}).get("data")
         if not isinstance(data, dict):
@@ -509,12 +524,15 @@ def _disks(disk_reads):
 
 
 def summarize(data):
+    _at("vms")
     existing = {int(v["vmid"]): v for v in data["vms"] if _is_vmid(v.get("vmid", ""))}
     names = {vmid: v.get("name") for vmid, v in existing.items()}
+    _at("jobs")
     config = {c.get("storage"): c for c in data["storage_config"]}
     jobs = [j for j in data["jobs"] if j.get("type", "vzdump") == "vzdump"]
     job_guests = [(job, *_job_guests(job, existing)) for job in jobs]  # (job, selects, guests)
     # Raw uri results: content reads loop over plan reads, prune reads over (read, retention).
+    _at("reads")
     reads = {}
     for r in data["content_reads"]:
         reads[(r["item"]["node"], r["item"]["storage"])] = {"content": r, "prunes": []}
@@ -522,6 +540,7 @@ def summarize(data):
         read, retention = r["item"]
         reads[(read["node"], read["storage"])]["prunes"].append({**r, "retention": retention})
     storages, measured = [], []  # measured: (row, raw bytes), for the backend comparison only
+    _at("storages")
     for item in data["plan"]["reads"]:
         node, storage = item["node"], item["storage"]
         r = reads.get((node, storage))
@@ -620,9 +639,11 @@ def summarize(data):
         files = {str(v.get("volid")).split(":", 1)[-1]: int(v.get("size") or 0) for v in volumes}
         measured.append((storages[-1], (total, used, files)))
 
+    _at("cephfs")
     cephfs = _cephfs(config, data.get("ceph_reads", []))
     cephfs_rows = {row["storage"]: row for row in cephfs["storages"]}
     shared_backends = []
+    _at("shared-backends")
     for (a, (a_total, a_used, a_files)), (b, (b_total, b_used, b_files)) in combinations(measured, 2):
         # Node-local storages on different nodes are separate disks, whatever their paths say.
         if a["read_on_node"] != b["read_on_node"] and not (a["shared"] or b["shared"]):
@@ -656,6 +677,7 @@ def summarize(data):
             shared_backends.append({"storages": [a["storage"], b["storage"]], "reason": reason,
                                     "combined_unaccounted_gib": unaccounted})
 
+    # The job rows and the guest list take no step: no input reaches a caught class in them (_retention raises Refusal).
     job_rows = []
     for job, selects, guests in job_guests:
         job_rows.append({"id": job.get("id"), "enabled": _enabled(job),
@@ -665,11 +687,26 @@ def summarize(data):
                          "selects": selects, "guests": len(guests),
                          # only a vmid list can name a guest that is gone
                          "missing_guests": sorted(v for v in guests if v not in names)})
+    guests = _guests(storages)
+    _at("ceph-capacity")
+    ceph_capacity = _ceph_capacity(config, data.get("ceph_capacity_reads", []))
+    _at("disks")
+    disks = _disks(data.get("disk_reads", []))
     return {"storages": storages, "shared_backends": shared_backends, "jobs": job_rows,
-            "guests": _guests(storages),
+            "guests": guests,
             "cephfs": cephfs,
-            "ceph_capacity": _ceph_capacity(config, data.get("ceph_capacity_reads", [])),
-            "disks": _disks(data.get("disk_reads", []))}
+            "ceph_capacity": ceph_capacity,
+            "disks": disks}
+
+
+def _detail(exc):
+    """What a caught error adds to its class: a KeyError's key if it is a field name, else a placeholder."""
+    if not isinstance(exc, KeyError):
+        return ""
+    key = exc.args[0] if exc.args else None
+    if isinstance(key, str) and KEY_NAME.fullmatch(key):
+        return f" {key}"
+    return " <key>"
 
 
 def main(argv=None, stdin=sys.stdin, stdout=sys.stdout):
@@ -678,13 +715,20 @@ def main(argv=None, stdin=sys.stdin, stdout=sys.stdout):
         mode = argv[0] if argv else ""
         if mode not in ("plan", "summarize"):
             raise Refusal("usage: survey_backup_storage.py plan|summarize < input.json")
+        _at("input")
         data = json.load(stdin)
-        result = plan(data) if mode == "plan" else summarize(data)
+        if mode == "plan":
+            _at("plan")
+            result = plan(data)
+        else:
+            result = summarize(data)
     except Refusal as exc:
         json.dump({"refusal": str(exc)}, stdout)
         return 1
-    except (KeyError, TypeError, ValueError, AttributeError, OverflowError, OSError):
-        json.dump({"refusal": "Proxmox returned data this survey does not recognise."}, stdout)
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError, OSError) as exc:
+        # A ValueError message can quote a value; a field name is not data, so only a field name is printed.
+        json.dump({"refusal": f"Proxmox returned data this survey does not recognise: {_STEP}: "
+                              f"{type(exc).__name__}{_detail(exc)}"}, stdout)
         return 1
     json.dump(result, stdout)
     return 0

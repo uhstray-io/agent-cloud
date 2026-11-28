@@ -39,7 +39,7 @@
 # run shows it: check the first run's task output before trusting a re-verify. After the downloads the run re-reads
 # each storage and asserts every declared volid is there.
 #
-# Storage: the run prints each declared storage's free space before any write. The API gives no size for a remote
+# Storage: the run prints each declared storage's free, used and total space before any write. The API gives no size for a remote
 # file, so the run cannot tell whether a download fits. Free space is reported, never gated.
 #
 # Check mode (a dry run) sends only GET requests. It prints the same report with "would fetch" for an absent ISO and
@@ -242,12 +242,13 @@
           - _storage_reads.results | selectattr('json.data.content', 'defined') | selectattr('json.data.content', 'search', '(^|,)iso(,|$)') | list | length == _storage_keys | length
         fail_msg: "Refused: a declared storage is not active, or does not accept ISO content (check its content types in Proxmox)."
 
-    # The API gives no size for a remote file, so the free space is shown and never compared with a download.
+    # The API gives no size for a remote file, so the free, used and total space is shown and never compared with a download.
     - name: Report each declared storage's free space before any write
       ansible.builtin.debug:
         msg: >-
-          {{ item }}: {{ _storage_reads.results[_storage_index].json.data.avail | default(0) }} bytes free
-          of {{ _storage_reads.results[_storage_index].json.data.total | default(0) }} bytes.
+          {{ item }}: {{ _storage_reads.results[_storage_index].json.data.avail | default('not reported') }} bytes free,
+          {{ _storage_reads.results[_storage_index].json.data.used | default('not reported') }} bytes used
+          of {{ _storage_reads.results[_storage_index].json.data.total | default('not reported') }} bytes.
           The API gives no size for a remote ISO, so this run does not compare the two.
       loop: "{{ _storage_keys }}"
       loop_control:
