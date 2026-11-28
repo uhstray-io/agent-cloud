@@ -90,7 +90,8 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       request (decision 1 of 2026-09-28), with a Dev variant; it refuses a SAN that is not
       in the declared vLLM leaf and returns the certificate and bundle through the channel
       agreed with the dgx-spark session
-      2026-11-27: superseded by the design's decisions of 2026-11-21 (lead paragraph); not built.
+      2026-11-27: superseded by the design's decisions of 2026-11-21 (lead paragraph); not
+      built.
 - [x] 2.5 BATS: the provisioner step is idempotent in shape (reads before it adds), the
       reset refuses without confirmation, production inventory values render the loopback
       bind and ACME off. Done 2026-09-29 as pytest (`test_step_ca_deploy.py`, 17 cases,
@@ -287,7 +288,8 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       issued like `agw-verifier`; rendered into the model's `tls.cert`/`tls.key`.
       unverified: whether agentgateway v1.5.0 reloads model-side TLS files on change;
       record it from the local drill and choose reload or restart in the renewal action
-      2026-11-27: issued by launch 5 of decision (k); the drill is extended by decision (j) to record what a started and a restarted gateway presents, and launch 10 waits on it.
+      2026-11-27: issued by launch 5 of decision (k); the drill is extended by decision (j) to
+      record what a started and a restarted gateway presents, and launch 10 waits on it.
 - [ ] 5.5 Validation gate: scenario "A client leaf authenticates"; the gateway-side
       scenarios (no client certificate refused, another client leaf refused, allowlisted
       verifier served, undeclared entry refused at render) are proven by the companion's
@@ -473,8 +475,9 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       node test (W3-3) and its task 2.2 wait on it.
 - [ ] 10.7 Launches 7 and 8 of decision (k), per node, after dgx-spark serves TLS there.
 - [ ] 10.8 Validation gate: each new leaf shows in the renewal's expiry lines in Loki, and a renewal
-      of each host proves every leaf on it (served serial for the two server leaves once their
-      switches are on).
+      of each host passes every leaf on it through the check its class reads (decision (b) of
+      2026-11-21 and decisions (h) to (j)): the files while its switch is off, the served serial
+      for the two server leaves once their switches are on.
 - [ ] 10.9 Build decision: which client leaf o11y's `dgx-spark-vllm` scrape presents in Phase B.
       Before it is declared, name its renewal proof class; if no admitted class fits, add the proof
       path to the design and to `renew-internal-certs.yml` first, because the renewal refuses a
