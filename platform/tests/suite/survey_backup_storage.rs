@@ -11,6 +11,7 @@
 
 use agent_cloud_tests::process::scrubbed;
 use agent_cloud_tests::repo;
+use agent_cloud_tests::text;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -198,13 +199,7 @@ fn run(mode: &str, stdin: &str) -> std::process::Output {
 
 /// The receipt of a payload the helper must summarize (exit 0), parsed.
 fn receipt(payload: &Value) -> Value {
-    let out = run("summarize", &payload.to_string());
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    serde_json::from_slice(&out.stdout).expect("the receipt is JSON")
+    serde_json::from_str(&summarize(&payload.to_string())).expect("the receipt is JSON")
 }
 
 /// The refusal text of `stdin` run in `mode`, which the helper must refuse (exit 1).
@@ -858,7 +853,7 @@ fn a_tree_without_flags_has_no_flags_and_a_status_without_checks_has_null_checks
 
 /// The step names the helper declares, in order: the strings of its `STEPS` tuple.
 fn helper_steps() -> Vec<String> {
-    let source = std::fs::read_to_string(repo::path(HELPER)).expect("the helper source");
+    let source = text::read(HELPER);
     let open = "STEPS = (";
     let start = source.find(open).expect("a STEPS tuple") + open.len();
     let end = start

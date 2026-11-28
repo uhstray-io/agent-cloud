@@ -243,8 +243,7 @@
           - _storage_reads.results | selectattr('json.data.content', 'defined') | selectattr('json.data.content', 'search', '(^|,)iso(,|$)') | list | length == _storage_keys | length
         fail_msg: "Refused: a declared storage is not active, or does not accept ISO content (check its content types in Proxmox)."
 
-    # The API gives no size for a remote file, so free, used and total are shown and never compared with a download.
-    # Proxmox may leave any of the three out of the reply; a missing one prints "not reported", never 0.
+    # Proxmox may leave any of the three out of the reply, or send null; either prints "not reported", never 0.
     - name: Report each declared storage's free space before any write
       ansible.builtin.debug:
         msg: >-
