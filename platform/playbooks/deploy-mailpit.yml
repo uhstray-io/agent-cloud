@@ -1,0 +1,143 @@
+---
+# deploy-mailpit.yml — Mailpit local-dev mail catcher deploy. LOCAL-DEV ONLY.
+#
+# Mailpit accepts every message and every AUTH credential, so it exists for local-dev and for
+# nothing else. Phase 1 refuses any host that is not a local-dev host (named <name>-local, on the
+# local connection) before anything changes. There is no production inventory entry for mailpit_svc,
+# no production Semaphore template and no (Dev) variant.
+#
+# Phase 1: Place repo (tasks/place-monorepo.yml), after the local-only guard.
+# Phase 2: deploy.sh — container lifecycle (pull, up, wait running).
+# Phase 3: Verify — the HTTP API answers 200 on /api/v1/info, and the SMTP port accepts a connection.
+#          The play runs inside the local Semaphore container on the local-dev network, so the probes
+#          reach Mailpit by its name, mailpit.
+#
+# Inputs (all optional; the defaults are the local-dev values):
+#   mailpit_bind                  published host address, default 127.0.0.1 (loopback only)
+#   mailpit_smtp_port             published host port for SMTP, default 1025
+#   mailpit_http_port             published host port for the web UI and API, default 8025
+#   deploy_force_recreate         extra var, "true" in any case: recreate even when nothing changed
+#   container_engine, local_monorepo_dir, monorepo_deploy_path, service_branch:
+#                                 as for the other composable service deploys
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an internal
+# (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# A play over no hosts exits 0 and records a deploy that did nothing as a success (docs/MISTAKES.md
+# 2.21), so refuse an absent or empty group first. Both names are passed, so one -e cannot redirect
+# the guard.
+- name: "Pre-flight: mailpit_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: mailpit_svc
+    preflight_group_expected: mailpit_svc
+
+# ── Phase 1: Place repo ─────────────────────────────────────────────────────
+- name: "Phase 1: Place repo"
+  hosts: mailpit_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _branch: "{{ service_branch | default('main') }}"
+
+  tasks:
+    # Mailpit must never run on a production host. Every host of the play has to be named <name>-local
+    # (the name every local-dev inventory gives its host), and ansible_play_hosts_all is read, not
+    # inventory_hostname, because an extra var can set the latter (stop-local-service.yml).
+    - name: "Refuse any host that is not a local-dev host, before anything changes"
+      ansible.builtin.assert:
+        that: ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\Z') | list | length == 0
+        fail_msg: >-
+          Refusing: mailpit is a local-dev mail catcher and is deployed to local-dev hosts only (named
+          <name>-local). These hosts of the play are not:
+          {{ ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\Z') | list | join(', ') }}.
+          Nothing was changed.
+        quiet: true
+
+    # Every local-dev host declares ansible_connection=local (the inventory example). An extra var can
+    # override it, so the engine calls below are refused unless the run really is on the local connection.
+    - name: "Refuse a connection that is not the local one"
+      ansible.builtin.assert:
+        that: (ansible_connection | default('')) == 'local'
+        fail_msg: >-
+          Refusing: mailpit runs over the local connection only; ansible_connection is
+          '{{ ansible_connection | default('') }}'. Nothing was changed.
+        quiet: true
+
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────
+- name: "Phase 2: Start Mailpit"
+  hosts: mailpit_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+
+  tasks:
+    - name: "Run deploy.sh (container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+        # Always the local overlay: Phase 1 refused every host that is not a local-dev host.
+        LOCAL_MODE: "true"
+        # Compose substitutions for the published host ports. Mailpit has no secrets; deploy.sh writes
+        # these into a non-secret .env so a changed value recreates the container (write_env).
+        MAILPIT_BIND: "{{ mailpit_bind | default('127.0.0.1') }}"
+        MAILPIT_SMTP_PORT: "{{ mailpit_smtp_port | default('1025') | string }}"
+        MAILPIT_HTTP_PORT: "{{ mailpit_http_port | default('8025') | string }}"
+        # Operator lever (extra var `deploy_force_recreate`, the word true in any case): recreate Mailpit even when
+        # its compose files, .env and image all match, as for OPA.
+        FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
+      register: _deploy
+      # deploy.sh recreates the container only when its inputs changed (common.sh compose_up_if_changed)
+      # and says so on its own line.
+      changed_when: "'DEPLOY_CHANGED=true' in _deploy.stdout_lines"
+      when: not ansible_check_mode
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+      when: not ansible_check_mode
+
+# ── Phase 3: Verify ─────────────────────────────────────────────────────────
+- name: "Phase 3: Verify Mailpit"
+  hosts: mailpit_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  # The play runs in the Semaphore container on the local-dev network, so it reaches Mailpit by its
+  # compose service name and container ports (compose.yml).
+  tasks:
+    # Verify is skipped under --check: the container it would probe is not started by a check run.
+    - name: "Mailpit API answers 200 on /api/v1/info"
+      ansible.builtin.uri:
+        url: "http://mailpit:8025/api/v1/info"
+        status_code: [200]
+      register: _mailpit_info
+      retries: 10
+      delay: 3
+      until: _mailpit_info.status == 200
+      when: not ansible_check_mode
+
+    - name: "Mailpit SMTP port accepts a connection"
+      ansible.builtin.wait_for:
+        host: mailpit
+        port: 1025
+        timeout: 30
+      when: not ansible_check_mode
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          Mailpit is up (local-dev only): SMTP on mailpit:1025, API at http://mailpit:8025.
+      when: not ansible_check_mode

@@ -100,6 +100,10 @@
       # OPA decision API — HTTPS for callers (skynet) so they verify it via step-ca; a plain proxy
       # with no edge gate (OPA's Phase 1 stays unauthenticated). Mirrors local-dev.yml.example.
       - {'host': 'opa.{{ _dev_zone }}', 'upstream': 'opa:8181'}
+      # Mailpit web view of the captured local-dev mail — local-dev only, never in production. A plain proxy
+      # with no edge gate: Mailpit has no login of its own, and an Authentik gate would need a new blueprint.
+      # Mirrors local-dev.yml.example.
+      - {'host': 'mailpit.{{ _dev_zone }}', 'upstream': 'mailpit:8025'}
     # The launch gate's one internal leaf, as a LIST and emitted below with `| string` (the same reason as
     # _caddy_routes: the ini plugin reads the value back with ast.literal_eval, and a long INI line fails yamllint).
     # The SAN is <dns_site>.<dns_zone> with dns_site local (launch_gate_svc:vars below). `dir` is the deploy's
@@ -1422,6 +1426,28 @@
           local_mode=true
           opa_bind=127.0.0.1
           opa_port=8281
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
+          # Mailpit — local-dev mail catcher (platform/services/mailpit). Services send mail to mailpit:1025 on the
+          # local-dev network. Never in production: deploy-mailpit.yml refuses any host not named <name>-local.
+          [mailpit_svc]
+          mailpit-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [mailpit_svc:vars]
+          # Verify Service Health (Local) probes this from the Semaphore container, by the container's name on
+          # the local-dev network. GET /api/v1/info answers 200 while the service is up (the deployment README).
+          health_url=http://mailpit:8025/api/v1/info
+          ansible_user=semaphore
+          service_name=mailpit
+          monorepo_deploy_path=platform/services/mailpit/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          mailpit_bind={{ hostvars['mailpit-local'].mailpit_bind | default('127.0.0.1') }}
+          mailpit_smtp_port={{ hostvars['mailpit-local'].mailpit_smtp_port | default(1025) }}
+          mailpit_http_port={{ hostvars['mailpit-local'].mailpit_http_port | default(8025) }}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

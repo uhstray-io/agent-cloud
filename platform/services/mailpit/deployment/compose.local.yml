@@ -1,0 +1,19 @@
+# Slim overlay (local_mode) — appended by platform/lib/common.sh:compose() when LOCAL_MODE is true.
+# Mailpit is local-dev only, so this overlay adds what local-dev alone needs: a memory cap, and the
+# extra `local-dev` network, so the services that send mail reach the catcher by name (SMTP on
+# mailpit:1025, the API on http://mailpit:8025).
+#
+# The `default` network is declared because podman-compose requires every network the files refer
+# to be declared, including the default one.
+
+networks:
+  default:
+  local-dev:
+    external: true
+
+services:
+  mailpit:
+    mem_limit: 128m
+    networks:
+      - default
+      - local-dev

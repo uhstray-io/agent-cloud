@@ -1,0 +1,35 @@
+# Mailpit — a local-dev mail catcher. LOCAL-DEV ONLY: it accepts every message and every AUTH
+# credential, and nothing in production may point at it. Services in local-dev send mail to it
+# as mailpit:1025 (plain SMTP, no STARTTLS) on the local-dev network; the web UI and API are on
+# port 8025 of the same container.
+#
+# Runs as uid 65534 (nobody), because the image's default user is root; readyz, SMTP delivery and
+# the API all work as 65534 (README.md, "What it runs"). The published ports
+# bind loopback only: Mailpit warns that its API is reachable from any host that routes to an
+# interface it listens on, so the default keeps it off the network.
+#
+# No volume: messages live in the container's temporary database, so a recreate drops them. That
+# is accepted, because this is a catcher, not a mail store.
+#
+# deploy.sh is container-lifecycle only. Deploy playbook: platform/playbooks/deploy-mailpit.yml.
+name: mailpit
+
+services:
+  mailpit:
+    # Fully qualified, pinned by the image index digest of v1.34.0 (Mailpit is MIT licensed).
+    image: ${MAILPIT_IMAGE:-docker.io/axllent/mailpit:v1.34.0@sha256:23a2ef85bc50853ab3093645d1d64679afd8887e89da5e48a88940c172591a4e}
+    container_name: mailpit
+    restart: always
+    user: "65534:65534"
+    environment:
+      # Accept any AUTH username and password, and allow AUTH on the plain connection. Only local-dev
+      # services send to this catcher, so the credentials they send are never checked.
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+      # The message cap the store keeps.
+      MP_MAX_MESSAGES: "500"
+    ports:
+      # Loopback by default. The container listens on 1025 (SMTP) and 8025 (web UI and API); the
+      # published host ports come from the environment (deploy.sh writes them to .env).
+      - "${MAILPIT_BIND:-127.0.0.1}:${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "${MAILPIT_BIND:-127.0.0.1}:${MAILPIT_HTTP_PORT:-8025}:8025"
