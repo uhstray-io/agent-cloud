@@ -171,6 +171,7 @@ def _job_guests(job, existing):
 
 
 def plan(data):
+    _at("plan")
     # The playbook refuses these first; the planner checks again so its own tests hold the rule.
     if not [_name(n.get("node"), "node name") for n in data["nodes"] if n.get("status") == "online"]:
         raise Refusal("No Proxmox node is online.")
@@ -306,6 +307,7 @@ def _cephfs(config, ceph_reads):
     A storage with a monitor list (`monhost`) names another cluster: it is listed as external with no
     filesystem, and its monitors, subdir and path never print. A disabled storage is left out.
     """
+    _at("cephfs")
     # The playbook reads the Ceph listing only when the plan's `ceph` flag is set (plan(): the one gate).
     # A looped read that the flag skipped carries "skipped" and is not a read.
     reads = {r.get("item"): r for r in ceph_reads if not r.get("skipped")}
@@ -440,6 +442,7 @@ def _ceph_capacity(config, reads):
     like the CephFS listing and read on this cluster's own Ceph only. A host's totals are null when any
     of its OSDs reports no usage, so a partial sum never reads as the whole.
     """
+    _at("ceph-capacity")
     if not any(_own_cephfs(c) for c in config.values()):
         return _capacity_not_read("no CephFS storage on this cluster's own Ceph")
     osd_read = next((r for r in reads if not r.get("skipped") and _is_osd_item(r.get("item"))), None)
@@ -497,6 +500,7 @@ def _disks(disk_reads):
     master branch). WWN and SMART health are never printed. A node whose disk list the token
     may not read is unavailable.
     """
+    _at("disks")
     nodes = []
     for read in disk_reads:
         node = _name(read.get("item"), "node name")
@@ -640,7 +644,6 @@ def summarize(data):
         files = {str(v.get("volid")).split(":", 1)[-1]: int(v.get("size") or 0) for v in volumes}
         measured.append((storages[-1], (total, used, files)))
 
-    _at("cephfs")
     cephfs = _cephfs(config, data.get("ceph_reads", []))
     cephfs_rows = {row["storage"]: row for row in cephfs["storages"]}
     shared_backends = []
@@ -688,16 +691,11 @@ def summarize(data):
                          "selects": selects, "guests": len(guests),
                          # only a vmid list can name a guest that is gone
                          "missing_guests": sorted(v for v in guests if v not in names)})
-    guests = _guests(storages)
-    _at("ceph-capacity")
-    ceph_capacity = _ceph_capacity(config, data.get("ceph_capacity_reads", []))
-    _at("disks")
-    disks = _disks(data.get("disk_reads", []))
     return {"storages": storages, "shared_backends": shared_backends, "jobs": job_rows,
-            "guests": guests,
+            "guests": _guests(storages),
             "cephfs": cephfs,
-            "ceph_capacity": ceph_capacity,
-            "disks": disks}
+            "ceph_capacity": _ceph_capacity(config, data.get("ceph_capacity_reads", [])),
+            "disks": _disks(data.get("disk_reads", []))}
 
 
 def _detail(exc):
@@ -718,11 +716,7 @@ def main(argv=None, stdin=sys.stdin, stdout=sys.stdout):
             raise Refusal("usage: survey_backup_storage.py plan|summarize < input.json")
         _at("input")
         data = json.load(stdin)
-        if mode == "plan":
-            _at("plan")
-            result = plan(data)
-        else:
-            result = summarize(data)
+        result = plan(data) if mode == "plan" else summarize(data)
     except Refusal as exc:
         json.dump({"refusal": str(exc)}, stdout)
         return 1

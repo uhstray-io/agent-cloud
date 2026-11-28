@@ -208,7 +208,7 @@ fn mount_reads(server: &Server, before: Value, after: Value, grants: &Grants) {
         "GET",
         "/api2/json/nodes/n1/storage/s1/status",
         200,
-        json!({"data": {"active": 1, "avail": 1000, "used": 500, "total": 2000, "content": "iso,vztmpl"}}),
+        json!({"data": {"active": 1, "avail": 1000, "total": 2000, "content": "iso,vztmpl"}}),
     ));
     server.mount(
         reply("GET", CONTENT, 200, json!({"data": before}))
@@ -624,16 +624,17 @@ fn a_storage_status_reply_missing_a_field_is_refused_with_the_assert_message() {
 
 #[test]
 fn the_free_space_line_prints_free_used_and_total_and_says_not_reported_for_a_missing_field() {
-    // Each reply is the storage status the play reads: the free figure absent, then zero. The used figure is present
-    // in both, so the line must print it. The override takes priority over the status mock that `mount_reads` mounts.
-    for (status, free) in [
+    // Each reply is the storage status the play reads. The first has no free figure and a null used figure, so the line
+    // must say "not reported" for both. The second has zero free and a used figure, so it must print both. The override
+    // takes priority over the status mock that `mount_reads` mounts.
+    for (status, expected) in [
         (
-            json!({"active": 1, "total": 2000, "used": 500, "content": "iso,vztmpl"}),
-            "not reported bytes free",
+            json!({"active": 1, "total": 2000, "used": null, "content": "iso,vztmpl"}),
+            ["not reported bytes free", "not reported bytes used"],
         ),
         (
             json!({"active": 1, "avail": 0, "total": 2000, "used": 500, "content": "iso,vztmpl"}),
-            "0 bytes free",
+            ["0 bytes free", "500 bytes used of 2000 bytes"],
         ),
     ] {
         // Arrange
@@ -652,14 +653,11 @@ fn the_free_space_line_prints_free_used_and_total_and_says_not_reported_for_a_mi
         // Act: a dry run, so no write is sent and the report is the only output that matters.
         let out = run_declared(&server, two_isos(), true);
 
-        // Assert: green, the free figure as the case sets it, and the used figure with the total.
+        // Assert: green, and each expected figure is on the line.
         assert!(out.ok, "{}", out.out);
-        assert!(out.out.contains(free), "{}", out.out);
-        assert!(
-            out.out.contains("500 bytes used of 2000 bytes"),
-            "{}",
-            out.out
-        );
+        for text in expected {
+            assert!(out.out.contains(text), "{}", out.out);
+        }
     }
 }
 

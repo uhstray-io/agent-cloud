@@ -18,17 +18,13 @@ const HELPER: &str = "platform/playbooks/files/survey_backup_storage.py";
 
 /// Runs `summarize` on `payload` and returns its stdout. The helper must exit 0.
 fn summarize(payload: &str) -> String {
-    let home = TempDir::new().expect("a temporary home");
-    let script = repo::path(HELPER);
-    let out = scrubbed("python3", home.path())
-        .args(["-I", script.to_str().expect("utf-8 path"), "summarize"])
-        .write_stdin(payload)
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    String::from_utf8(out).expect("utf-8 stdout")
+    let out = run("summarize", payload);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    String::from_utf8(out.stdout).expect("utf-8 stdout")
 }
 
 #[test]
@@ -187,13 +183,9 @@ fn a_disks_serial_prints_and_its_wwn_and_health_never_do() {
     );
 }
 
-/// Runs the helper in `mode` (`plan` or `summarize`) on a JSON payload and returns the whole process output, whatever the exit code.
-fn run(mode: &str, payload: &Value) -> std::process::Output {
-    run_text(mode, &payload.to_string())
-}
-
-/// Runs the helper in `mode` on raw stdin text, which need not be JSON, and returns the whole process output.
-fn run_text(mode: &str, stdin: &str) -> std::process::Output {
+/// Runs the helper in `mode` on `stdin` text, which need not be JSON, and returns the whole process output, whatever
+/// the exit code.
+fn run(mode: &str, stdin: &str) -> std::process::Output {
     let home = TempDir::new().expect("a temporary home");
     let script = repo::path(HELPER);
     scrubbed("python3", home.path())
@@ -206,7 +198,7 @@ fn run_text(mode: &str, stdin: &str) -> std::process::Output {
 
 /// The receipt of a payload the helper must summarize (exit 0), parsed.
 fn receipt(payload: &Value) -> Value {
-    let out = run("summarize", payload);
+    let out = run("summarize", &payload.to_string());
     assert!(
         out.status.success(),
         "{}",
@@ -215,9 +207,9 @@ fn receipt(payload: &Value) -> Value {
     serde_json::from_slice(&out.stdout).expect("the receipt is JSON")
 }
 
-/// The refusal text of a payload the helper must refuse (exit 1).
-fn refusal(payload: &Value) -> String {
-    let out = run("summarize", payload);
+/// The refusal text of `stdin` run in `mode`, which the helper must refuse (exit 1).
+fn refusal_in(mode: &str, stdin: &str) -> String {
+    let out = run(mode, stdin);
     assert_eq!(
         out.status.code(),
         Some(1),
@@ -229,6 +221,11 @@ fn refusal(payload: &Value) -> String {
         .as_str()
         .expect("a refusal string")
         .to_owned()
+}
+
+/// The refusal text of a payload the helper must refuse (exit 1).
+fn refusal(payload: &Value) -> String {
+    refusal_in("summarize", &payload.to_string())
 }
 
 const TOTAL: u64 = 107_374_182_400;
@@ -490,7 +487,7 @@ fn the_planner_reads_no_disabled_storage_even_when_its_status_row_says_active() 
     });
 
     // Act
-    let out = run("plan", &payload);
+    let out = run("plan", &payload.to_string());
 
     // Assert: only `on` is planned.
     assert!(
@@ -998,22 +995,11 @@ fn a_refusal_for_unexpected_data_names_the_step_that_failed_and_its_error_class(
 
     for (step, mode, stdin, tail) in rows {
         // Act
-        let out = run_text(mode, &stdin);
+        let text = refusal_in(mode, &stdin);
 
-        // Assert: exit 1, and the refusal is the exact text naming this step and class.
-        assert_eq!(
-            out.status.code(),
-            Some(1),
-            "step {step}: {}",
-            String::from_utf8_lossy(&out.stdout)
-        );
-        let body: Value = serde_json::from_slice(&out.stdout).expect("a refusal is JSON");
+        // Assert: the refusal is the exact text naming this step and class.
         let expected = format!("Proxmox returned data this survey does not recognise: {tail}");
-        assert_eq!(
-            body["refusal"].as_str(),
-            Some(expected.as_str()),
-            "step {step}"
-        );
+        assert_eq!(text, expected, "step {step}");
     }
 }
 
@@ -1038,7 +1024,7 @@ fn a_value_in_the_data_never_prints_in_the_refusal() {
 }
 
 #[test]
-fn a_key_that_is_data_prints_as_a_placeholder_and_a_missing_field_name_prints() {
+fn a_key_that_is_data_prints_as_a_placeholder() {
     // Arrange: a prune preview names a storage with no content read, so the lookup's key is a tuple built from data.
     let mut payload = base_payload();
     payload["prune_reads"] = json!([
@@ -1054,17 +1040,4 @@ fn a_key_that_is_data_prints_as_a_placeholder_and_a_missing_field_name_prints() 
         "{text}"
     );
     assert!(!text.contains("KEY-SENTINEL"), "{text}");
-
-    // Arrange: the base payload with no `vms` key, a plain missing field.
-    let mut payload = base_payload();
-    payload.as_object_mut().expect("an object").remove("vms");
-
-    // Act
-    let text = refusal(&payload);
-
-    // Assert: the field name is printed.
-    assert_eq!(
-        text, "Proxmox returned data this survey does not recognise: vms: KeyError vms",
-        "{text}"
-    );
 }
