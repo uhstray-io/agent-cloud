@@ -939,7 +939,8 @@
       9 and 10 in task 10.10. Answers to the 2026-10-26 additions: (a) each node gets its own
       inventory name and group; (b) the connection uses the `vllm-tls` key from OpenBao, as the
       fault drill does. This list replaces the order of the 2026-10-16 list. This task's pieces:
-      items 1 to 4 in dgx-spark's Phase A window (launch 9), each behind an inventory value that
+      items 1 to 4 in dgx-spark's Phase A window (launch 9, together with the head node's launch 7
+      and before the rotation drill, launch 8), each behind an inventory value that
       keeps today's plain path until then; item 5 in Phase B (launch 10):
       1. the model's `https://` base URL and `tls: {root, hostname, cert, key}` (hostname
          `vllm-primary.<site>.<zone>`, cert and key the `agw-upstream` leaf);

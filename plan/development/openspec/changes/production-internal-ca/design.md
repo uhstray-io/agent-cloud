@@ -692,9 +692,13 @@ settles it. No leaf is issued by this record.
    undeclared is refused at admission: a further difference from the existing rows. With the switch off, in a
    run that runs the listener proofs (one that renewed the host, or `--tags verify`:
    `_renew_prove`, `renew-internal-certs.yml:732`), the leaf's host makes one TLS connection to that
-   declared address. A completed TLS handshake fails that host's renewal and names the switch to
-   turn on. A refused or closed connection, or an answer that is not TLS, passes. The check reads
-   whether that one declared address answers TLS at that moment; it does not read any other port.
+   declared address and sends a TLS ClientHello. Any TLS answer fails that host's renewal and names
+   the switch to turn on: a ServerHello, or a TLS alert, whether or not the handshake then
+   completes, so a TLS 1.2 listener that requires a client certificate and aborts the handshake is
+   caught too. Only a refused connection, a connection closed before any byte arrives, or a first
+   answer that is not a TLS record passes. The check detects the TLS answer itself; it presents no
+   client leaf. It reads whether that one declared address answers TLS at that moment; it does not
+   read any other port.
    Because it runs with the listener proofs, a listener that starts TLS between renewals is seen at
    the host's next renewal, which is when the served leaf would first differ from `current`. While
    the switch is off, the renewal today reads only each leaf's dates and serial (`_renew_reader`,
@@ -757,7 +761,11 @@ settles it. No leaf is issued by this record.
    rules. Release scope: launches 0 to 6 and the reply to dgx-spark ship in milestone v0.18.0
    (tasks 10.5 and 10.6); launches 7, 8 and 10 wait on dgx-spark serving TLS, and launch 9 on
    dgx-spark's Phase A window. The switch values `vllm_tls`, `image_server_tls` and
-   `vllm_tls_require_client` are declared by the operator in the site-config inventory.
+   `vllm_tls_require_client` are declared by the operator in the site-config inventory. The
+   numbers name the launches; after launch 6 they are not the order. Launch 9 runs in the window in
+   which dgx-spark starts TLS on the head node, together with that node's launch 7, because a
+   plain-HTTP caller fails from the moment vLLM serves TLS only (decision (f) of 2026-11-21).
+   Launch 8 runs after launch 7 on both nodes and after launch 9. Launch 10 runs last.
    0. The operator-side inventory sync (`scripts/semaphore-sync-inventory.py`, preview, then
       `--apply`) after every site-config change, before the run that reads it. The changes: task
       10.4's declaration (before launch 1); each node's switch (launch 7); the Phase A inventory
@@ -777,12 +785,12 @@ settles it. No leaf is issued by this record.
       (`vllm_tls` or `image_server_tls`; both nodes in one change when dgx-spark switches both in one
       window), launch 0's sync, then `Renew Internal Certs (Dev)` with `--tags verify` reads the
       served serial at the declared address.
-   8. Once, after launch 7 on both nodes: the rotation drill with dgx-spark (its task 3.4),
+   8. Once, after launch 7 on both nodes and after launch 9: the rotation drill with dgx-spark (its task 3.4),
       `Renew Internal Certs (Dev)` with `renew_threshold=1`, which puts every leaf on every consumer
       host inside its window (`renew-internal-certs.yml:99-101`), so every host renews and runs its
       reload actions, the gateway host's included.
-   9. In dgx-spark's Phase A window (its task 3.3), after the Phase A inventory values and launch
-      0's sync: `Deploy agentgateway (Dev)`, `Manage Caddy Sites (Dev)` and `Deploy o11y (Dev)`,
+   9. In dgx-spark's Phase A window (its task 3.3), the window in which it starts TLS on the head
+      node, with that node's launch 7, after the Phase A inventory values and launch 0's sync: `Deploy agentgateway (Dev)`, `Manage Caddy Sites (Dev)` and `Deploy o11y (Dev)`,
       each dry run first; `Rollback Inference Route (Dev)` `gateway-config` as a dry run only, once
       the read of route task 6.2's run 5370 is made.
    10. Phase B, in order:

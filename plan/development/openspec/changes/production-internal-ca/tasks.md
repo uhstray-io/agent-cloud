@@ -477,8 +477,8 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
 - [ ] 10.6 Hand dgx-spark the reply: names, leaf directory `image-server` confirmed, `current`
       relative, the bundle path (decision (d) of 2026-11-21), inspect results. dgx-spark's image
       node test (W3-3) and its task 2.2 wait on it.
-- [ ] 10.7 Launch 7 of decision (k) for each node after dgx-spark serves TLS there, then launch 8
-      once.
+- [ ] 10.7 Launch 7 of decision (k) for each node after dgx-spark serves TLS there (the head
+      node's together with launch 9, task 10.10), then launch 8 once, after launch 9.
 - [ ] 10.8 Validation gate: each new leaf shows in the renewal's expiry lines in Loki, and one
       renewal run, read per host, passes every new leaf through the check its class reads
       (decision (b) of 2026-11-21 and decisions (h) to (j)).
@@ -489,5 +489,5 @@ host. Push, pull requests and merges happen only when Joe authorizes each one.
       `internal_leaves` (site-config) and run launch 10 (a). Do not assume the existing
       `o11y-inference-probe` leaf fits. This addresses the CodeRabbit finding on #1218 deferred to
       this pull request (thread `PRRT_kwDOMLqEhM66cMKu`).
-- [ ] 10.10 Launches 9 and 10 of decision (k): 9 in dgx-spark's Phase A window, 10 in Phase B after
-      task 5.4a's extended drill.
+- [ ] 10.10 Launches 9 and 10 of decision (k): 9 in dgx-spark's Phase A window, together with the
+      head node's launch 7 and before launch 8; 10 in Phase B after task 5.4a's extended drill.
