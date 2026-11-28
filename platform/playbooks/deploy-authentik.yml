@@ -442,6 +442,60 @@
       until: _ak_api.rc == 0
       check_mode: false
 
+    # ── Outpost permissions (AC-1135): converge before the forward_auth probe ───
+    - name: "Outpost permissions: the Phase 1 app list and catalog have the expected shape"
+      # The script below reads both from Phase 1 (host facts persist across plays). A missing or
+      # wrongly shaped value fails here, with this message, rather than inside the script.
+      ansible.builtin.assert:
+        that:
+          - _enabled_apps is defined
+          - _enabled_apps is sequence
+          - _enabled_apps is not string
+          - authentik_app_catalog is mapping
+        fail_msg: "Outpost permissions: _enabled_apps must be the Phase 1 app list and authentik_app_catalog the catalog mapping"
+        quiet: true
+
+    # Cause, from the forward_auth 404 and the worker log of a fresh local-dev instance: the
+    # embedded outpost's service account holds no view permission on the proxy providers attached
+    # to the outpost, so the outpost loads no application and the forward_auth endpoint answers 404.
+    # The grant is made by Outpost.build_user_permissions, which the worker runs from the outpost
+    # save task. That task ran before the final providers were committed ("Model does not exist"
+    # for ProxyProvider pk 5, while the live provider is pk 6), so the grant missed them, and
+    # nothing retriggers it. A server restart does not repair it; re-running the grant does.
+    # The probe changes nothing. Only when it reports a missing grant does the repair run, and
+    # never under --check. It converges the live grant; it does not restart the server.
+    - name: "Outpost permissions: check the embedded outpost's view access to its providers (fresh-instance race, AC-1135)"
+      # Read-only: OUTPOST_PERMS_MODE=check, so the script never writes a grant, under --check too.
+      # The script reaches the container on stdin, rendered in memory by the template lookup, so
+      # nothing is written to the host. Exit 75 means an expected provider is not attached to the
+      # outpost yet, so the probe retries. Exit 3 (no build_user_permissions on this image) fails.
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, -i, -e, OUTPOST_PERMS_MODE=check, authentik-server, ak, shell]
+        stdin: "{{ lookup('ansible.builtin.template', playbook_dir ~ '/../services/authentik/deployment/templates/converge-outpost-perms.py.j2', template_vars={'authentik_apps': _enabled_apps}) }}"
+      register: _outpost_perms_probe
+      changed_when: false
+      failed_when: _outpost_perms_probe.rc != 0
+      until: _outpost_perms_probe.rc != 75
+      retries: 20
+      delay: 6
+      check_mode: false
+
+    - name: "Outpost permissions: grant the embedded outpost view access to its providers"
+      # Runs only when the probe printed "would repair", and never under --check. The same script
+      # runs with OUTPOST_PERMS_MODE=repair: it calls the outpost's own grant and reads it back.
+      # Exit 4 (still missing after the repair) fails the deploy.
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, -i, -e, OUTPOST_PERMS_MODE=repair, authentik-server, ak, shell]
+        stdin: "{{ lookup('ansible.builtin.template', playbook_dir ~ '/../services/authentik/deployment/templates/converge-outpost-perms.py.j2', template_vars={'authentik_apps': _enabled_apps}) }}"
+      register: _outpost_perms_repair
+      when: "not ansible_check_mode and 'outpost-perms: would repair' in _outpost_perms_probe.stdout"
+      changed_when: "'outpost-perms: REPAIRED' in _outpost_perms_repair.stdout"
+      failed_when: _outpost_perms_repair.rc != 0
+
+    - name: "Outpost permissions: result"
+      ansible.builtin.debug:
+        msg: "{{ (_outpost_perms_probe.stdout_lines | select('search', '^outpost-perms:') | list) + (_outpost_perms_repair.stdout_lines | default([]) | select('search', '^outpost-perms:') | list) }}"
+
     - name: "Wait for the embedded outpost to serve forward_auth (proxy-provider sync)"
       # `ak healthcheck` + the API go green BEFORE the embedded outpost finishes
       # loading proxy providers from the blueprints, so for ~a minute after deploy
