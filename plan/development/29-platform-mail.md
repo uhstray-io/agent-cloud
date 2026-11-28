@@ -8,7 +8,7 @@ Author: Joseph A. Wisneski IV <stray@uhstray.io>
 
 **Date:** 2026-11-27
 
-**Status:** ACCEPTED 2026-11-27 by the operator. Units S1 to S9, Plane AC-1122 to AC-1130. Production actions are approved one at a time.
+**Status:** ACTIVE (accepted 2026-11-27 by the operator). Units S1 to S9, Plane AC-1122 to AC-1130. Production actions are approved one at a time.
 
 **Plane:** module `proton-smtp`, milestone `v0.18.0`; one work item per unit (see the units table). The DigitalOcean work is AC-1131 to AC-1133, module `digitalocean-foundation`, milestone `v0.19.0`.
 
@@ -24,11 +24,11 @@ The mail DNS records already exist in the zone but sit outside OpenTofu. Plan 13
 
 ## Design Principles
 
-1. **One token, read by field.** Each deploy reads only its own field from the shared path. No service reads another service's field.
+1. **One token, one field per service.** Each service is handed only its own field. The deploy's shared read fetches the whole `secret/services/smtp` document into its `no_log` run before it selects that field (`platform/playbooks/tasks/manage-secrets.yml:127-129`), so a split that must keep one deploy from seeing another service's token uses one path per service, not one field per service (OUT-3).
 2. **The token stays in OpenBao and in the rendered environment of its own container.** It never appears in a repository, log, task output, survey field or command line (G6).
 3. **Mail is off where it is not declared.** A deploy with `smtp_host` undefined makes no read and renders no mail settings.
 4. **The repository holds placeholders.** Host, port, addresses and DNS values live in site-config.
-5. **Plan before apply.** Nothing is applied to DNS until the plan prints no changes (G5).
+5. **Plan before apply.** The first apply runs only a reviewed plan that imports the expected records and adds, changes and destroys nothing, and after it the plan prints no changes (G5, S8).
 
 ## Goal and validation criteria
 
@@ -60,7 +60,7 @@ Platform services send mail through an SMTP submission service with one shared t
 
 - **OUT-1** The DigitalOcean MCP skill, the DigitalOcean token in OpenBao, and the DigitalOcean tofu foundation. These are v0.19.0, module `digitalocean-foundation`, in their own batch.
 - **OUT-2** Stalwart on any host. Dropped (see Rejected).
-- **OUT-3** One token per service. A later item. Each service already reads its own field, so a split is a seed and a redeploy.
+- **OUT-3** One token per service. A later item. Each service is already handed its own field, so a split within this path is a seed and a redeploy; a split that also keeps each deploy from reading the others' tokens moves each to its own path (Design Principle 1).
 - **OUT-4** Tightening the DMARC policy. A later item, after sending is observed.
 - **OUT-5** The three non-Proton TXT records (two Microsoft, one domain verification). Left unmanaged. The count is per the batch plan's zone read of 2026-11-27, not verified in this repo.
 - **OUT-6** The existing mail host name in the zone. Left as it is (Q1).
@@ -75,7 +75,7 @@ Platform services send mail through an SMTP submission service with one shared t
 | D2 | Authentik enrollment and recovery flows by email (S5). Plan 22 A6 and plan 12 D2 are unblocked. The console request screen stays in plan 22 (OUT-8). | Both plans wait on outbound mail (`12-rbac-user-provisioning.md:15` and `:75`; `22-console-access-requests.md:158`). |
 | D3 | An email receiver is added to the existing `agent-cloud-ops` contact point. Every alert goes to Discord and to one mailbox named in site-config. | The contact point and its Discord receiver already exist (`alert-contact.yml.j2:7-12`). One contact point keeps one alert path. |
 | D4 | Stored first-login passwords and Print User Credentials stay in this batch. A later item retires them, after a real person has enrolled by mail in production. | The repository's note says to drop the stored passwords once enrollment and recovery work (`platform-users.yaml:16-18`). Print User Credentials prints a live password into task output (`22-console-access-requests.md:158`). |
-| B1 | One shared token now. Split later (OUT-3). | Each service reads its own field, so a later split is a seed and a redeploy. |
+| B1 | One shared token now. Split later (OUT-3). | Each service is handed its own field, so a later split is a seed and a redeploy. |
 | B2 | Services reach the SMTP service directly, through one shared OpenBao path. | The Semaphore read policy already covers `secret/data/services/*` (`platform/services/openbao/deployment/config/policies/semaphore-read.hcl:9-11`), so no policy changes. |
 | B3 | Local-dev uses a mail catcher container. | Local runs deliver to the catcher and not to a real mailbox. |
 | B4 | Proton DNS: existing records only, and the values never appear in this repo. | The records already exist (`13-cloudflare-iac.md:53`). Tofu adopts them with no change, and their values come from site-config. |
@@ -123,7 +123,8 @@ Merge order is unit order, with these dependencies. S3 follows S2. S4, S6 and S7
 
 **S2, local mail catcher.**
 
-- Unverified first step: read the Mailpit license, whether the image runs as non-root, the API path that lists messages, the SMTP and web ports (1025 and 8025), and the `MP_SMTP_AUTH_ACCEPT_ANY` setting.
+- Unverified first step: read the Mailpit license, whether the image runs as non-root, the API path that lists messages, the SMTP and web ports (1025 and 8025), the `MP_SMTP_AUTH_ACCEPT_ANY` setting, and how the catcher offers STARTTLS (a review of this plan named `MP_SMTP_TLS_CERT` and `MP_SMTP_TLS_KEY`; not read here).
+- Decide the local transport with S7: either the catcher offers STARTTLS with a certificate the local services trust (the local internal CA issues one), or the local-dev inventory turns the mandatory STARTTLS off for the catcher only. Production keeps mandatory STARTTLS either way.
 - Add `platform/services/mailpit/deployment/` (compose file and `deploy.sh`) and one (Local) template in `platform/semaphore/templates-local.yml`. No production template and no inventory group.
 - Pin the image by digest. SMTP on 1025, web view and API on 8025, on the local-dev network. Add a Caddy route for the web view.
 - The catcher accepts any login (`MP_SMTP_AUTH_ACCEPT_ANY`), so services send with a placeholder token locally.
@@ -163,7 +164,7 @@ Merge order is unit order, with these dependencies. S3 follows S2. S4, S6 and S7
 **S7, Grafana SMTP and email receiver.**
 
 - Unverified first step: confirm, on the running local Grafana, the environment name for the mandatory STARTTLS policy. The batch plan's name is not confirmed.
-- Add `GF_SMTP_*` settings to `platform/services/o11y/deployment/templates/env.j2`: enabled, host and port, user, token, from address, and mandatory STARTTLS.
+- Add `GF_SMTP_*` settings to `platform/services/o11y/deployment/templates/env.j2`: enabled, host and port, user, token, from address, and mandatory STARTTLS. Locally, Grafana reaches the catcher over the transport S2 decides; without it, mandatory STARTTLS against a catcher that offers none would fail the S7 local proof.
 - Add the email receiver to `platform/services/o11y/deployment/templates/alert-contact.yml.j2`, with its address from `o11y_alert_email`. The contact point is rendered only when `o11y_alerts_enabled` is set (line 4). The disabled branch deletes the contact point by the Discord uid alone (lines 19-22), so this unit must decide how the email receiver goes away with it. The receiver uid is hard-coded in the render, the delete and the verify; one receiver list that all three read keeps them in step. The email receiver renders only when `smtp_host` and `o11y_alert_email` are both defined, so an alerting host without mail keeps its Discord receiver alone.
 - Extend deploy verify (`platform/playbooks/deploy-o11y.yml:1987-1996`) to require the email receiver when mail is configured.
 - Local proof: run the contact point test through the Grafana API, and assert the message in the catcher.
@@ -175,7 +176,8 @@ Merge order is unit order, with these dependencies. S3 follows S2. S4, S6 and S7
 - Import blocks adopt the live records. A read-only step reads the record IDs from the Cloudflare API first, reusing the record GET in `platform/playbooks/tasks/manage-cloudflare-record.yml:134-145`. The two MX records share a name and type, so that step matches on content and priority, not on the first result.
 - This adopts records that plan 13 keeps outside tofu on purpose (`13-cloudflare-iac.md:53` and its guardrail "Never own external/ephemeral records", `:94`). Decision B4 overrides that for the mail records only, under plan 13's own zero-diff rule (`:90-92`).
 - Update the ownership comment in `platform/infra/cloudflare/dns.tf` (lines 5-7), the Cloudflare README, and plan 13's mail line (`13-cloudflare-iac.md:53`).
-- Gate: the plan must print no changes before any apply. A diff means a variable is wrong, and the fix is the variable.
+- Gate: before the first apply, the plan must show exactly the expected imports and nothing to add, change or destroy; import blocks put a record in state only at apply, so that first plan cannot print no changes. A planned add, change or destroy means a variable is wrong, and the fix is the variable. After the apply, the plan must print no changes.
+- Apply the reviewed plan file, not a fresh one. `platform/playbooks/apply-cloudflare-tofu.yml:374` applies its saved plan only under the Grafana guard and otherwise runs `-auto-approve`, which plans again at apply time; S8 extends the guard pattern to the mail imports, or refuses an apply whose plan differs from the reviewed one.
 - Test: `tofu validate` and the existing dry-run backend test pattern (`platform/tests/suite/cloudflare_dry_run_backend_playbook.rs`). Validate and plan passing does not prove that the API accepts a create (`docs/MISTAKES.md` 10.13), so nothing is created in this unit.
 
 **S9, production rollout and proof (closing step, no pull request).** Runs only after S2 to S8 are merged to dev and the site-config change is merged.
@@ -196,16 +198,16 @@ Each action is asked of the coordinator session first and approved one at a time
 | Deploy Authentik (Dev), check mode, then the real run | Authentik host | redeploy from the previous dev commit |
 | Deploy Plane (Dev), same order | Plane host | redeploy from the previous dev commit |
 | Deploy o11y (Dev), same order | o11y receiver | redeploy from the previous dev commit |
-| Apply Cloudflare Tofu (Dev), plan then apply | Cloudflare zone, mail records only | none needed: apply imports state and changes no record |
+| Apply Cloudflare Tofu (Dev), plan then apply of that saved plan | Cloudflare zone, mail records only | none needed: apply imports state and changes no record |
 
 ## Risks
 
 | ID | Risk | Limit |
 |---|---|---|
 | R1 | Proton states no SMTP sending limit and forbids mass mailing (per the batch plan's read of Proton's SMTP page, not re-read in this repo). An alert storm could get the account limited. | Grafana groups alerts, so one notification can cover many alerts (per the batch plan; not checked here). |
-| R2 | One token for three services. Deleting it stops all three. | Accepted for this batch. A split is OUT-3, and each service already reads its own field. |
+| R2 | One token for three services. Deleting it stops all three. | Accepted for this batch. A split is OUT-3. |
 | R3 | Every message is sent as one address and lands in that mailbox's Sent folder, where whoever reads the mailbox can see it. Recovery links are in those messages. This is per the batch plan and was not checked here. | Accepted for this batch. Access to the mailbox is access to those links. |
-| R4 | A wrong DNS variable could change a live record on apply. | The S8 no-changes gate. Apply is a named production action. |
+| R4 | A wrong DNS variable could change a live record on apply. | The S8 import-only gate and the apply of the reviewed plan file. Apply is a named production action. |
 | R5 | A shared-inventory switch merged before its code was proven stopped every o11y deploy once (`docs/MISTAKES.md` 3.21). | The site-config change merges after S3 to S7, and mail is off wherever `smtp_host` is undefined. |
 | R6 | A token printed by a failing task (`docs/MISTAKES.md` 4.6). | Token tasks follow `AGENTS.md`, "Credential Handling": a task that reads from OpenBao is `no_log`, enforced by `test_no_visible_task_reads_a_secret` in `platform/tests/test_no_request_in_loop_items.py`. Test commands take no token argument. |
 | R7 | The plan touches `AGENTS.md`, `docs/LESSONS.md` and `platform/semaphore/templates-local.yml`, which another batch also touches. | Each pull request merges dev at its own turn. |
@@ -225,16 +227,16 @@ Token handling is G6 and R6; the shared token's blast radius is R2; recovery lin
 
 | Document | Relationship |
 |---|---|
-| `00-foundation-local-dev.md` | The local-dev stack that gains the catcher (S2, S3). |
-| `01-secrets-credentials.md` | The OpenBao path and token handling (S3, G6). |
-| `02-sso-auth.md` | Authentik, which gains outbound mail and the recovery and enrollment flows (S4, S5). |
-| `05-observability.md` | Grafana and its alert contact point (S7). |
-| `12-rbac-user-provisioning.md` | D2 waits on SMTP. This plan unblocks it (D2, G7). |
-| `13-cloudflare-iac.md` | Its mail line changes in S8. |
-| `16-plane-work-management.md` | Plane, which gains instance mail settings (S6). |
-| `22-console-access-requests.md` | A6 waits on enrollment links. This plan unblocks it (D2, G7). |
-| `AGENTS.md` | The index line for this plan (S1) and the secrets layout table (S3). |
-| `docs/MISTAKES.md` | Entries 3.20, 3.21, 3.22, 4.6 and 10.13, which shape S8, S9, R5 and R6. |
+| [00-foundation-local-dev.md](00-foundation-local-dev.md) | The local-dev stack that gains the catcher (S2, S3). |
+| [01-secrets-credentials.md](01-secrets-credentials.md) | The OpenBao path and token handling (S3, G6). |
+| [02-sso-auth.md](02-sso-auth.md) | Authentik, which gains outbound mail and the recovery and enrollment flows (S4, S5). |
+| [05-observability.md](05-observability.md) | Grafana and its alert contact point (S7). |
+| [12-rbac-user-provisioning.md](12-rbac-user-provisioning.md) | D2 waits on SMTP. This plan unblocks it (D2, G7). |
+| [13-cloudflare-iac.md](13-cloudflare-iac.md) | Its mail line changes in S8. |
+| [16-plane-work-management.md](16-plane-work-management.md) | Plane, which gains instance mail settings (S6). |
+| [22-console-access-requests.md](22-console-access-requests.md) | A6 waits on enrollment links. This plan unblocks it (D2, G7). |
+| [CLAUDE.md](../../CLAUDE.md) (root, a link to `AGENTS.md`) | The index line for this plan (S1) and the secrets layout table (S3). |
+| [docs/MISTAKES.md](../../docs/MISTAKES.md) | Entries 3.20, 3.21, 3.22, 4.6 and 10.13, which shape S8, S9, R5 and R6. |
 
 ## Revision History
 
