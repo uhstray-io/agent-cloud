@@ -442,6 +442,63 @@
       until: _ak_api.rc == 0
       check_mode: false
 
+    # ── Outpost permissions (AC-1135): converge before the forward_auth probe ───
+    - name: "Outpost permissions: the Phase 1 app list and catalog have the expected shape"
+      # The script below reads both from Phase 1 (host facts persist across plays). A missing or
+      # wrongly shaped value fails here, with this message, rather than inside the script.
+      ansible.builtin.assert:
+        that:
+          - _enabled_apps is defined
+          - _enabled_apps is sequence
+          - _enabled_apps is not string
+          - authentik_app_catalog is mapping
+        fail_msg: "Outpost permissions: _enabled_apps must be the Phase 1 app list and authentik_app_catalog the catalog mapping"
+        quiet: true
+
+    # The embedded outpost's account can miss its view permission on the proxy providers on a fresh
+    # instance (a worker race; context/architecture.md, "Embedded outpost permissions (AC-1135)"),
+    # and then every forward_auth gate answers 404. The probe changes nothing; the repair runs only
+    # when the probe reports a missing grant, never under --check, and restarts nothing.
+    # The script is rendered once, in memory, and sent on stdin: nothing is written to the host.
+    # `ak shell -c` executes it as one program; without -c, ak shell feeds stdin to an interactive
+    # console, which drops any block not followed by a blank line and exits 0 whatever happened.
+    # Its exit codes are listed in its header.
+    - name: "Outpost permissions: render the convergence script"
+      ansible.builtin.set_fact:
+        _outpost_perms_script: >-
+          {{ lookup('ansible.builtin.template',
+          playbook_dir ~ '/../services/authentik/deployment/templates/converge-outpost-perms.py.j2',
+          template_vars={'authentik_apps': _enabled_apps}) }}
+
+    - name: "Outpost permissions: check the embedded outpost's view access to its providers (fresh-instance race, AC-1135)"
+      # Read-only (OUTPOST_PERMS_MODE=check), so it runs under --check too. Exit 75: an expected
+      # provider is not attached yet, so it retries.
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, -i, -e, OUTPOST_PERMS_MODE=check, authentik-server, ak, shell, -c, "import sys; exec(sys.stdin.read())"]
+        stdin: "{{ _outpost_perms_script }}"
+      register: _outpost_perms_probe
+      changed_when: false
+      failed_when: _outpost_perms_probe.rc != 0
+      until: _outpost_perms_probe.rc != 75
+      retries: 20
+      delay: 6
+      check_mode: false
+
+    - name: "Outpost permissions: grant the embedded outpost view access to its providers"
+      # Only on the probe's "would repair" line, never under --check. Calls the outpost's own grant
+      # and reads it back; exit 4 (still missing) fails the deploy.
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, -i, -e, OUTPOST_PERMS_MODE=repair, authentik-server, ak, shell, -c, "import sys; exec(sys.stdin.read())"]
+        stdin: "{{ _outpost_perms_script }}"
+      register: _outpost_perms_repair
+      when: "not ansible_check_mode and 'outpost-perms: would repair' in _outpost_perms_probe.stdout"
+      changed_when: "'outpost-perms: REPAIRED' in _outpost_perms_repair.stdout"
+      failed_when: _outpost_perms_repair.rc != 0
+
+    - name: "Outpost permissions: result"
+      ansible.builtin.debug:
+        msg: "{{ (_outpost_perms_probe.stdout_lines | select('search', '^outpost-perms:') | list) + (_outpost_perms_repair.stdout_lines | default([]) | select('search', '^outpost-perms:') | list) }}"
+
     - name: "Wait for the embedded outpost to serve forward_auth (proxy-provider sync)"
       # `ak healthcheck` + the API go green BEFORE the embedded outpost finishes
       # loading proxy providers from the blueprints, so for ~a minute after deploy

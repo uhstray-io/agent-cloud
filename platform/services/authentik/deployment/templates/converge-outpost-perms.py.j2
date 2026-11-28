@@ -1,0 +1,81 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+# Converges the permission that lets the embedded outpost's service account view the proxy
+# providers attached to the outpost (AC-1135). deploy-authentik.yml renders this file in memory
+# once and sends it to the authentik-server container on stdin, so nothing is written to the host:
+#   <engine> exec -i -e OUTPOST_PERMS_MODE=<check|repair> authentik-server \
+#     ak shell -c 'import sys; exec(sys.stdin.read())'
+# The -c form runs the whole program, and sys.exit(n) becomes the command's exit code. Plain
+# `ak shell` would feed stdin to an interactive console instead, which drops any block not
+# followed by a blank line and exits 0 whatever the program did.
+# Why this exists: context/architecture.md, "Embedded outpost permissions (AC-1135)".
+#
+# It prints lines that start with "outpost-perms:", naming providers and booleans only.
+# Exit codes:
+#   0   converged; or, in check mode, a repair would be needed (nothing is written)
+#   3   this Authentik image has no build_user_permissions, so it refuses to guess a repair
+#   4   the repair ran and a grant is still missing
+#   75  an expected provider is not attached to the embedded outpost yet (the probe retries)
+#
+# OUTPOST_PERMS_MODE is "repair" for the one run that may write. Any other value, or none, is
+# check: the grant is read, and nothing is written.
+#
+{# The forward_auth providers this environment declares: the same selection zz-sso-bindings.yaml.j2
+   makes when it attaches them to the embedded outpost. The playbook passes authentik_apps in
+   from Phase 1, because it is undefined in Phase 3 when the inventory does not set it. #}
+{% set _forward_auth = [] %}
+{% for slug in (authentik_apps | sort) %}
+{% if authentik_app_catalog[slug].type == 'forward_auth' %}
+{% set _ = _forward_auth.append(slug) %}
+{% endif %}
+{% endfor %}
+import json
+import os
+import sys
+
+from authentik.core.models import User
+from authentik.outposts.models import Outpost
+from authentik.providers.proxy.models import ProxyProvider
+
+PERM = "authentik_providers_proxy.view_proxyprovider"
+EXPECTED = sorted({{ _forward_auth | to_json }})
+MODE = os.environ.get("OUTPOST_PERMS_MODE", "check")
+
+if not hasattr(Outpost, "build_user_permissions"):
+    print("outpost-perms: Outpost.build_user_permissions is not available on this Authentik image; refusing to guess a repair")
+    sys.exit(3)
+
+outpost = Outpost.objects.get(managed="goauthentik.io/outposts/embedded")
+attached = set(outpost.providers.values_list("name", flat=True))
+not_attached = [name for name in EXPECTED if name not in attached]
+if not_attached:
+    print("outpost-perms: waiting for providers to be attached to the embedded outpost: " + ", ".join(not_attached))
+    sys.exit(75)
+
+
+def grants():
+    # A fresh user object for each read: has_perm caches on the instance, so a read after the
+    # grant must not reuse an object that was read before it.
+    user = User.objects.get(pk=outpost.user.pk)
+    providers = {p.name: p for p in ProxyProvider.objects.filter(name__in=EXPECTED)}
+    # Indexed by EXPECTED, so a provider that is not a proxy provider raises instead of being
+    # left out of the state, where all() would read the missing entry as converged.
+    return {name: user.has_perm(PERM, providers[name]) for name in EXPECTED}
+
+
+state = grants()
+if all(state.values()):
+    print("outpost-perms: converged " + json.dumps(state, sort_keys=True))
+    sys.exit(0)
+if MODE != "repair":
+    print("outpost-perms: would repair " + json.dumps(state, sort_keys=True))
+    sys.exit(0)
+
+outpost.build_user_permissions(outpost.user)
+
+state = grants()
+print("outpost-perms: REPAIRED " + json.dumps(state, sort_keys=True))
+still = [name for name, granted in sorted(state.items()) if not granted]
+if still:
+    print("outpost-perms: still missing after repair: " + ", ".join(still))
+    sys.exit(4)
+sys.exit(0)

@@ -147,6 +147,33 @@ It fails the deploy unless:
 It prints usernames, group names and blueprint statuses — never a credential. Handing
 a new user their first login waits on this step passing.
 
+## Embedded outpost permissions (AC-1135)
+
+The Caddy `forward_auth` gates are served by Authentik's embedded outpost. The outpost loads an
+application only if its service account (`ak-outpost-*`) holds view permission on that proxy
+provider: `/api/v3/outposts/proxy/` filters by it. Authentik grants the permission in
+`Outpost.build_user_permissions`, from the worker task `outpost_post_save`. The signals that
+queue that task call `.delay()` at once, not on commit (`authentik/outposts/signals.py` in
+2024.12.3), and a blueprint is applied inside a transaction twice: once as a validation that is
+always rolled back, then for real inside `atomic()` (`authentik/blueprints/v1/importer.py`). A
+task queued inside either transaction can run before it commits. On a fresh instance the grant
+therefore ran against provider rows that were rolled back or not yet committed (worker log:
+"Model does not exist" for ProxyProvider pk 5, which no committed row holds; the live provider
+is pk 6), so it missed the final providers. The outpost then loaded no application, and every
+gate answered 404. A server restart did not repair it: nothing re-ran the grant in the nine minutes
+observed after it.
+
+So Phase 3 of `deploy-authentik.yml` converges it before the `forward_auth` probe. A read-only
+probe runs `deployment/templates/converge-outpost-perms.py.j2` inside `authentik-server`
+(rendered in memory and sent on stdin, so nothing is written to the host). It waits until every
+enabled `forward_auth` provider is attached to the embedded outpost, then reads the grant. Only
+when a grant is missing does a second run call Authentik's own `build_user_permissions` and read
+the grant back; it fails, naming the providers, if one is still missing, and it never runs under
+`--check`. On a converged instance the probe reports `converged` and nothing changes. It refuses
+to guess a repair if the running image has no `build_user_permissions`. It prints provider names
+and booleans only. This is a deploy-side convergence, not an upstream fix; the race was
+observed on the pinned image `ghcr.io/goauthentik/server:2024.12.3` in local-dev.
+
 ## Dispatch Console directory reader (view-only)
 
 The console reads the user and group directory with `svc-console-directory`, a service

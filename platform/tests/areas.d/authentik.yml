@@ -1,0 +1,8 @@
+# The embedded outpost's provider permissions (AC-1135): the convergence step in Phase 3 of
+# deploy-authentik.yml and the script it renders from the deployment templates. The module reads
+# only those two places, so a change to either selects it.
+paths:
+  - "platform/playbooks/deploy-authentik.yml"
+  - "platform/services/authentik/deployment/**"
+tiers:
+  static: [authentik_outpost_perms]
