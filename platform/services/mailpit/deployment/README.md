@@ -35,8 +35,8 @@ On the `local-dev` network, which `compose.local.yml` joins, services reach Mail
 
 ## How it is deployed
 
-Local-dev only. The deploy is the "Deploy mailpit (Local)" template, or `make local-deploy-mailpit`.
-Both are wired in a later step of this change, not in this one. The playbook is
+Local-dev only. The deploy is the "Deploy mailpit (Local)" template
+(`platform/semaphore/templates-local.yml`), or `make local-deploy-mailpit`. The playbook is
 `platform/playbooks/deploy-mailpit.yml`, and `deploy.sh` does the container lifecycle only: it writes
 a non-secret `.env` from its environment, pulls the image, starts the container and waits for it to
 be running. The playbook refuses any host that is not named `<name>-local` or that does not use the
